@@ -1,165 +1,180 @@
-???from datetime import datetime, timedelta
+from typing import Optional
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.security import (
     hash_password,
     verify_password,
     create_access_token,
+    decode_access_token,
 )
+from app.models.user import User
 
-# C???u h??nh ch??nh s??ch b???o m???t kh??a t??i kho???n (Account Lockout Policy)
-MAX_FAILED_ATTEMPTS = 5
-LOCKOUT_MINUTES = 15
-
-# Danh s??ch ng?????i d??ng h??? th???ng theo ph??n quy???n vai tr?? (Admin, Manager, User/Staff)
-USERS_DB = [
-    {
-        "id": 1,
-        "email": "admin@gmail.com",
-        "username": "admin",
-        "full_name": "Qu???n Tr??? Vi??n",
-        "role": "ADMIN",
-        "team_id": 1,
-        "team_name": "Ban Qu???n Tr???",
-        "is_active": True,
-        "hashed_password": hash_password("123456"),
-    },
-    {
-        "id": 2,
-        "email": "manager@gmail.com",
-        "username": "manager",
-        "full_name": "Tr?????ng Ph??ng Kinh Doanh",
-        "role": "MANAGER",
-        "team_id": 1,
-        "team_name": "?????i Kinh Doanh 1",
-        "is_active": True,
-        "hashed_password": hash_password("123456"),
-    },
-    {
-        "id": 3,
-        "email": "user@gmail.com",
-        "username": "user",
-        "full_name": "Nh??n Vi??n Kinh Doanh",
-        "role": "USER",
-        "team_id": 1,
-        "team_name": "?????i Kinh Doanh 1",
-        "is_active": True,
-        "hashed_password": hash_password("123456"),
-    },
-    {
-        "id": 4,
-        "email": "staff1@gmail.com",
-        "username": "staff1",
-        "full_name": "Nh??n Vi??n Kinh Doanh 1",
-        "role": "USER",
-        "team_id": 1,
-        "team_name": "?????i Kinh Doanh 1",
-        "is_active": True,
-        "hashed_password": hash_password("123456"),
-    },
-]
-
-# L??u v???t s??? l???n ????ng nh???p sai theo identifier (email/username):
-# login_attempts = { "identifier": { "attempts": int, "locked_until": datetime | None } }
-login_attempts: dict = {}
+def get_initial_users():
+    return [
+        {
+            "id": 1,
+            "email": "admin@gmail.com",
+            "username": "admin",
+            "full_name": "Admin",
+            "role": "ADMIN",
+            "is_active": True,
+            "status": "ACTIVE",
+            "hashed_password": hash_password("123456"),
+        },
+        {
+            "id": 2,
+            "email": "manager@gmail.com",
+            "username": "manager",
+            "full_name": "Manager User",
+            "role": "MANAGER",
+            "is_active": True,
+            "status": "ACTIVE",
+            "hashed_password": hash_password("123456"),
+        },
+        {
+            "id": 3,
+            "email": "user@gmail.com",
+            "username": "user",
+            "full_name": "Normal User",
+            "role": "USER",
+            "is_active": True,
+            "status": "ACTIVE",
+            "hashed_password": hash_password("123456"),
+        },
+    ]
 
 
-def get_lockout_info(identifier: str) -> dict:
-    clean_id = (identifier or "").strip().lower()
-    if clean_id not in login_attempts:
-        return {"is_locked": False, "attempts": 0, "remaining_minutes": 0, "remaining_seconds": 0}
-
-    entry = login_attempts[clean_id]
-    locked_until = entry.get("locked_until")
-    if locked_until:
-        now = datetime.now()
-        if now < locked_until:
-            remaining_seconds = int((locked_until - now).total_seconds())
-            remaining_minutes = max(1, (remaining_seconds + 59) // 60)
-            return {
-                "is_locked": True,
-                "attempts": entry.get("attempts", MAX_FAILED_ATTEMPTS),
-                "remaining_minutes": remaining_minutes,
-                "remaining_seconds": remaining_seconds,
-            }
-        else:
-            # ???? h???t 15 ph??t kh??a -> t??? ?????ng m??? kh??a v?? reset b??? ?????m
-            entry["attempts"] = 0
-            entry["locked_until"] = None
-            return {"is_locked": False, "attempts": 0, "remaining_minutes": 0, "remaining_seconds": 0}
-
-    return {
-        "is_locked": False,
-        "attempts": entry.get("attempts", 0),
-        "remaining_minutes": 0,
-        "remaining_seconds": 0,
-    }
+fake_users_db = get_initial_users()
+fake_user = fake_users_db[0]
 
 
-def record_failed_attempt(identifier: str) -> dict:
-    clean_id = (identifier or "").strip().lower()
-    now = datetime.now()
-    if clean_id not in login_attempts:
-        login_attempts[clean_id] = {"attempts": 0, "locked_until": None}
-
-    entry = login_attempts[clean_id]
-    entry["attempts"] = entry.get("attempts", 0) + 1
-
-    if entry["attempts"] >= MAX_FAILED_ATTEMPTS:
-        entry["locked_until"] = now + timedelta(minutes=LOCKOUT_MINUTES)
-        return {
-            "locked": True,
-            "attempts": entry["attempts"],
-            "remaining_minutes": LOCKOUT_MINUTES,
-            "message": f"T??i kho???n ???? b??? t???m kh??a {LOCKOUT_MINUTES} ph??t do nh???p sai {MAX_FAILED_ATTEMPTS} l???n li??n ti???p. Vui l??ng th??? l???i sau.",
-        }
-
-    remaining_attempts = MAX_FAILED_ATTEMPTS - entry["attempts"]
-    return {
-        "locked": False,
-        "attempts": entry["attempts"],
-        "remaining_attempts": remaining_attempts,
-        "message": "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c",
-    }
+def reset_fake_users_db():
+    global fake_users_db, fake_user
+    fake_users_db.clear()
+    fake_users_db.extend(get_initial_users())
+    fake_user = fake_users_db[0]
 
 
-def record_successful_login(identifier: str):
-    clean_id = (identifier or "").strip().lower()
-    if clean_id in login_attempts:
-        login_attempts[clean_id]["attempts"] = 0
-        login_attempts[clean_id]["locked_until"] = None
+security_bearer = HTTPBearer(auto_error=False)
 
 
-def reset_lockout(identifier: str = None):
-    if identifier:
-        clean_id = (identifier or "").strip().lower()
-        if clean_id in login_attempts:
-            login_attempts[clean_id] = {"attempts": 0, "locked_until": None}
-    else:
-        login_attempts.clear()
-
-
-def find_user_by_identifier(identifier: str):
-    clean_id = (identifier or "").strip().lower()
-    for user in USERS_DB:
-        if clean_id == user["email"].lower() or clean_id == user["username"].lower():
-            return user
+def get_user_by_email(email: str):
+    clean_email = (email or "").strip().lower()
+    for u in fake_users_db:
+        if u["email"].lower() == clean_email:
+            return u
     return None
 
 
-def authenticate_user(identifier: str, password: str):
-    user = find_user_by_identifier(identifier)
+def get_user_by_id(user_id: int):
+    for u in fake_users_db:
+        if u["id"] == user_id:
+            return u
+    return None
+
+
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
+) -> dict:
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    else:
+        # Fallback to Authorization header if Bearer prefix was missing or format variation
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        elif auth_header:
+            token = auth_header.strip()
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ch??a ????ng nh???p ho???c thi???u token x??c th???c",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token kh??ng h???p l??? ho???c ???? h???t h???n",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    email = payload.get("sub")
+    user_id = payload.get("id")
+
+    user = get_user_by_email(email) if email else None
+    if not user and user_id:
+        user = get_user_by_id(user_id)
+
     if not user:
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ng?????i d??ng kh??ng t???n t???i",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    if not verify_password(password, user["hashed_password"]):
-        return None
-
-    if not user["is_active"]:
-        return None
+    if not user.get("is_active", True) or user.get("status") == "LOCKED":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="T??i kho???n ???? b??? kh??a",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     return user
 
 
-def login_user(identifier: str, password: str):
+def require_admin(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    if current_user.get("role", "").upper() != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="B???n kh??ng c?? quy???n th???c hi???n thao t??c n??y. Ch??? Admin m???i c?? quy???n truy c???p.",
+        )
+    return current_user
+
+
+def authenticate_user(
+    identifier: str,
+    password: str
+):
+    clean_identifier = (identifier or "").strip().lower()
+
+    target_user = None
+    for u in fake_users_db:
+        if (
+            u["email"].lower() == clean_identifier
+            or (u.get("username") and u["username"].lower() == clean_identifier)
+        ):
+            target_user = u
+            break
+
+    if not target_user:
+        return None
+
+    if not verify_password(
+        password,
+        target_user["hashed_password"]
+    ):
+        return None
+
+    if not target_user.get("is_active", True) or target_user.get("status") == "LOCKED":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="T??i kho???n ???? b??? kh??a. Vui l??ng li??n h??? qu???n tr??? vi??n.",
+        )
+
+    return target_user
+
+
+def login_user(
+    identifier: str,
+    password: str
+):
     user = authenticate_user(identifier, password)
     if not user:
         return None
@@ -168,7 +183,6 @@ def login_user(identifier: str, password: str):
         "sub": user["email"],
         "id": user["id"],
         "role": user["role"],
-        "team_id": user.get("team_id", 1),
     })
 
     return {
@@ -178,7 +192,27 @@ def login_user(identifier: str, password: str):
             "email": user["email"],
             "full_name": user["full_name"],
             "role": user["role"],
-            "team_id": user.get("team_id", 1),
-            "team_name": user.get("team_name", "?????i Kinh Doanh 1"),
-        },
+        }
     }
+
+
+def change_password(
+    user: dict,
+    current_password: str,
+    new_password: str,
+) -> tuple[bool, str]:
+    if not current_password:
+        return False, "M???t kh???u hi???n t???i kh??ng ???????c ????? tr???ng"
+
+    if not verify_password(current_password, user["hashed_password"]):
+        return False, "M???t kh???u hi???n t???i kh??ng ch??nh x??c"
+
+    if not new_password or not new_password.strip():
+        return False, "M???t kh???u m???i kh??ng ???????c ????? tr???ng"
+
+    if len(new_password.strip()) < 6:
+        return False, "M???t kh???u m???i ph???i c?? ??t nh???t 6 k?? t???"
+
+    # Hash new password before saving
+    user["hashed_password"] = hash_password(new_password.strip())
+    return True, "?????i m???t kh???u th??nh c??ng"

@@ -1,4 +1,4 @@
-???from typing import Optional
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -17,8 +17,6 @@ class UserResponse(BaseModel):
     email: str
     full_name: str
     role: str
-    team_id: Optional[int] = None
-    team_name: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -28,5 +26,11 @@ class LoginResponse(BaseModel):
     user: UserResponse
 
 
-class ResetLockoutRequest(BaseModel):
-    identifier: Optional[str] = None
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class ChangePasswordResponse(BaseModel):
+    success: bool
+    message: str
