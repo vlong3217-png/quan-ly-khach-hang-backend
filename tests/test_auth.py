@@ -91,7 +91,7 @@ def test_login_missing_fields():
     )
     assert response.status_code == 401
     data = response.json()
-    assert data["detail"] == "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+    assert data["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
 
 
 def test_security_hash_and_verify():
