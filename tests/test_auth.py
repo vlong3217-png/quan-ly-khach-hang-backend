@@ -10,16 +10,16 @@ from app.core.security import (
     SECRET_KEY,
     ALGORITHM,
 )
-from app.services.auth_service import fake_user
+from app.services.auth_service import fake_user, reset_fake_users_db
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
 def reset_user_password():
-    fake_user["hashed_password"] = hash_password("123456")
+    reset_fake_users_db()
     yield
-    fake_user["hashed_password"] = hash_password("123456")
+    reset_fake_users_db()
 
 
 def test_root():
@@ -66,7 +66,7 @@ def test_login_wrong_password():
     )
     assert response.status_code == 401
     data = response.json()
-    assert data["detail"] == "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+    assert data["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
 
 
 def test_login_wrong_email_or_username():
@@ -77,7 +77,7 @@ def test_login_wrong_email_or_username():
     )
     assert response.status_code == 401
     data = response.json()
-    assert data["detail"] == "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+    assert data["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
 
 
 def test_login_invalid_email_format():
@@ -88,7 +88,7 @@ def test_login_invalid_email_format():
     )
     assert response.status_code == 401
     data = response.json()
-    assert data["detail"] == "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+    assert data["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
 
 
 def test_login_missing_fields():
@@ -99,7 +99,7 @@ def test_login_missing_fields():
     )
     assert response.status_code == 401
     data = response.json()
-    assert data["detail"] == "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+    assert data["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
 
 
 def test_security_hash_and_verify():
@@ -159,7 +159,7 @@ def test_change_password_wrong_current_password():
     )
     assert response.status_code in [400, 401]
     data = response.json()
-    assert "M???t kh???u hi???n t???i kh??ng ch??nh x??c" in data["detail"]
+    assert "Mật khẩu hiện tại không chính xác" in data["detail"]
 
 
 def test_change_password_empty_new_password():
@@ -220,7 +220,7 @@ def test_change_password_success_flow():
     assert change_res.status_code == 200
     data = change_res.json()
     assert data["success"] is True
-    assert data["message"] == "?????i m???t kh???u th??nh c??ng"
+    assert data["message"] == "Đổi mật khẩu thành công"
     assert "password" not in data
     assert "hashed_password" not in data
 
@@ -238,4 +238,4 @@ def test_change_password_success_flow():
         json={"email": "admin@gmail.com", "password": "123456"}
     )
     assert old_login.status_code == 401
-    assert old_login.json()["detail"] == "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+    assert old_login.json()["detail"] == "Tài khoản hoặc mật khẩu không chính xác"

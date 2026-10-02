@@ -26,7 +26,7 @@ def login(request: LoginRequest):
     if not identifier or not request.password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+            detail="Tài khoản hoặc mật khẩu không chính xác"
         )
 
     result = login_user(
@@ -36,7 +36,7 @@ def login(request: LoginRequest):
     if not result:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"
+            detail="Tài khoản hoặc mật khẩu không chính xác"
         )
 
     return {

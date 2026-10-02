@@ -40,13 +40,12 @@ def get_all_users(
 def get_user_by_id(user_id: int) -> dict:
     for u in fake_users_db:
         if u["id"] == user_id:
-            # Ensure status attribute is present
             if "status" not in u:
                 u["status"] = "ACTIVE" if u.get("is_active", True) else "LOCKED"
             return u
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Kh??ng t??m th???y t??i kho???n ng?????i d??ng v???i id {user_id}",
+        detail=f"Không tìm thấy tài khoản người dùng với id {user_id}",
     )
 
 
@@ -58,7 +57,7 @@ def create_user(user_in: UserCreate) -> dict:
         if u["email"].lower() == clean_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email ???? ???????c s??? d???ng",
+                detail="Email đã được sử dụng",
             )
 
     # Check username duplicate if provided
@@ -68,7 +67,7 @@ def create_user(user_in: UserCreate) -> dict:
             if u.get("username") and u["username"].lower() == clean_username:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="T??n ????ng nh???p ???? ???????c s??? d???ng",
+                    detail="Tên đăng nhập đã được sử dụng",
                 )
 
     # Validate role
@@ -76,10 +75,9 @@ def create_user(user_in: UserCreate) -> dict:
     if role not in ALLOWED_ROLES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Vai tr?? kh??ng h???p l???. C??c vai tr?? cho ph??p: {', '.join(sorted(ALLOWED_ROLES))}",
+            detail=f"Vai trò không hợp lệ. Các vai trò cho phép: {', '.join(sorted(ALLOWED_ROLES))}",
         )
 
-    # Hash password - never store plaintext
     hashed = hash_password(user_in.password)
 
     new_id = max([u["id"] for u in fake_users_db], default=0) + 1
@@ -109,7 +107,7 @@ def update_user(user_id: int, user_in: UserUpdate) -> dict:
             if u["id"] != user_id and u["email"].lower() == clean_email:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Email ???? ???????c s??? d???ng b???i t??i kho???n kh??c",
+                    detail="Email đã được sử dụng bởi tài khoản khác",
                 )
         user["email"] = user_in.email.strip()
 
@@ -120,7 +118,7 @@ def update_user(user_id: int, user_in: UserUpdate) -> dict:
             if u["id"] != user_id and u.get("username") and u["username"].lower() == clean_username:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="T??n ????ng nh???p ???? ???????c s??? d???ng b???i t??i kho???n kh??c",
+                    detail="Tên đăng nhập đã được sử dụng bởi tài khoản khác",
                 )
         user["username"] = user_in.username.strip()
 
@@ -129,7 +127,7 @@ def update_user(user_id: int, user_in: UserUpdate) -> dict:
         if not user_in.full_name.strip():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="H??? v?? t??n kh??ng ???????c ????? tr???ng",
+                detail="Họ và tên không được để trống",
             )
         user["full_name"] = user_in.full_name.strip()
 
@@ -139,7 +137,7 @@ def update_user(user_id: int, user_in: UserUpdate) -> dict:
         if role not in ALLOWED_ROLES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Vai tr?? kh??ng h???p l???. C??c vai tr?? cho ph??p: {', '.join(sorted(ALLOWED_ROLES))}",
+                detail=f"Vai trò không hợp lệ. Các vai trò cho phép: {', '.join(sorted(ALLOWED_ROLES))}",
             )
         user["role"] = role
 
@@ -153,7 +151,7 @@ def update_user(user_id: int, user_in: UserUpdate) -> dict:
         if len(user_in.password.strip()) < 6:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="M???t kh???u ph???i c?? ??t nh???t 6 k?? t???",
+                detail="Mật khẩu phải có ít nhất 6 ký tự",
             )
         user["hashed_password"] = hash_password(user_in.password.strip())
 
@@ -166,11 +164,11 @@ def update_user_status(
     current_admin: dict,
 ) -> Dict[str, Any]:
     """
-    C???p nh???t tr???ng th??i t??i kho???n: ACTIVE ho???c LOCKED.
-    - Kh??ng cho ph??p Admin t??? kh??a t??i kho???n c???a ch??nh m??nh.
-    - Khi kh??a (LOCKED): ?????t is_active = False, status = LOCKED.
-    - H??? tr??? b??n giao d??? li???u n???u c?? ch??? ?????nh handover_to_user_id.
-    - Khi m??? kh??a (ACTIVE): ?????t is_active = True, status = ACTIVE.
+    Cập nhật trạng thái tài khoản: ACTIVE hoặc LOCKED.
+    - Không cho phép Admin tự khóa tài khoản của chính mình.
+    - Khi khóa (LOCKED): Đặt is_active = False, status = LOCKED.
+    - Hỗ trợ bàn giao dữ liệu nếu có chỉ định handover_to_user_id.
+    - Khi mở khóa (ACTIVE): Đặt is_active = True, status = ACTIVE.
     """
     user = get_user_by_id(user_id)
 
@@ -178,14 +176,13 @@ def update_user_status(
     if status_upper not in ALLOWED_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tr???ng th??i kh??ng h???p l???. Ch??? ch???p nh???n c??c gi?? tr???: {', '.join(sorted(ALLOWED_STATUSES))}",
+            detail=f"Trạng thái không hợp lệ. Chỉ chấp nhận các giá trị: {', '.join(sorted(ALLOWED_STATUSES))}",
         )
 
-    # Kh??ng cho ph??p admin t??? kh??a t??i kho???n c???a ch??nh m??nh
     if status_upper == "LOCKED" and current_admin.get("id") == user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Kh??ng th??? t??? kh??a t??i kho???n c???a ch??nh m??nh",
+            detail="Không thể tự khóa tài khoản của chính mình",
         )
 
     handover_result = None
@@ -193,19 +190,18 @@ def update_user_status(
     if status_upper == "LOCKED":
         user["status"] = "LOCKED"
         user["is_active"] = False
-        message = f"???? kh??a t??i kho???n th??nh c??ng cho user #{user_id}"
+        message = f"Đã khóa tài khoản thành công cho user #{user_id}"
 
-        # B??n giao d??? li???u n???u c?? y??u c???u
         if status_in.handover_to_user_id is not None:
             handover_result = execute_handover(
                 source_user_id=user_id,
                 target_user_id=status_in.handover_to_user_id,
             )
-            message += f" v?? b??n giao d??? li???u sang user #{status_in.handover_to_user_id}"
+            message += f" và bàn giao dữ liệu sang user #{status_in.handover_to_user_id}"
     else:
         user["status"] = "ACTIVE"
         user["is_active"] = True
-        message = f"???? m??? kh??a t??i kho???n th??nh c??ng cho user #{user_id}"
+        message = f"Đã mở khóa tài khoản thành công cho user #{user_id}"
 
     return {
         "id": user["id"],
