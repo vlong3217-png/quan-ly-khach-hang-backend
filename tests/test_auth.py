@@ -10,8 +10,16 @@ from app.core.security import (
     SECRET_KEY,
     ALGORITHM,
 )
+from app.services.auth_service import fake_user
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def reset_user_password():
+    fake_user["hashed_password"] = hash_password("123456")
+    yield
+    fake_user["hashed_password"] = hash_password("123456")
 
 
 def test_root():
@@ -115,3 +123,119 @@ def test_jwt_token_payload():
     assert decoded["id"] == 1
     assert decoded["role"] == "ADMIN"
     assert "exp" in decoded
+
+
+def test_change_password_no_token():
+    """Test change password without authorization token returns 401."""
+    response = client.post(
+        "/auth/change-password",
+        json={"current_password": "123456", "new_password": "newpassword123"}
+    )
+    assert response.status_code == 401
+
+
+def test_change_password_invalid_token():
+    """Test change password with invalid token returns 401."""
+    response = client.post(
+        "/auth/change-password",
+        headers={"Authorization": "Bearer invalid_token_12345"},
+        json={"current_password": "123456", "new_password": "newpassword123"}
+    )
+    assert response.status_code == 401
+
+
+def test_change_password_wrong_current_password():
+    """Test change password with incorrect current password returns error."""
+    login_res = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    token = login_res.json()["access_token"]
+
+    response = client.post(
+        "/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "wrong_password", "new_password": "newpassword123"}
+    )
+    assert response.status_code in [400, 401]
+    data = response.json()
+    assert "M???t kh???u hi???n t???i kh??ng ch??nh x??c" in data["detail"]
+
+
+def test_change_password_empty_new_password():
+    """Test change password with empty new password returns error."""
+    login_res = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    token = login_res.json()["access_token"]
+
+    response = client.post(
+        "/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "123456", "new_password": ""}
+    )
+    assert response.status_code in [400, 422]
+
+
+def test_change_password_short_new_password():
+    """Test change password with new password shorter than 6 characters returns error."""
+    login_res = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    token = login_res.json()["access_token"]
+
+    response = client.post(
+        "/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "123456", "new_password": "123"}
+    )
+    assert response.status_code in [400, 422]
+
+
+def test_change_password_success_flow():
+    """
+    Test successful change password flow:
+    1. Login with initial password
+    2. Change password with valid token and correct current password
+    3. Verify response contains success message and no sensitive password fields
+    4. Verify login with NEW password succeeds
+    5. Verify login with OLD password fails (401)
+    """
+    # 1. Login with initial password
+    initial_login = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    assert initial_login.status_code == 200
+    token = initial_login.json()["access_token"]
+
+    # 2. Change password
+    change_res = client.post(
+        "/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "123456", "new_password": "newsecretpass123"}
+    )
+    assert change_res.status_code == 200
+    data = change_res.json()
+    assert data["success"] is True
+    assert data["message"] == "?????i m???t kh???u th??nh c??ng"
+    assert "password" not in data
+    assert "hashed_password" not in data
+
+    # 3. Verify new password can log in
+    new_login = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "newsecretpass123"}
+    )
+    assert new_login.status_code == 200
+    assert new_login.json()["success"] is True
+
+    # 4. Verify old password can no longer log in
+    old_login = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    assert old_login.status_code == 401
+    assert old_login.json()["detail"] == "T??i kho???n ho???c m???t kh???u kh??ng ch??nh x??c"

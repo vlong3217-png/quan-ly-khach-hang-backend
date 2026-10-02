@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
-from jose import jwt
+from jose import jwt, JWTError
 
 # Compatibility fix for passlib with newer bcrypt versions
 try:
@@ -49,3 +49,14 @@ def create_access_token(data: dict) -> str:
         SECRET_KEY,
         algorithm=ALGORITHM
     )
+
+
+def decode_access_token(token: str) -> dict | None:
+    try:
+        return jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+    except JWTError:
+        return None
