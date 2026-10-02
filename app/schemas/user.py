@@ -1,0 +1,65 @@
+from typing import Any, List, Optional
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: EmailStr
+    username: Optional[str] = None
+    full_name: str
+    role: str
+    is_active: bool
+    status: Optional[str] = "ACTIVE"
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    full_name: str = Field(..., min_length=1, max_length=255, description="H??? v?? t??n ng?????i d??ng")
+    password: str = Field(..., min_length=6, max_length=100, description="M???t kh???u ng?????i d??ng (t???i thi???u 6 k?? t???)")
+    role: Optional[str] = Field(default="USER", description="Vai tr??: ADMIN, MANAGER, USER")
+    username: Optional[str] = Field(default=None, max_length=100, description="T??n ????ng nh???p")
+    is_active: Optional[bool] = Field(default=True, description="Tr???ng th??i k??ch ho???t")
+
+
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = Field(default=None, description="Email ng?????i d??ng")
+    full_name: Optional[str] = Field(default=None, min_length=1, max_length=255, description="H??? v?? t??n")
+    password: Optional[str] = Field(default=None, min_length=6, max_length=100, description="M???t kh???u m???i (n???u mu???n ?????i)")
+    role: Optional[str] = Field(default=None, description="Vai tr?? m???i: ADMIN, MANAGER, USER")
+    username: Optional[str] = Field(default=None, max_length=100, description="T??n ????ng nh???p")
+    is_active: Optional[bool] = Field(default=None, description="Tr???ng th??i k??ch ho???t")
+
+
+class UserStatusUpdate(BaseModel):
+    status: str = Field(..., description="Tr???ng th??i t??i kho???n: ACTIVE ho???c LOCKED")
+    handover_to_user_id: Optional[int] = Field(
+        default=None,
+        description="ID ng?????i d??ng nh???n b??n giao d??? li???u khi kh??a t??i kho???n"
+    )
+
+
+class DataHandoverRequest(BaseModel):
+    target_user_id: int = Field(..., description="ID ng?????i d??ng nh???n b??n giao")
+
+
+class DataHandoverResponse(BaseModel):
+    success: bool = True
+    message: str
+    source_user_id: int
+    target_user_id: int
+    transferred_items_count: int
+    transferred_items: List[Any] = []
+
+
+class UserStatusResponse(BaseModel):
+    id: int
+    email: EmailStr
+    username: Optional[str] = None
+    full_name: str
+    role: str
+    is_active: bool
+    status: str
+    message: str
+    handover: Optional[DataHandoverResponse] = None
