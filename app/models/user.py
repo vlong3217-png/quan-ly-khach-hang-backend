@@ -14,4 +14,5 @@ class User(Base):
     role = Column(String(50), default="ADMIN")
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
+    team_id = Column(Integer, nullable=True)
     status = Column(String(20), default="ACTIVE")
