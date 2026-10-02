@@ -25,15 +25,16 @@ security_scheme = HTTPBearer()
 class DataScope(str, Enum):
     """Data scope levels for controlling data visibility."""
     MY = "MY"
+    MY_TEAM = "MY_TEAM"
     TEAM = "TEAM"
     ALL = "ALL"
 
 
-# Role ??? allowed scopes mapping
+# Role -> allowed scopes mapping
 # ADMIN can see everything, MANAGER can see their team, USER can only see own data
 ROLE_SCOPE_MAP: dict[str, list[DataScope]] = {
-    "ADMIN": [DataScope.ALL, DataScope.TEAM, DataScope.MY],
-    "MANAGER": [DataScope.TEAM, DataScope.MY],
+    "ADMIN": [DataScope.ALL, DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
+    "MANAGER": [DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
     "USER": [DataScope.MY],
 }
 
@@ -135,13 +136,13 @@ def resolve_scope(current_user: dict, requested_scope: Optional[str] = None) -> 
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Scope kh??ng h???p l???: {requested_scope}. C??c gi?? tr??? h???p l???: MY, TEAM, ALL",
+            detail=f"Scope không hợp lệ: {requested_scope}. Các giá trị hợp lệ: MY, MY_TEAM, TEAM, ALL",
         )
 
     if scope not in allowed_scopes:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Role '{role}' kh??ng ???????c ph??p s??? d???ng scope '{scope.value}'",
+            detail=f"Role '{role}' không được phép sử dụng scope '{scope.value}'",
         )
 
     return scope

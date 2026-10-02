@@ -12,46 +12,46 @@ from app.core.dependencies import DataScope
 INITIAL_CUSTOMERS = [
     {
         "id": 1,
-        "name": "Nguy???n V??n A",
+        "name": "Nguyễn Văn A",
         "email": "nguyenvana@example.com",
         "phone": "0901234567",
-        "company": "C??ng ty ABC",
+        "company": "Công ty ABC",
         "owner_id": 1,   # Owned by Admin (User 1)
         "team_id": 1,     # Team A
     },
     {
         "id": 2,
-        "name": "Tr???n Th??? B",
+        "name": "Trần Thị B",
         "email": "tranthib@example.com",
         "phone": "0912345678",
-        "company": "C??ng ty XYZ",
+        "company": "Công ty XYZ",
         "owner_id": 2,   # Owned by Manager (User 2, Team A)
         "team_id": 1,     # Team A
     },
     {
         "id": 3,
-        "name": "L?? V??n C",
+        "name": "Lê Văn C",
         "email": "levanc@example.com",
         "phone": "0923456789",
-        "company": "C??ng ty DEF",
+        "company": "Công ty DEF",
         "owner_id": 3,   # Owned by User 1 (User 3, Team A)
         "team_id": 1,     # Team A
     },
     {
         "id": 4,
-        "name": "Ph???m Th??? D",
+        "name": "Phạm Thị D",
         "email": "phamthid@example.com",
         "phone": "0934567890",
-        "company": "C??ng ty GHI",
+        "company": "Công ty GHI",
         "owner_id": 4,   # Owned by User 2 (User 4, Team B)
         "team_id": 2,     # Team B
     },
     {
         "id": 5,
-        "name": "Ho??ng V??n E",
+        "name": "Hoàng Văn E",
         "email": "hoangvane@example.com",
         "phone": "0945678901",
-        "company": "C??ng ty JKL",
+        "company": "Công ty JKL",
         "owner_id": 4,   # Owned by User 2 (User 4, Team B)
         "team_id": 2,     # Team B
     },
@@ -77,27 +77,38 @@ def get_raw_customer_by_id(customer_id: int) -> Optional[dict]:
 def get_customers_by_scope(
     current_user: dict,
     scope: DataScope,
+    search: Optional[str] = None,
 ) -> list[dict]:
     """
-    Return customers filtered by the user's data scope.
+    Return customers filtered by the user's data scope and optional search term.
 
     - MY: only customers where owner_id == current user's id
-    - TEAM: only customers where team_id == current user's team_id
+    - TEAM / MY_TEAM: only customers where team_id == current user's team_id
     - ALL: all customers (no filter)
     """
     if scope == DataScope.ALL:
-        return list(FAKE_CUSTOMERS)
-
-    if scope == DataScope.TEAM:
+        results = list(FAKE_CUSTOMERS)
+    elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
         user_team_id = current_user.get("team_id")
         if user_team_id is None:
-            # User has no team (e.g. ADMIN) ??? return all
-            return list(FAKE_CUSTOMERS)
-        return [c for c in FAKE_CUSTOMERS if c.get("team_id") == user_team_id]
+            results = list(FAKE_CUSTOMERS)
+        else:
+            results = [c for c in FAKE_CUSTOMERS if c.get("team_id") == user_team_id]
+    else:
+        user_id = current_user["id"]
+        results = [c for c in FAKE_CUSTOMERS if c.get("owner_id") == user_id]
 
-    # scope == DataScope.MY
-    user_id = current_user["id"]
-    return [c for c in FAKE_CUSTOMERS if c.get("owner_id") == user_id]
+    if search:
+        s = search.lower().strip()
+        results = [
+            c for c in results
+            if s in c.get("name", "").lower()
+            or s in c.get("email", "").lower()
+            or s in c.get("company", "").lower()
+            or s in c.get("phone", "").lower()
+        ]
+
+    return results
 
 
 def get_customer_by_id_and_scope(

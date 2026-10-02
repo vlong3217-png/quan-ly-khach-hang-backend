@@ -43,19 +43,22 @@ router = APIRouter(
 def list_customers(
     scope: Optional[str] = Query(
         None,
-        description="Data scope filter: MY, TEAM, or ALL. Defaults based on role.",
+        description="Data scope filter: MY, MY_TEAM, TEAM, or ALL. Defaults based on role.",
     ),
+    search: Optional[str] = Query(None, description="Search query"),
+    q: Optional[str] = Query(None, description="Search query alias"),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    List customers based on the user's role and requested scope.
+    List customers based on the user's role and requested scope, with optional search.
 
-    - ADMIN: defaults to ALL, can request MY/TEAM/ALL
-    - MANAGER: defaults to TEAM, can request MY/TEAM (ALL -> 403)
-    - USER: defaults to MY, can only use MY (TEAM/ALL -> 403)
+    - ADMIN: defaults to ALL, can request MY/MY_TEAM/TEAM/ALL
+    - MANAGER: defaults to TEAM, can request MY/MY_TEAM/TEAM (ALL -> 403)
+    - USER: defaults to MY, can only use MY (MY_TEAM/TEAM/ALL -> 403)
     """
     effective_scope = resolve_scope(current_user, scope)
-    customers = get_customers_by_scope(current_user, effective_scope)
+    search_query = search or q
+    customers = get_customers_by_scope(current_user, effective_scope, search=search_query)
     return {
         "scope": effective_scope.value,
         "total": len(customers),

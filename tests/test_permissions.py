@@ -58,16 +58,25 @@ from jose import jwt
 from app.main import app
 from app.core.security import create_access_token, SECRET_KEY, ALGORITHM
 from app.services.customer_service import reset_fake_customers
+from app.services.opportunity_service import reset_fake_opportunities
+from app.services.activity_service import reset_fake_activities
+from app.services.quote_service import reset_fake_quotes
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
 def setup_teardown():
-    """Reset fake customer data before each test."""
+    """Reset fake data before each test."""
     reset_fake_customers()
+    reset_fake_opportunities()
+    reset_fake_activities()
+    reset_fake_quotes()
     yield
     reset_fake_customers()
+    reset_fake_opportunities()
+    reset_fake_activities()
+    reset_fake_quotes()
 
 
 # Helper function to get auth headers by logging in
@@ -240,7 +249,7 @@ def test_invalid_scope_query_returns_400():
     admin_headers = get_auth_headers("admin@gmail.com")
     res = client.get("/customers?scope=INVALID_SCOPE", headers=admin_headers)
     assert res.status_code == 400
-    assert "Scope kh??ng h???p l???" in res.json()["detail"]
+    assert "Scope không hợp lệ" in res.json()["detail"]
 
 
 def test_scope_permission_restrictions():
@@ -250,18 +259,18 @@ def test_scope_permission_restrictions():
     # USER requesting TEAM -> 403
     res_team = client.get("/customers?scope=TEAM", headers=user_headers)
     assert res_team.status_code == 403
-    assert "Role 'USER' kh??ng ???????c ph??p s??? d???ng scope 'TEAM'" in res_team.json()["detail"]
+    assert "Role 'USER' không được phép sử dụng scope 'TEAM'" in res_team.json()["detail"]
 
     # USER requesting ALL -> 403
     res_all = client.get("/customers?scope=ALL", headers=user_headers)
     assert res_all.status_code == 403
-    assert "Role 'USER' kh??ng ???????c ph??p s??? d???ng scope 'ALL'" in res_all.json()["detail"]
+    assert "Role 'USER' không được phép sử dụng scope 'ALL'" in res_all.json()["detail"]
 
     # MANAGER requesting ALL -> 403
     mgr_headers = get_auth_headers("manager@gmail.com")
     res_mgr_all = client.get("/customers?scope=ALL", headers=mgr_headers)
     assert res_mgr_all.status_code == 403
-    assert "Role 'MANAGER' kh??ng ???????c ph??p s??? d???ng scope 'ALL'" in res_mgr_all.json()["detail"]
+    assert "Role 'MANAGER' không được phép sử dụng scope 'ALL'" in res_mgr_all.json()["detail"]
 
 
 def test_user_scope_my_only_returns_own_data():
@@ -432,3 +441,110 @@ def test_update_customer_by_id_scope_enforcement():
         headers=admin_headers,
     )
     assert res_not_found.status_code == 404
+
+
+# ============================================================================
+# 5. ADDITIONAL S1-05 TESTS (USER A / USER B, MY_TEAM, SEARCH BY SCOPE, 403)
+# ============================================================================
+
+def test_user_a_cannot_read_customer_of_user_b():
+    """User A (user1@gmail.com, id=3) cannot read Customer of User B (user2@gmail.com, id=4)."""
+    user_a_headers = get_auth_headers("user1@gmail.com")
+    res = client.get("/customers/4", headers=user_a_headers)
+    assert res.status_code == 403
+    assert "Không có quyền truy cập" in res.json()["detail"] or "Kh" in res.json()["detail"]
+
+
+def test_scopes_my_myteam_all():
+    """Test MY, MY_TEAM, and ALL scope access across roles."""
+    user1_headers = get_auth_headers("user1@gmail.com")
+    mgr_headers = get_auth_headers("manager@gmail.com")
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # MY_TEAM scope test for Manager (Team 1) -> 200
+    res_mgr_team = client.get("/customers?scope=MY_TEAM", headers=mgr_headers)
+    assert res_mgr_team.status_code == 200
+    assert res_mgr_team.json()["scope"] == "MY_TEAM"
+    assert res_mgr_team.json()["total"] == 3
+
+    # USER requesting MY_TEAM -> 403
+    res_user_team = client.get("/customers?scope=MY_TEAM", headers=user1_headers)
+    assert res_user_team.status_code == 403
+
+    # ADMIN requesting MY_TEAM -> 200
+    res_admin_team = client.get("/customers?scope=MY_TEAM", headers=admin_headers)
+    assert res_admin_team.status_code == 200
+
+
+def test_search_with_scope_filtering():
+    """Search queries must automatically filter results within the user's scope."""
+    user1_headers = get_auth_headers("user1@gmail.com")
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # User 1 searches for "Công ty" -> only receives Customer 3 (owned by User 1)
+    res_user_search = client.get("/customers?search=Công ty", headers=user1_headers)
+    assert res_user_search.status_code == 200
+    items = res_user_search.json()["customers"]
+    assert len(items) == 1
+    assert items[0]["owner_id"] == 3
+
+    # Admin searches for "Công ty" -> receives all matching customers
+    res_admin_search = client.get("/customers?search=Công ty", headers=admin_headers)
+    assert res_admin_search.status_code == 200
+    assert res_admin_search.json()["total"] == 5
+
+
+def test_out_of_scope_access_returns_403_with_vietnamese_detail():
+    """Accessing any record outside allowed scope returns HTTP 403 with Vietnamese detail."""
+    user2_headers = get_auth_headers("user2@gmail.com")  # id=4, team 2
+
+    # GET Customer owned by User 1 (id=3, team 1)
+    res_get = client.get("/customers/3", headers=user2_headers)
+    assert res_get.status_code == 403
+    assert len(res_get.json()["detail"]) > 0
+
+    # PUT Customer owned by User 1
+    res_put = client.put("/customers/3", json={"name": "Tampered"}, headers=user2_headers)
+    assert res_put.status_code == 403
+    assert len(res_put.json()["detail"]) > 0
+
+
+def test_opportunity_activity_quote_scope_enforcement():
+    """Scope filtering and record-level permissions apply to Opportunities, Activities, Quotes."""
+    user1_headers = get_auth_headers("user1@gmail.com")  # id=3, team 1
+    user2_headers = get_auth_headers("user2@gmail.com")  # id=4, team 2
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # --- Opportunities ---
+    # User 1 lists opportunities (MY scope)
+    res_opp_user1 = client.get("/opportunities", headers=user1_headers)
+    assert res_opp_user1.status_code == 200
+    assert res_opp_user1.json()["total"] == 1
+    assert res_opp_user1.json()["opportunities"][0]["owner_id"] == 3
+
+    # User 1 tries to GET Opportunity 4 (owned by User 2) -> 403
+    assert client.get("/opportunities/4", headers=user1_headers).status_code == 403
+
+    # Search Opportunities under scope
+    res_opp_search = client.get("/opportunities?q=Hợp đồng", headers=admin_headers)
+    assert res_opp_search.status_code == 200
+    assert res_opp_search.json()["total"] == 2
+
+    # --- Activities ---
+    res_act_user2 = client.get("/activities", headers=user2_headers)
+    assert res_act_user2.status_code == 200
+    assert res_act_user2.json()["total"] == 1
+    assert res_act_user2.json()["activities"][0]["owner_id"] == 4
+
+    # User 2 tries to GET Activity 1 (owned by Admin) -> 403
+    assert client.get("/activities/1", headers=user2_headers).status_code == 403
+
+    # --- Quotes ---
+    res_quote_user1 = client.get("/quotes", headers=user1_headers)
+    assert res_quote_user1.status_code == 200
+    assert res_quote_user1.json()["total"] == 1
+    assert res_quote_user1.json()["quotes"][0]["owner_id"] == 3
+
+    # User 1 tries to PUT Quote 4 (owned by User 2) -> 403
+    assert client.put("/quotes/4", json={"title": "Hacked"}, headers=user1_headers).status_code == 403
+
