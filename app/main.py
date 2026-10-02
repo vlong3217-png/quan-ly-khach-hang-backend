@@ -29,7 +29,7 @@ app.add_middleware(
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    if "/auth" in request.url.path:
+    if request.url.path == "/auth/login":
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": "Tài khoản hoặc mật khẩu không chính xác"},
@@ -58,6 +58,7 @@ def portal():
 app.include_router(auth_router)
 app.include_router(customers_router)
 app.include_router(users_router)
+app.include_router(users_router, prefix="/admin")
 app.include_router(opportunities_router)
 app.include_router(activities_router)
 app.include_router(quotes_router)
