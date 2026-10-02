@@ -1,4 +1,4 @@
-???from typing import Optional
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -17,8 +17,6 @@ class UserResponse(BaseModel):
     email: str
     full_name: str
     role: str
-    team_id: Optional[int] = None
-    team_name: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -26,7 +24,3 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
-
-
-class ResetLockoutRequest(BaseModel):
-    identifier: Optional[str] = None
