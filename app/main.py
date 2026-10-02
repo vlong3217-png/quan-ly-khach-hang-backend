@@ -1,8 +1,12 @@
-???from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from app.portal import get_portal_html
 from app.routers.auth import router as auth_router
+from app.routers.customers import router as customers_router
+from app.routers.users import router as users_router
 
 app = FastAPI(
     title="Customer Management API",
@@ -34,10 +38,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 @app.get("/")
-def root():
+def root(request: Request):
+    accept_header = request.headers.get("accept", "")
+    if "text/html" in accept_header:
+        return HTMLResponse(content=get_portal_html())
     return {
         "message": "Customer Management API is running"
     }
 
 
+@app.get("/portal", response_class=HTMLResponse)
+def portal():
+    return HTMLResponse(content=get_portal_html())
+
+
 app.include_router(auth_router)
+app.include_router(customers_router)
+app.include_router(users_router)
