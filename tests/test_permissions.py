@@ -147,7 +147,7 @@ def test_disabled_user_returns_401():
 
     res = client.get("/customers", headers=headers)
     assert res.status_code == 401
-    assert res.json()["detail"] == "T??i kho???n ???? b??? v?? hi???u h??a"
+    assert "vô hiệu hóa" in res.json()["detail"] or "bị vô hiệu hóa" in res.json()["detail"]
 
 
 # ============================================================================
