@@ -147,6 +147,126 @@ def update_my_profile(
     }
 
 
+# ============================================================================
+# S2-03: TẢI LÊN ẢNH ĐẠI DIỆN (AVATAR)
+# ============================================================================
+
+@router.post(
+    "/me/avatar",
+    response_model=UserProfileResponse,
+    summary="Tải lên ảnh đại diện cá nhân (JPG/PNG tối đa 2MB, cắt vuông và tạo thumbnail)",
+)
+async def upload_my_avatar_endpoint(
+    file: UploadFile = File(..., description="Tệp ảnh JPG/JPEG hoặc PNG (tối đa 2MB)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S2-03:
+    - Chấp nhận JPG/JPEG/PNG tối đa 2MB.
+    - Ảnh được cắt vuông (square crop) ở tâm và tạo bản thu nhỏ (thumbnail).
+    - Cập nhật avatar_url trong hồ sơ người dùng.
+    """
+    import io
+    import os
+    import uuid
+    from PIL import Image
+
+    # 1. Kiểm tra phần mở rộng và MIME type
+    allowed_extensions = {".jpg", ".jpeg", ".png"}
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chỉ chấp nhận tệp hình ảnh định dạng JPG, JPEG hoặc PNG",
+        )
+
+    # 2. Đọc nội dung và kiểm tra kích thước tối đa 2MB (2 * 1024 * 1024 bytes)
+    MAX_FILE_SIZE = 2 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dung lượng tệp vượt quá giới hạn tối đa cho phép là 2MB",
+        )
+
+    # 3. Mở và xác thực nội dung ảnh bằng Pillow
+    try:
+        img = Image.open(io.BytesIO(content))
+        img.verify()  # Kiểm tra tính toàn vẹn của tệp ảnh
+        # Mở lại để xử lý sau khi verify
+        img = Image.open(io.BytesIO(content))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tệp tải lên bị lỗi hoặc không phải là hình ảnh hợp lệ",
+        )
+
+    # 4. Cắt vuông (center square crop)
+    width, height = img.size
+    min_dim = min(width, height)
+    left = (width - min_dim) / 2
+    top = (height - min_dim) / 2
+    right = (width + min_dim) / 2
+    bottom = (height + min_dim) / 2
+    cropped_img = img.crop((left, top, right, bottom))
+
+    # 5. Tạo thumbnail vuông 256x256
+    thumbnail_size = (256, 256)
+    cropped_img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
+
+    # 6. Lưu file vào uploads/avatars/
+    avatar_dir = os.path.join(os.getcwd(), "uploads", "avatars")
+    os.makedirs(avatar_dir, exist_ok=True)
+
+    unique_filename = f"user_{current_user['id']}_{uuid.uuid4().hex[:8]}.png"
+    save_path = os.path.join(avatar_dir, unique_filename)
+
+    # Chuyển đổi sang RGB nếu đang là RGBA và lưu PNG
+    cropped_img.save(save_path, format="PNG")
+
+    # 7. Cập nhật avatar_url
+    avatar_url = f"/uploads/avatars/{unique_filename}"
+    current_user["avatar_url"] = avatar_url
+
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "username": current_user.get("username"),
+        "full_name": current_user["full_name"],
+        "role": current_user["role"],
+        "team_id": current_user.get("team_id"),
+        "phone": current_user.get("phone"),
+        "email_signature": current_user.get("email_signature"),
+        "avatar_url": current_user.get("avatar_url"),
+        "is_active": current_user.get("is_active", True),
+    }
+
+
+@router.delete(
+    "/me/avatar",
+    response_model=UserProfileResponse,
+    summary="Xóa ảnh đại diện cá nhân",
+)
+def delete_my_avatar_endpoint(current_user: dict = Depends(get_current_user)):
+    """Xóa ảnh đại diện hiện tại và đặt về None."""
+    current_user["avatar_url"] = None
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "username": current_user.get("username"),
+        "full_name": current_user["full_name"],
+        "role": current_user["role"],
+        "team_id": current_user.get("team_id"),
+        "phone": current_user.get("phone"),
+        "email_signature": current_user.get("email_signature"),
+        "avatar_url": None,
+        "is_active": current_user.get("is_active", True),
+    }
+
+
+
 
 @router.get(
     "",
