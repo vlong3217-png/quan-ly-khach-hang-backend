@@ -10,6 +10,7 @@ from app.routers.users import router as users_router
 from app.routers.opportunities import router as opportunities_router
 from app.routers.activities import router as activities_router
 from app.routers.quotes import router as quotes_router
+from app.routers.menu import router as menu_router
 
 app = FastAPI(
     title="Customer Management API",
@@ -62,3 +63,5 @@ app.include_router(users_router, prefix="/admin")
 app.include_router(opportunities_router)
 app.include_router(activities_router)
 app.include_router(quotes_router)
+app.include_router(menu_router)
+app.include_router(menu_router, prefix="/auth")
