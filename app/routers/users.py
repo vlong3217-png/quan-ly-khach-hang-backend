@@ -58,7 +58,7 @@ def list_users_endpoint(
     role: Optional[str] = Query(None, description="Lọc theo vai trò (ADMIN, MANAGER, USER)"),
     is_active: Optional[bool] = Query(None, description="Lọc theo trạng thái hoạt động (true/false)"),
     skip: int = Query(0, ge=0, description="Vị trí bắt đầu"),
-    limit: int = Query(50, ge=1, le=100, description="Số lượng tối đa trả về"),
+    limit: int = Query(20, ge=1, le=100, description="Số lượng tối đa trả về (mặc định 20)"),
     admin_user: dict = Depends(require_admin),
 ):
     return get_all_users(

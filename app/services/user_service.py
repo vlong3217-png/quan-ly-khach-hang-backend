@@ -14,7 +14,7 @@ def get_all_users(
     role: Optional[str] = None,
     is_active: Optional[bool] = None,
     skip: int = 0,
-    limit: int = 50,
+    limit: int = 20,
 ) -> List[dict]:
     results = fake_users_db
 
