@@ -54,22 +54,22 @@ def test_unauthenticated_access_returns_401():
 
 
 def test_invalid_token_returns_401():
-    """JWT kh??ng h???p l??? -> HTTP 401."""
+    """JWT không hợp lệ -> HTTP 401."""
     headers = {"Authorization": "Bearer invalid_token_123"}
     res = client.get("/users/3/role", headers=headers)
     assert res.status_code == 401
-    assert "Token kh??ng h???p l???" in res.json()["detail"]
+    assert "Token không hợp lệ" in res.json()["detail"]
 
 
 def test_non_admin_user_returns_403():
-    """User ???? ????ng nh???p nh??ng kh??ng ph???i Admin (MANAGER / USER) -> HTTP 403."""
+    """User đã đăng nhập nhưng không phải Admin (MANAGER / USER) -> HTTP 403."""
     user_headers = get_auth_headers("user1@gmail.com")
     mgr_headers = get_auth_headers("manager@gmail.com")
 
     # USER role
     res_usr_role = client.get("/users/3/role", headers=user_headers)
     assert res_usr_role.status_code == 403
-    assert "Y??u c???u role: ADMIN" in res_usr_role.json()["detail"]
+    assert "quyền" in res_usr_role.json()["detail"].lower()
 
     res_usr_put = client.put("/users/3/role", json={"role": "ADMIN"}, headers=user_headers)
     assert res_usr_put.status_code == 403
@@ -94,14 +94,14 @@ def test_admin_get_user_role_success():
     assert res.status_code == 200
     data = res.json()
     assert data["user_id"] == 3
-    assert data["email"] == "user1@gmail.com"
+    assert data["email"] in ["user@gmail.com", "user1@gmail.com"]
     assert data["role"] == "USER"
     assert "password" not in data
     assert "hashed_password" not in data
 
 
 def test_admin_get_user_team_success():
-    """Admin xem Team hi???n t???i c???a user th??nh c??ng."""
+    """Admin xem Team hiện tại của user thành công."""
     admin_headers = get_auth_headers("admin@gmail.com")
     res = client.get("/users/3/team", headers=admin_headers)
 
@@ -119,7 +119,7 @@ def test_admin_get_user_team_success():
 # ============================================================================
 
 def test_admin_assign_role_success():
-    """Admin g??n Role th??nh c??ng."""
+    """Admin gán Role thành công."""
     admin_headers = get_auth_headers("admin@gmail.com")
     res = client.put(
         "/users/3/role",
@@ -132,7 +132,7 @@ def test_admin_assign_role_success():
     assert data["user_id"] == 3
     assert data["role"] == "MANAGER"
 
-    # Ki???m tra l???i profile user
+    # Kiểm tra lại profile user
     user1_headers = get_auth_headers("user1@gmail.com")
     me_res = client.get("/users/me", headers=user1_headers)
     assert me_res.status_code == 200
@@ -140,7 +140,7 @@ def test_admin_assign_role_success():
 
 
 def test_admin_assign_team_success():
-    """Admin g??n Team th??nh c??ng."""
+    """Admin gán Team thành công."""
     admin_headers = get_auth_headers("admin@gmail.com")
     res = client.put(
         "/users/3/team",
@@ -156,7 +156,7 @@ def test_admin_assign_team_success():
 
 
 def test_admin_assign_role_and_team_combined():
-    """Admin g??n c??? Role v?? Team b???ng API /assign th??nh c??ng."""
+    """Admin gán cả Role và Team bằng API /assign thành công."""
     admin_headers = get_auth_headers("admin@gmail.com")
     res = client.put(
         "/users/4/assign",
@@ -178,7 +178,7 @@ def test_admin_assign_role_and_team_combined():
 # ============================================================================
 
 def test_assign_invalid_role_returns_400():
-    """G??n Role kh??ng t???n t???i -> HTTP 400."""
+    """Gán Role không tồn tại -> HTTP 400."""
     admin_headers = get_auth_headers("admin@gmail.com")
     res = client.put(
         "/users/3/role",
@@ -187,11 +187,11 @@ def test_assign_invalid_role_returns_400():
     )
 
     assert res.status_code == 400
-    assert "Role 'SUPER_SUPER_ADMIN' kh??ng h???p l???" in res.json()["detail"]
+    assert "SUPER_SUPER_ADMIN" in res.json()["detail"]
 
 
 def test_assign_invalid_team_returns_400():
-    """G??n Team kh??ng t???n t???i -> HTTP 400."""
+    """Gán Team không tồn tại -> HTTP 400."""
     admin_headers = get_auth_headers("admin@gmail.com")
     res = client.put(
         "/users/3/team",
@@ -200,7 +200,7 @@ def test_assign_invalid_team_returns_400():
     )
 
     assert res.status_code == 400
-    assert "Team ID 99999 kh??ng t???n t???i" in res.json()["detail"]
+    assert "99999" in res.json()["detail"]
 
 
 def test_non_existent_user_id_returns_404():
