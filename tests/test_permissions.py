@@ -213,7 +213,7 @@ def test_create_customer_role_restriction():
         headers=user_headers,
     )
     assert res_usr.status_code == 403
-    assert "Y??u c???u role: ADMIN, MANAGER" in res_usr.json()["detail"]
+    assert "Yêu cầu role: ADMIN, MANAGER" in res_usr.json()["detail"]
 
     mgr_headers = get_auth_headers("manager@gmail.com")
     res_mgr = client.post(
