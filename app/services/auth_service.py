@@ -85,13 +85,26 @@ LOCKOUT_MINUTES = 15
 MAX_FAILED_ATTEMPTS = 5
 
 
+REVOKED_TOKENS = set()
+
+
+def revoke_token(token: str) -> None:
+    if token:
+        REVOKED_TOKENS.add(token.strip())
+
+
+def is_token_revoked(token: str) -> bool:
+    return bool(token and token.strip() in REVOKED_TOKENS)
+
+
 def reset_fake_users_db():
-    global fake_users_db, fake_user, FAKE_USERS, LOGIN_ATTEMPTS
+    global fake_users_db, fake_user, FAKE_USERS, LOGIN_ATTEMPTS, REVOKED_TOKENS
     fake_users_db.clear()
     fake_users_db.extend(get_initial_users())
     fake_user = fake_users_db[0]
     FAKE_USERS = fake_users_db
     LOGIN_ATTEMPTS.clear()
+    REVOKED_TOKENS.clear()
 
 
 security_bearer = HTTPBearer(auto_error=False)
@@ -177,6 +190,13 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Chưa đăng nhập hoặc thiếu token xác thực",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if is_token_revoked(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Phiên đăng nhập đã kết thúc (đã đăng xuất). Vui lòng đăng nhập lại.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
