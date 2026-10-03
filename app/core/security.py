@@ -36,13 +36,17 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
+import uuid
+
+
 def create_access_token(data: dict) -> str:
     payload = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
     payload.update({
-        "exp": expire
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
     })
     return jwt.encode(
         payload,

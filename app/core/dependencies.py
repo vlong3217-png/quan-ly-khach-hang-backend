@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 from app.core.security import SECRET_KEY, ALGORITHM
-from app.services.auth_service import get_user_by_id, get_user_by_identifier
+from app.services.auth_service import get_user_by_id, get_user_by_identifier, is_token_revoked
 
 # HTTP Bearer token scheme ??? returns 401 automatically if no token
 security_scheme = HTTPBearer()
@@ -56,6 +56,11 @@ def get_current_user(
     Raises 401 if token is invalid/expired or user not found.
     """
     token = credentials.credentials
+    if is_token_revoked(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Phiên đăng nhập đã kết thúc (đã đăng xuất). Vui lòng đăng nhập lại.",
+        )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("id")

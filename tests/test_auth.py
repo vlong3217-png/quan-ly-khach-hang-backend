@@ -268,3 +268,55 @@ def test_login_lockout_after_five_failed_attempts():
     assert res_correct.status_code == 401
     assert "khóa 15 phút" in res_correct.json()["detail"]
 
+
+def test_logout_revokes_session_immediately():
+    """AC S1-02: Đăng xuất làm mất hiệu lực phiên ngay lập tức phía server."""
+    # 1. Login to get token
+    login_res = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    assert login_res.status_code == 200
+    token = login_res.json()["access_token"]
+
+    # 2. Access protected endpoint succeeds
+    me_res = client.get("/users/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_res.status_code == 200
+
+    # 3. Logout
+    logout_res = client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
+    assert logout_res.status_code == 200
+    assert logout_res.json()["success"] is True
+
+    # 4. Token cannot be used anymore
+    me_after = client.get("/users/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_after.status_code == 401
+    assert "hủy hiệu lực" in me_after.json()["detail"] or "kết thúc" in me_after.json()["detail"]
+
+
+def test_session_refresh_sliding_expiration():
+    """AC S1-02: Phiên được gia hạn tự động khi còn hoạt động."""
+    # 1. Login
+    login_res = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    assert login_res.status_code == 200
+    old_token = login_res.json()["access_token"]
+
+    # 2. Refresh session
+    ref_res = client.post("/auth/refresh", headers={"Authorization": f"Bearer {old_token}"})
+    assert ref_res.status_code == 200
+    new_token = ref_res.json()["access_token"]
+    assert new_token != old_token
+
+    # 3. Old token is revoked
+    old_use = client.get("/users/me", headers={"Authorization": f"Bearer {old_token}"})
+    assert old_use.status_code == 401
+
+    # 4. New token works
+    new_use = client.get("/users/me", headers={"Authorization": f"Bearer {new_token}"})
+    assert new_use.status_code == 200
+    assert new_use.json()["email"] == "admin@gmail.com"
+
+
