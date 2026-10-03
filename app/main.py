@@ -73,3 +73,8 @@ app.include_router(activities_router)
 app.include_router(quotes_router)
 app.include_router(menu_router)
 app.include_router(menu_router, prefix="/auth")
+
+from app.routers.audit_logs import router as audit_logs_router
+app.include_router(audit_logs_router)
+
+
