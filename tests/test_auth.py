@@ -239,3 +239,32 @@ def test_change_password_success_flow():
     )
     assert old_login.status_code == 401
     assert old_login.json()["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
+
+
+def test_login_lockout_after_five_failed_attempts():
+    """AC S1-01: Tạm thời khóa 15 phút sau 5 lần sai liên tiếp."""
+    # First 4 failed attempts
+    for _ in range(4):
+        res = client.post(
+            "/auth/login",
+            json={"email": "admin@gmail.com", "password": "wrongpassword"}
+        )
+        assert res.status_code == 401
+        assert res.json()["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
+
+    # 5th failed attempt triggers lock
+    res5 = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "wrongpassword"}
+    )
+    assert res5.status_code == 401
+    assert "khóa 15 phút" in res5.json()["detail"]
+
+    # Even with correct password, cannot log in during lockout
+    res_correct = client.post(
+        "/auth/login",
+        json={"email": "admin@gmail.com", "password": "123456"}
+    )
+    assert res_correct.status_code == 401
+    assert "khóa 15 phút" in res_correct.json()["detail"]
+
