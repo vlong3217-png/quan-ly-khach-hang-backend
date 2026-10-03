@@ -453,7 +453,22 @@ def assign_user_role_endpoint(
             detail="Người giữ vai trò Trưởng nhóm (MANAGER) phải được gán một nhóm kinh doanh cụ thể",
         )
 
+    old_role = user.get("role")
     updated_user = update_user_role(user_id, payload.role)
+
+    # AC S2-04: Ghi log thay đổi vai trò người dùng
+    from app.services.audit_log_service import log_change
+    log_change(
+        user_id=admin_user["id"],
+        user_name=admin_user.get("full_name", "Admin"),
+        entity_type="ROLE",
+        entity_id=str(user_id),
+        action="UPDATE_ROLE",
+        field_name="role",
+        old_value=old_role,
+        new_value=updated_user["role"],
+    )
+
     return RoleInfo(
         user_id=updated_user["id"],
         email=updated_user["email"],
