@@ -63,3 +63,42 @@ class UserStatusResponse(BaseModel):
     status: str
     message: str
     handover: Optional[DataHandoverResponse] = None
+
+
+class UserRoleUpdate(BaseModel):
+    role: str = Field(..., description="Vai trò mới: ADMIN, MANAGER, USER")
+
+
+class UserTeamUpdate(BaseModel):
+    team_id: Optional[int] = Field(..., description="ID nhóm kinh doanh")
+
+
+class UserAssignmentUpdate(BaseModel):
+    role: Optional[str] = Field(default=None, description="Vai trò mới")
+    team_id: Optional[int] = Field(default=None, description="ID nhóm mới")
+
+
+class RoleInfo(BaseModel):
+    user_id: int
+    email: str
+    full_name: str
+    role: str
+
+
+class TeamInfo(BaseModel):
+    user_id: int
+    email: str
+    full_name: str
+    team_id: Optional[int]
+    team_name: Optional[str]
+
+
+class UserDetailResponse(BaseModel):
+    id: int
+    email: str
+    username: Optional[str] = None
+    full_name: str
+    role: str
+    team_id: Optional[int] = None
+    is_active: bool
+

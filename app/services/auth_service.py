@@ -16,6 +16,32 @@ from app.core.security import (
 )
 
 
+VALID_ROLES = ["ADMIN", "MANAGER", "USER"]
+VALID_TEAMS = [
+    {"id": 1, "name": "Team A"},
+    {"id": 2, "name": "Team B"},
+]
+
+
+def validate_role(role: str) -> bool:
+    return bool(role and role.upper() in VALID_ROLES)
+
+
+def validate_team(team_id: Optional[int]) -> bool:
+    if team_id is None:
+        return True
+    return any(t["id"] == team_id for t in VALID_TEAMS)
+
+
+def get_team_by_id(team_id: Optional[int]) -> Optional[dict]:
+    if team_id is None:
+        return None
+    for team in VALID_TEAMS:
+        if team["id"] == team_id:
+            return team
+    return None
+
+
 def get_initial_users():
     return [
         {
@@ -111,6 +137,34 @@ def reset_fake_users_db():
     LOGIN_ATTEMPTS.clear()
     REVOKED_TOKENS.clear()
     RESET_TOKENS.clear()
+
+
+reset_fake_users = reset_fake_users_db
+
+
+def update_user_role(user_id: int, new_role: str) -> Optional[dict]:
+    user = get_user_by_id(user_id)
+    if user:
+        user["role"] = new_role.upper()
+    return user
+
+
+def update_user_team(user_id: int, new_team_id: Optional[int]) -> Optional[dict]:
+    user = get_user_by_id(user_id)
+    if user:
+        user["team_id"] = new_team_id
+    return user
+
+
+def update_user_assignment(user_id: int, new_role: Optional[str] = None, new_team_id: Optional[int] = None) -> Optional[dict]:
+    user = get_user_by_id(user_id)
+    if not user:
+        return None
+    if new_role is not None:
+        user["role"] = new_role.upper()
+    if new_team_id is not None or "team_id" in user:
+        user["team_id"] = new_team_id
+    return user
 
 
 security_bearer = HTTPBearer(auto_error=False)
