@@ -320,3 +320,43 @@ def test_session_refresh_sliding_expiration():
     assert new_use.json()["email"] == "admin@gmail.com"
 
 
+def test_forgot_password_generic_message_and_reset_flow():
+    """AC S1-03: Nhập email nhận được token 30p, email ko tồn tại vẫn hiển thị cùng thông báo."""
+    # 1. Non-existent email returns generic message
+    res_non_exist = client.post("/auth/forgot-password", json={"email": "nonexistent@gmail.com"})
+    assert res_non_exist.status_code == 200
+    data_non_exist = res_non_exist.json()
+    assert data_non_exist["success"] is True
+    assert "Nếu email tồn tại" in data_non_exist["message"]
+    assert data_non_exist["reset_token"] is None
+
+    # 2. Existing email returns token and same message
+    res_exist = client.post("/auth/forgot-password", json={"email": "admin@gmail.com"})
+    assert res_exist.status_code == 200
+    data_exist = res_exist.json()
+    assert data_exist["success"] is True
+    assert "Nếu email tồn tại" in data_exist["message"]
+    token = data_exist["reset_token"]
+    assert token is not None
+
+    # 3. Reset password fails if criteria not met (min 8 chars, letter + digit)
+    res_fail = client.post("/auth/reset-password", json={"token": token, "new_password": "short"})
+    assert res_fail.status_code == 400
+    assert "tối thiểu 8 ký tự" in res_fail.json()["detail"]
+
+    # 4. Reset password success
+    res_success = client.post("/auth/reset-password", json={"token": token, "new_password": "NewSecretPass123"})
+    assert res_success.status_code == 200
+    assert res_success.json()["success"] is True
+
+    # 5. Token cannot be reused (one-time use)
+    res_reuse = client.post("/auth/reset-password", json={"token": token, "new_password": "NewSecretPass123"})
+    assert res_reuse.status_code == 400
+    assert "đã được sử dụng" in res_reuse.json()["detail"]
+
+    # 6. Verify login with new password
+    login_new = client.post("/auth/login", json={"email": "admin@gmail.com", "password": "NewSecretPass123"})
+    assert login_new.status_code == 200
+
+
+

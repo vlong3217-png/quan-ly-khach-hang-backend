@@ -32,3 +32,24 @@ class ChangePasswordRequest(BaseModel):
 class ChangePasswordResponse(BaseModel):
     success: bool
     message: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ForgotPasswordResponse(BaseModel):
+    success: bool
+    message: str
+    reset_token: Optional[str] = None
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+class ResetPasswordResponse(BaseModel):
+    success: bool
+    message: str
+

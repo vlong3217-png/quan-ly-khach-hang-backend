@@ -2,6 +2,7 @@
 Auth service with multi-user support, JWT authentication, and user management capabilities.
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
@@ -97,14 +98,19 @@ def is_token_revoked(token: str) -> bool:
     return bool(token and token.strip() in REVOKED_TOKENS)
 
 
+RESET_TOKENS = {}
+RESET_TOKEN_EXPIRE_MINUTES = 30
+
+
 def reset_fake_users_db():
-    global fake_users_db, fake_user, FAKE_USERS, LOGIN_ATTEMPTS, REVOKED_TOKENS
+    global fake_users_db, fake_user, FAKE_USERS, LOGIN_ATTEMPTS, REVOKED_TOKENS, RESET_TOKENS
     fake_users_db.clear()
     fake_users_db.extend(get_initial_users())
     fake_user = fake_users_db[0]
     FAKE_USERS = fake_users_db
     LOGIN_ATTEMPTS.clear()
     REVOKED_TOKENS.clear()
+    RESET_TOKENS.clear()
 
 
 security_bearer = HTTPBearer(auto_error=False)
@@ -332,3 +338,58 @@ def change_password(
 
     user["hashed_password"] = hash_password(new_password.strip())
     return True, "Đổi mật khẩu thành công"
+
+
+def create_password_reset_token(email: str) -> tuple[str, Optional[dict]]:
+    clean_email = (email or "").strip().lower()
+    user = get_user_by_email(clean_email)
+    reset_token = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
+
+    if user:
+        RESET_TOKENS[reset_token] = {
+            "user_id": user["id"],
+            "email": user["email"],
+            "expires_at": expires_at,
+            "used": False,
+        }
+    return reset_token, user
+
+
+def reset_password_with_token(token: str, new_password: str) -> tuple[bool, str]:
+    if not token or not token.strip():
+        return False, "Mã khôi phục không hợp lệ hoặc đã hết hạn"
+
+    clean_token = token.strip()
+    record = RESET_TOKENS.get(clean_token)
+    if not record:
+        return False, "Mã khôi phục không hợp lệ hoặc đã hết hạn"
+
+    now = datetime.now(timezone.utc)
+    if record["used"]:
+        return False, "Mã khôi phục này đã được sử dụng"
+
+    if now > record["expires_at"]:
+        return False, "Mã khôi phục đã hết thời hạn 30 phút"
+
+    if not new_password or not new_password.strip():
+        return False, "Mật khẩu mới không được để trống"
+
+    if len(new_password.strip()) < 8:
+        return False, "Mật khẩu mới phải có tối thiểu 8 ký tự"
+
+    # Require both letters and digits
+    has_letter = any(c.isalpha() for c in new_password)
+    has_digit = any(c.isdigit() for c in new_password)
+    if not (has_letter and has_digit):
+        return False, "Mật khẩu mới phải bao gồm cả chữ và số"
+
+    user = get_user_by_id(record["user_id"])
+    if not user:
+        return False, "Không tìm thấy thông tin tài khoản người dùng"
+
+    user["hashed_password"] = hash_password(new_password.strip())
+    record["used"] = True
+    return True, "Đặt lại mật khẩu thành công"
+

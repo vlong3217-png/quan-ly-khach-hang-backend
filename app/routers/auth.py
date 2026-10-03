@@ -6,12 +6,18 @@ from app.schemas.auth import (
     LoginResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
 )
 from app.services.auth_service import (
     login_user,
     get_current_user,
     change_password,
     revoke_token,
+    create_password_reset_token,
+    reset_password_with_token,
 )
 
 router = APIRouter(
@@ -118,4 +124,47 @@ def refresh_session(
             "role": current_user["role"],
         },
     }
+
+
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    status_code=status.HTTP_200_OK,
+)
+def forgot_password_endpoint(request: ForgotPasswordRequest):
+    """
+    AC S1-03: Nhập email nhận được liên kết đặt lại có hiệu lực 30 phút.
+    Liên kết chỉ dùng được 1 lần. Email không tồn tại vẫn hiển thị cùng một thông báo.
+    """
+    token, user = create_password_reset_token(request.email)
+    return {
+        "success": True,
+        "message": "Nếu email tồn tại trong hệ thống, bạn sẽ nhận được liên kết đặt lại mật khẩu có hiệu lực trong 30 phút.",
+        "reset_token": token if user else None,
+    }
+
+
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    status_code=status.HTTP_200_OK,
+)
+def reset_password_endpoint(request: ResetPasswordRequest):
+    """
+    AC S1-03: Đặt lại mật khẩu mới thông qua token hợp lệ.
+    """
+    success, message = reset_password_with_token(
+        token=request.token,
+        new_password=request.new_password,
+    )
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        )
+    return {
+        "success": True,
+        "message": message,
+    }
+
 
