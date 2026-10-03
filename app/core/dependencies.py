@@ -104,29 +104,93 @@ def get_current_user(
     return user
 
 
-def require_roles(allowed_roles: List[str]):
+def require_roles(
+    allowed_roles: List[str],
+    detail: Optional[str] = None,
+):
     """
     Factory function that returns a dependency checking if the current user
     has one of the allowed roles.
-
-    Usage:
-        @router.get("/admin-only", dependencies=[Depends(require_roles(["ADMIN"]))])
-        def admin_endpoint(): ...
-
-    Or inject the user:
-        @router.get("/managers")
-        def managers_endpoint(user=Depends(require_roles(["ADMIN", "MANAGER"]))): ...
     """
     def _check_role(current_user: dict = Depends(get_current_user)) -> dict:
         user_role = current_user.get("role", "")
         if user_role not in allowed_roles:
+            msg = detail or f"Bạn không có quyền truy cập chức năng này. Yêu cầu role: {', '.join(allowed_roles)}"
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Kh??ng c?? quy???n truy c???p. Y??u c???u role: {', '.join(allowed_roles)}",
+                detail=msg,
             )
         return current_user
 
     return _check_role
+
+
+def require_permissions(
+    required_permissions: List[str],
+    require_all: bool = False,
+    detail: Optional[str] = None,
+):
+    def _check_permission(current_user: dict = Depends(get_current_user)) -> dict:
+        role = current_user.get("role", "USER")
+        from app.services.menu_service import get_role_permissions
+        user_permissions = current_user.get("permissions") or get_role_permissions(role)
+
+        if require_all:
+            has_perm = all(p in user_permissions for p in required_permissions)
+        else:
+            has_perm = any(p in user_permissions for p in required_permissions)
+
+        if not has_perm:
+            msg = detail or f"Bạn không có quyền truy cập chức năng này. Yêu cầu quyền: {', '.join(required_permissions)}"
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=msg,
+            )
+        return current_user
+
+    return _check_permission
+
+
+class PermissionChecker:
+    def __init__(
+        self,
+        roles: Optional[List[str]] = None,
+        permissions: Optional[List[str]] = None,
+        require_all_permissions: bool = False,
+        detail: Optional[str] = None,
+    ):
+        self.roles = roles
+        self.permissions = permissions
+        self.require_all_permissions = require_all_permissions
+        self.detail = detail
+
+    def __call__(self, current_user: dict = Depends(get_current_user)) -> dict:
+        role = current_user.get("role", "USER")
+
+        if self.roles and role not in self.roles:
+            msg = self.detail or f"Bạn không có quyền truy cập chức năng này. Yêu cầu role: {', '.join(self.roles)}"
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=msg,
+            )
+
+        if self.permissions:
+            from app.services.menu_service import get_role_permissions
+            user_permissions = current_user.get("permissions") or get_role_permissions(role)
+            if self.require_all_permissions:
+                has_perm = all(p in user_permissions for p in self.permissions)
+            else:
+                has_perm = any(p in user_permissions for p in self.permissions)
+
+            if not has_perm:
+                msg = self.detail or f"Bạn không có quyền truy cập chức năng này. Yêu cầu quyền: {', '.join(self.permissions)}"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=msg,
+                )
+
+        return current_user
+
 
 
 def resolve_scope(current_user: dict, requested_scope: Optional[str] = None) -> DataScope:
