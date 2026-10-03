@@ -22,6 +22,8 @@ from app.schemas.user import (
     UserDetailResponse,
     UserImportPreviewResponse,
     UserImportSummaryResponse,
+    UserProfileResponse,
+    UserProfileUpdate,
 )
 from app.services.auth_service import (
     require_admin,
@@ -50,11 +52,14 @@ router = APIRouter(
 )
 
 
-@router.get("/me")
+@router.get(
+    "/me",
+    response_model=UserProfileResponse,
+    summary="Xem hồ sơ cá nhân của người dùng hiện tại",
+)
 def get_my_profile(current_user: dict = Depends(get_current_user)):
     """
-    Get current authenticated user's profile.
-    Any authenticated user can access this endpoint.
+    AC S2-02: Xem hồ sơ cá nhân bao gồm họ tên, số điện thoại, chữ ký email.
     """
     return {
         "id": current_user["id"],
@@ -63,7 +68,84 @@ def get_my_profile(current_user: dict = Depends(get_current_user)):
         "full_name": current_user["full_name"],
         "role": current_user["role"],
         "team_id": current_user.get("team_id"),
+        "phone": current_user.get("phone"),
+        "email_signature": current_user.get("email_signature"),
+        "avatar_url": current_user.get("avatar_url"),
+        "is_active": current_user.get("is_active", True),
     }
+
+
+@router.put(
+    "/me",
+    response_model=UserProfileResponse,
+    summary="Cập nhật hồ sơ cá nhân của người dùng hiện tại",
+)
+def update_my_profile(
+    profile_in: UserProfileUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S2-02:
+    - Sửa được họ tên (full_name), số điện thoại (phone), chữ ký email (email_signature).
+    - Không tự đổi được email, nhóm (team_id) và vai trò (role).
+    - Kiểm tra định dạng số điện thoại Việt Nam (10 chữ số, hợp lệ mạng di động VN hoặc +84).
+    """
+    import re
+
+    # 1. Kiểm tra nếu người dùng cố tình thay đổi email, role, team_id
+    if profile_in.email is not None and profile_in.email.strip().lower() != current_user["email"].lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Người dùng không được phép tự thay đổi địa chỉ email của mình",
+        )
+
+    if profile_in.role is not None and profile_in.role.strip().upper() != current_user["role"].upper():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Người dùng không được phép tự thay đổi vai trò (role) của mình",
+        )
+
+    if profile_in.team_id is not None and profile_in.team_id != current_user.get("team_id"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Người dùng không được phép tự thay đổi nhóm kinh doanh (team) của mình",
+        )
+
+    # 2. Kiểm tra định dạng số điện thoại Việt Nam nếu có nhập
+    if profile_in.phone is not None and profile_in.phone.strip() != "":
+        clean_phone = profile_in.phone.strip()
+        # Định dạng chuẩn VN: 0[3|5|7|8|9]xxxxxxxx (10 chữ số) hoặc +84[3|5|7|8|9]xxxxxxxx
+        vn_phone_pattern = re.compile(r"^(0|\+84)(3[2-9]|5[2689]|7[06-9]|8[1-9]|9[0-9])[0-9]{7}$")
+        if not vn_phone_pattern.match(clean_phone):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Số điện thoại không đúng định dạng Việt Nam hợp lệ (10 chữ số, đầu số 03, 05, 07, 08, 09 hoặc +84)",
+            )
+        current_user["phone"] = clean_phone
+    elif profile_in.phone == "":
+        current_user["phone"] = None
+
+    # 3. Cập nhật họ tên
+    if profile_in.full_name is not None and profile_in.full_name.strip():
+        current_user["full_name"] = profile_in.full_name.strip()
+
+    # 4. Cập nhật chữ ký email
+    if profile_in.email_signature is not None:
+        current_user["email_signature"] = profile_in.email_signature
+
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "username": current_user.get("username"),
+        "full_name": current_user["full_name"],
+        "role": current_user["role"],
+        "team_id": current_user.get("team_id"),
+        "phone": current_user.get("phone"),
+        "email_signature": current_user.get("email_signature"),
+        "avatar_url": current_user.get("avatar_url"),
+        "is_active": current_user.get("is_active", True),
+    }
+
 
 
 @router.get(

@@ -10,8 +10,36 @@ class UserResponse(BaseModel):
     username: Optional[str] = None
     full_name: str
     role: str
+    team_id: Optional[int] = None
+    phone: Optional[str] = None
+    email_signature: Optional[str] = None
+    avatar_url: Optional[str] = None
     is_active: bool
     status: Optional[str] = "ACTIVE"
+
+
+class UserProfileResponse(BaseModel):
+    id: int
+    email: EmailStr
+    username: Optional[str] = None
+    full_name: str
+    role: str
+    team_id: Optional[int] = None
+    phone: Optional[str] = None
+    email_signature: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_active: bool
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255, description="Họ và tên người dùng")
+    phone: Optional[str] = Field(None, description="Số điện thoại Việt Nam (10 số)")
+    email_signature: Optional[str] = Field(None, description="Chữ ký email khi gửi báo giá")
+
+    # Bổ sung các trường cấm người dùng tự sửa để kiểm tra từ chối
+    email: Optional[str] = Field(None, description="Không được phép tự sửa")
+    role: Optional[str] = Field(None, description="Không được phép tự sửa")
+    team_id: Optional[Any] = Field(None, description="Không được phép tự sửa")
 
 
 class UserCreate(BaseModel):
