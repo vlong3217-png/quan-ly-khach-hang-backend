@@ -244,6 +244,14 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    token_version = payload.get("token_version")
+    if token_version is not None and user.get("token_version", 1) != token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Phiên đăng nhập đã bị thu hồi do đổi mật khẩu. Vui lòng đăng nhập lại.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
 
 
@@ -306,6 +314,7 @@ def login_user(
         "sub": user["email"],
         "id": user["id"],
         "role": user["role"],
+        "token_version": user.get("token_version", 1),
     })
 
     return {
@@ -333,10 +342,18 @@ def change_password(
     if not new_password or not new_password.strip():
         return False, "Mật khẩu mới không được để trống"
 
-    if len(new_password.strip()) < 6:
-        return False, "Mật khẩu mới phải có ít nhất 6 ký tự"
+    clean_new_pass = new_password.strip()
+    if len(clean_new_pass) < 8:
+        return False, "Mật khẩu mới phải có tối thiểu 8 ký tự"
 
-    user["hashed_password"] = hash_password(new_password.strip())
+    has_letter = any(c.isalpha() for c in clean_new_pass)
+    has_digit = any(c.isdigit() for c in clean_new_pass)
+    if not (has_letter and has_digit):
+        return False, "Mật khẩu mới phải bao gồm cả chữ và số"
+
+    user["hashed_password"] = hash_password(clean_new_pass)
+    # AC S1-04: Đổi xong thu hồi các phiên đăng nhập khác
+    user["token_version"] = user.get("token_version", 1) + 1
     return True, "Đổi mật khẩu thành công"
 
 

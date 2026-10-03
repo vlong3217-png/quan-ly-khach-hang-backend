@@ -91,7 +91,14 @@ def get_current_user(
     if not user.get("is_active", False):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="T??i kho???n ???? b??? v?? hi???u h??a",
+            detail="Tài khoản đã bị vô hiệu hóa",
+        )
+
+    token_version = payload.get("token_version")
+    if token_version is not None and user.get("token_version", 1) != token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Phiên đăng nhập đã bị thu hồi do đổi mật khẩu. Vui lòng đăng nhập lại.",
         )
 
     return user

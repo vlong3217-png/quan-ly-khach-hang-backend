@@ -240,6 +240,11 @@ def test_change_password_success_flow():
     assert old_login.status_code == 401
     assert old_login.json()["detail"] == "Tài khoản hoặc mật khẩu không chính xác"
 
+    # 5. AC S1-04: Đổi xong thu hồi các phiên đăng nhập khác (token cũ không còn dùng được)
+    old_session_use = client.get("/users/me", headers={"Authorization": f"Bearer {token}"})
+    assert old_session_use.status_code == 401
+    assert "thu hồi" in old_session_use.json()["detail"]
+
 
 def test_login_lockout_after_five_failed_attempts():
     """AC S1-01: Tạm thời khóa 15 phút sau 5 lần sai liên tiếp."""
