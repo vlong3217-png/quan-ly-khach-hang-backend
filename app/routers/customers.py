@@ -47,23 +47,57 @@ def list_customers(
     ),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
+    page: Optional[int] = Query(None, ge=1, description="Số trang (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng khách hàng mỗi trang (mặc định 20)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (offset)"),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    List customers based on the user's role and requested scope, with optional search.
+    List customers based on the user's role and requested scope, with optional search and pagination.
 
     - ADMIN: defaults to ALL, can request MY/MY_TEAM/TEAM/ALL
     - MANAGER: defaults to TEAM, can request MY/MY_TEAM/TEAM (ALL -> 403)
     - USER: defaults to MY, can only use MY (MY_TEAM/TEAM/ALL -> 403)
     """
+    import math
+
     effective_scope = resolve_scope(current_user, scope)
     search_query = search or q
-    customers = get_customers_by_scope(current_user, effective_scope, search=search_query)
+
+    # Xác định phân trang: hỗ trợ cả page + limit lẫn skip + limit
+    effective_limit = limit if limit is not None else 20
+
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        # Nếu client không truyền skip hoặc page, mặc định trả từ đầu (skip = 0)
+        effective_skip = 0
+        effective_page = 1
+
+    total, customers = get_customers_by_scope(
+        current_user,
+        effective_scope,
+        search=search_query,
+        skip=effective_skip,
+        limit=effective_limit,
+    )
+
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
+
     return {
         "scope": effective_scope.value,
-        "total": len(customers),
+        "total": total,
         "customers": customers,
+        "skip": effective_skip,
+        "limit": effective_limit,
+        "page": effective_page,
+        "total_pages": total_pages,
     }
+
 
 
 @router.get("/{customer_id}", response_model=CustomerResponse)
