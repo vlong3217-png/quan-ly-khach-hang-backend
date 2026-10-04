@@ -86,4 +86,7 @@ app.include_router(organizations_router)
 from app.routers.master_data import router as master_data_router
 app.include_router(master_data_router)
 
+from app.routers.custom_fields import router as custom_fields_router
+app.include_router(custom_fields_router)
+
 
