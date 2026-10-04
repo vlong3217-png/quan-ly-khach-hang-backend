@@ -214,3 +214,232 @@ def update_user_status(
         "message": message,
         "handover": handover_result,
     }
+
+
+def generate_user_template_excel() -> bytes:
+    """Tạo file Excel mẫu để nhập người dùng hàng loạt."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Danh sách người dùng"
+
+    headers = ["Email (*)", "Họ và tên (*)", "Mật khẩu (*)", "Vai trò", "Team ID"]
+    ws.append(headers)
+
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    center_align = Alignment(horizontal="center", vertical="center")
+
+    thin_border = Border(
+        left=Side(style="thin", color="D9D9D9"),
+        right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"),
+        bottom=Side(style="thin", color="D9D9D9")
+    )
+
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+
+    # Add sample rows
+    samples = [
+        ["nguyen.van.a@example.com", "Nguyễn Văn A", "Pass@1234", "USER", 1],
+        ["tran.thi.b@example.com", "Trần Thị B", "Pass@1234", "MANAGER", 2],
+        ["le.van.c@example.com", "Lê Văn C", "Pass@1234", "ADMIN", ""],
+    ]
+    for row in samples:
+        ws.append(row)
+
+    for row in ws.iter_rows(min_row=2, max_row=len(samples) + 1, min_col=1, max_col=len(headers)):
+        for cell in row:
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center")
+
+    col_widths = [32, 28, 20, 16, 14]
+    for col_idx, width in enumerate(col_widths, start=1):
+        col_letter = openpyxl.utils.get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = width
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+def parse_and_validate_user_rows(file_contents: bytes) -> Dict[str, Any]:
+    """
+    Đọc tệp Excel và kiểm tra tính hợp lệ của từng dòng:
+    - Báo lỗi chi tiết cho từng dòng nếu thiếu thông tin, sai định dạng email, mật khẩu ngắn, vai trò không tồn tại, hoặc trùng lặp email.
+    """
+    import io
+    import re
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_contents), data_only=True)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tệp không đúng định dạng Excel hợp lệ: {str(e)}",
+        )
+
+    ws = wb.active
+    rows_data = []
+    row_idx = 0
+
+    seen_emails = set()
+    existing_db_emails = {u["email"].lower() for u in fake_users_db}
+
+    email_regex = re.compile(r"^[\w\.-]+@[\w\.-]+\.\w+$")
+
+    for row in ws.iter_rows(values_only=True):
+        row_idx += 1
+        if row_idx == 1:
+            # Skip header row
+            continue
+
+        if not any(row):
+            # Skip entirely empty rows
+            continue
+
+        email_val = str(row[0]).strip() if len(row) > 0 and row[0] is not None else ""
+        full_name_val = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+        password_val = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ""
+        role_val = str(row[3]).strip().upper() if len(row) > 3 and row[3] is not None else "USER"
+        team_id_raw = row[4] if len(row) > 4 else None
+
+        team_id_val = None
+        if team_id_raw is not None and str(team_id_raw).strip() != "":
+            try:
+                team_id_val = int(team_id_raw)
+            except ValueError:
+                team_id_val = "INVALID"
+
+        errors = []
+
+        # 1. Email check
+        if not email_val:
+            errors.append("Email không được để trống")
+        elif not email_regex.match(email_val):
+            errors.append("Email không đúng định dạng")
+        elif email_val.lower() in existing_db_emails:
+            errors.append(f"Email '{email_val}' đã tồn tại trong hệ thống")
+        elif email_val.lower() in seen_emails:
+            errors.append(f"Email '{email_val}' bị trùng lặp trong tệp tải lên")
+        else:
+            seen_emails.add(email_val.lower())
+
+        # 2. Full name check
+        if not full_name_val:
+            errors.append("Họ và tên không được để trống")
+
+        # 3. Password check
+        if not password_val:
+            errors.append("Mật khẩu không được để trống")
+        elif len(password_val) < 6:
+            errors.append("Mật khẩu phải có tối thiểu 6 ký tự")
+
+        # 4. Role check
+        if not role_val:
+            role_val = "USER"
+        elif role_val not in ALLOWED_ROLES:
+            errors.append(f"Vai trò '{role_val}' không hợp lệ. Các vai trò hợp lệ: {', '.join(sorted(ALLOWED_ROLES))}")
+
+        # 5. Team ID check
+        if team_id_val == "INVALID":
+            errors.append("Team ID phải là số nguyên")
+        elif team_id_val is not None and (team_id_val < 1 or team_id_val > 10):
+            errors.append("Team ID không hợp lệ trong hệ thống")
+
+        # AC S1-09 rule: Nếu role là MANAGER thì bắt buộc có team_id
+        if role_val == "MANAGER" and not team_id_val:
+            errors.append("Vai trò MANAGER bắt buộc phải thuộc về một nhóm kinh doanh (Team ID)")
+
+        is_valid = len(errors) == 0
+
+        rows_data.append({
+            "row_number": row_idx,
+            "email": email_val or None,
+            "full_name": full_name_val or None,
+            "password": password_val or None,
+            "role": role_val,
+            "team_id": team_id_val if isinstance(team_id_val, int) else None,
+            "is_valid": is_valid,
+            "errors": errors,
+        })
+
+    valid_count = sum(1 for r in rows_data if r["is_valid"])
+    invalid_count = len(rows_data) - valid_count
+
+    return {
+        "total_rows": len(rows_data),
+        "valid_rows_count": valid_count,
+        "invalid_rows_count": invalid_count,
+        "rows": rows_data,
+    }
+
+
+def execute_user_import(file_contents: bytes) -> Dict[str, Any]:
+    """
+    Nhập người dùng hàng loạt từ Excel:
+    - Bỏ qua các dòng bị lỗi.
+    - Nhập thành công các dòng hợp lệ.
+    - Trả về báo cáo tổng kết chi tiết.
+    """
+    analysis = parse_and_validate_user_rows(file_contents)
+    details = []
+    imported_count = 0
+    skipped_count = 0
+
+    max_id = max([u["id"] for u in fake_users_db], default=0)
+
+    for item in analysis["rows"]:
+        row_num = item["row_number"]
+        if not item["is_valid"]:
+            skipped_count += 1
+            details.append({
+                "row_number": row_num,
+                "email": item["email"],
+                "full_name": item["full_name"],
+                "status": "SKIPPED",
+                "error_message": "; ".join(item["errors"]),
+            })
+            continue
+
+        # Valid row -> Create user
+        max_id += 1
+        new_user = {
+            "id": max_id,
+            "email": item["email"].lower(),
+            "username": item["email"].split("@")[0],
+            "full_name": item["full_name"],
+            "hashed_password": hash_password(item["password"]),
+            "role": item["role"],
+            "team_id": item["team_id"],
+            "is_active": True,
+            "status": "ACTIVE",
+            "token_version": 0,
+            "failed_login_attempts": 0,
+            "temporary_lock_until": None,
+        }
+        fake_users_db.append(new_user)
+        imported_count += 1
+        details.append({
+            "row_number": row_num,
+            "email": item["email"],
+            "full_name": item["full_name"],
+            "status": "SUCCESS",
+            "error_message": None,
+        })
+
+    return {
+        "total_rows": analysis["total_rows"],
+        "imported_count": imported_count,
+        "skipped_count": skipped_count,
+        "details": details,
+    }
+

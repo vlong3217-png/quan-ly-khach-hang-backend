@@ -102,3 +102,37 @@ class UserDetailResponse(BaseModel):
     team_id: Optional[int] = None
     is_active: bool
 
+
+class UserImportRow(BaseModel):
+    row_number: int
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = "USER"
+    team_id: Optional[int] = None
+    is_valid: bool = True
+    errors: List[str] = []
+
+
+class UserImportPreviewResponse(BaseModel):
+    total_rows: int
+    valid_rows_count: int
+    invalid_rows_count: int
+    rows: List[UserImportRow]
+
+
+class UserImportResultItem(BaseModel):
+    row_number: int
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    status: str  # "SUCCESS" or "SKIPPED"
+    error_message: Optional[str] = None
+
+
+class UserImportSummaryResponse(BaseModel):
+    total_rows: int
+    imported_count: int
+    skipped_count: int
+    details: List[UserImportResultItem]
+
+
