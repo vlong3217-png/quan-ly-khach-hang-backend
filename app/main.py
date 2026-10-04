@@ -83,4 +83,7 @@ app.include_router(products_router)
 from app.routers.organizations import router as organizations_router
 app.include_router(organizations_router)
 
+from app.routers.master_data import router as master_data_router
+app.include_router(master_data_router)
+
 
