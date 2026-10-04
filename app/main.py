@@ -89,4 +89,7 @@ app.include_router(master_data_router)
 from app.routers.custom_fields import router as custom_fields_router
 app.include_router(custom_fields_router)
 
+from app.routers.pipeline import router as pipeline_stages_router
+app.include_router(pipeline_stages_router)
+
 
