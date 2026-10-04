@@ -1,7 +1,9 @@
+import os
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.portal import get_portal_html
 from app.routers.auth import router as auth_router
@@ -18,6 +20,11 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Đảm bảo thư mục lưu trữ uploads tồn tại
+UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
+os.makedirs(os.path.join(UPLOAD_DIR, "avatars"), exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
 # Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
@@ -26,6 +33,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 @app.exception_handler(RequestValidationError)
