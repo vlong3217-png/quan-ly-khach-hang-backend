@@ -80,4 +80,7 @@ app.include_router(audit_logs_router)
 from app.routers.products import router as products_router
 app.include_router(products_router)
 
+from app.routers.organizations import router as organizations_router
+app.include_router(organizations_router)
+
 
