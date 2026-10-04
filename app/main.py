@@ -92,4 +92,7 @@ app.include_router(custom_fields_router)
 from app.routers.pipeline import router as pipeline_stages_router
 app.include_router(pipeline_stages_router)
 
+from app.routers.win_loss import router as win_loss_router
+app.include_router(win_loss_router)
+
 
