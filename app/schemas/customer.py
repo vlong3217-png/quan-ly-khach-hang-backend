@@ -36,3 +36,8 @@ class CustomerListResponse(BaseModel):
     scope: str
     total: int
     customers: List[CustomerResponse]
+    skip: Optional[int] = 0
+    limit: Optional[int] = 20
+    page: Optional[int] = 1
+    total_pages: Optional[int] = 1
+
