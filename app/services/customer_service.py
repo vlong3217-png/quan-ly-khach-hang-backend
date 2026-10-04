@@ -78,9 +78,11 @@ def get_customers_by_scope(
     current_user: dict,
     scope: DataScope,
     search: Optional[str] = None,
-) -> list[dict]:
+    skip: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> tuple[int, list[dict]]:
     """
-    Return customers filtered by the user's data scope and optional search term.
+    Return total count and customers filtered by the user's data scope, optional search term, and pagination.
 
     - MY: only customers where owner_id == current user's id
     - TEAM / MY_TEAM: only customers where team_id == current user's team_id
@@ -108,7 +110,20 @@ def get_customers_by_scope(
             or s in c.get("phone", "").lower()
         ]
 
-    return results
+    total = len(results)
+
+    # Áp dụng phân trang nếu có skip / limit
+    if skip is not None and limit is not None:
+        paged_results = results[skip : skip + limit]
+    elif limit is not None:
+        paged_results = results[:limit]
+    elif skip is not None:
+        paged_results = results[skip:]
+    else:
+        paged_results = results
+
+    return total, paged_results
+
 
 
 def get_customer_by_id_and_scope(
