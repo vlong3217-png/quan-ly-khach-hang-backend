@@ -3,7 +3,7 @@ User API router — profile and user management endpoints (S1-05, S1-08, S1-10).
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 
 from app.core.dependencies import get_current_user
 from app.schemas.user import (
@@ -20,6 +20,8 @@ from app.schemas.user import (
     RoleInfo,
     TeamInfo,
     UserDetailResponse,
+    UserImportPreviewResponse,
+    UserImportSummaryResponse,
 )
 from app.services.auth_service import (
     require_admin,
@@ -37,6 +39,9 @@ from app.services.user_service import (
     get_user_by_id,
     update_user,
     update_user_status,
+    generate_user_template_excel,
+    parse_and_validate_user_rows,
+    execute_user_import,
 )
 
 router = APIRouter(
@@ -85,6 +90,32 @@ def list_users_endpoint(
 
 
 @router.get(
+    "/template",
+    summary="Tải tệp Excel mẫu để nhập người dùng (ADMIN only)",
+    responses={
+        200: {
+            "content": {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}
+            },
+            "description": "Tệp Excel mẫu tải về",
+        }
+    },
+)
+def download_user_template_endpoint(admin_user: dict = Depends(require_admin)):
+    """
+    AC S2-01: Tải được tệp mẫu Excel có định dạng chuẩn để nhập người dùng hàng loạt.
+    """
+    content = generate_user_template_excel()
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=user_import_template.xlsx"
+        },
+    )
+
+
+@router.get(
     "/{user_id}",
     response_model=UserResponse,
     status_code=status.HTTP_200_OK,
@@ -95,6 +126,7 @@ def get_user_endpoint(
     admin_user: dict = Depends(require_admin),
 ):
     return get_user_by_id(user_id)
+
 
 
 @router.post(
@@ -324,4 +356,67 @@ def assign_user_role_and_team_endpoint(
         team_id=updated_user.get("team_id"),
         is_active=updated_user["is_active"],
     )
+
+
+# ============================================================================
+# S2-01: IMPORT USER HÀNG LOẠT TỪ EXCEL
+# ============================================================================
+
+@router.post(
+    "/import-preview",
+    response_model=UserImportPreviewResponse,
+    summary="Xem trước và báo lỗi theo từng dòng tệp Excel trước khi nhập (ADMIN only)",
+)
+async def preview_user_import_endpoint(
+    file: UploadFile = File(..., description="Tệp Excel (.xlsx) danh sách người dùng"),
+    admin_user: dict = Depends(require_admin),
+):
+    """
+    AC S2-01: Xem trước và báo lỗi theo từng dòng trước khi nhập.
+    """
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Định dạng tệp không được hỗ trợ. Vui lòng tải lên tệp Excel (.xlsx hoặc .xls)",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tệp tải lên rỗng không có nội dung",
+        )
+
+    result = parse_and_validate_user_rows(contents)
+    return result
+
+
+@router.post(
+    "/import",
+    response_model=UserImportSummaryResponse,
+    summary="Thực hiện nhập người dùng hàng loạt từ Excel (ADMIN only)",
+)
+async def execute_user_import_endpoint(
+    file: UploadFile = File(..., description="Tệp Excel (.xlsx) danh sách người dùng"),
+    admin_user: dict = Depends(require_admin),
+):
+    """
+    AC S2-01: Dòng lỗi bị bỏ qua, dòng hợp lệ vẫn được nhập, có báo cáo tổng kết chi tiết.
+    """
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Định dạng tệp không được hỗ trợ. Vui lòng tải lên tệp Excel (.xlsx hoặc .xls)",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tệp tải lên rỗng không có nội dung",
+        )
+
+    summary = execute_user_import(contents)
+    return summary
+
 
