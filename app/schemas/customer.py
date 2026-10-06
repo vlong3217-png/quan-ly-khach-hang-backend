@@ -69,3 +69,24 @@ class CustomerListResponse(BaseModel):
     limit: Optional[int] = 20
     page: Optional[int] = 1
     total_pages: Optional[int] = 1
+
+
+class CustomerAttachment(BaseModel):
+    id: int
+    filename: str
+    file_url: str
+    file_size_bytes: int
+    uploaded_by: str
+    created_at: datetime
+
+
+class Customer360Response(BaseModel):
+    customer: CustomerResponse
+    contacts: List[dict] = []
+    open_opportunities: List[dict] = []
+    closed_opportunities: List[dict] = []
+    activities_timeline: List[dict] = []
+    attachments: List[CustomerAttachment] = []
+    total_won_value: float = 0.0
+    total_open_value: float = 0.0
+    churn_risk: bool = False
