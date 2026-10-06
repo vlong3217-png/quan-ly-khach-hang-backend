@@ -34,6 +34,8 @@ from app.schemas.customer import (
     CustomerImportCommitResponse,
     SavedFilterCreate,
     SavedFilterResponse,
+    PeriodicCareCustomerItem,
+    MarkCareInteractionRequest,
 )
 from app.services.customer_service import (
     commit_customer_import,
@@ -47,12 +49,15 @@ from app.services.customer_service import (
     get_customer_by_id,
     get_customer_360,
     get_customers_by_scope,
+    get_periodic_care_customers,
     get_raw_customer_by_id,
     list_saved_filters,
+    mark_customer_care_interaction,
     merge_customers,
     preview_customer_import_excel,
     update_customer_record,
 )
+
 
 
 
@@ -172,7 +177,42 @@ def remove_saved_filter(
     return None
 
 
+@router.get("/periodic-care", response_model=List[PeriodicCareCustomerItem])
+def get_customers_for_periodic_care(
+    days: int = Query(30, ge=1, description="Số ngày tối thiểu không có tương tác"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-09: Lập danh sách khách hàng định kỳ cần chăm sóc:
+    - Lọc các khách chưa có tương tác trong N ngày (mặc định 30 ngày).
+    - Tự động sắp xếp theo giá trị hợp đồng giảm dần.
+    - Đính kèm cờ cảnh báo rủi ro rời bỏ.
+    """
+    return get_periodic_care_customers(days_threshold=days, current_user=current_user)
+
+
+@router.post("/{customer_id}/mark-care")
+def mark_care_interaction_for_customer(
+    customer_id: int,
+    payload: MarkCareInteractionRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-09: Đánh dấu đã liên hệ chăm sóc khách hàng, cập nhật mốc thời gian tương tác mới nhất.
+    """
+    try:
+        return mark_customer_care_interaction(
+            customer_id=customer_id,
+            interaction_type=payload.interaction_type,
+            note=payload.note,
+            current_user=current_user,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
 @router.get("/{customer_id}", response_model=CustomerResponse)
+
 
 def get_customer(
     customer_id: int,

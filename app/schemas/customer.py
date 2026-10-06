@@ -179,5 +179,24 @@ class SavedFilterResponse(SavedFilterBase):
     created_at: datetime
 
 
+class PeriodicCareCustomerItem(BaseModel):
+    customer_id: int
+    customer_name: str
+    tax_code: Optional[str] = None
+    status: str
+    owner_id: int
+    owner_name: Optional[str] = None
+    last_interaction_date: Optional[datetime] = None
+    days_since_last_interaction: int
+    total_contract_value: float = 0.0
+    churn_risk: bool = False
+
+
+class MarkCareInteractionRequest(BaseModel):
+    interaction_type: str = "CALL"  # CALL, MEETING, EMAIL, NOTE
+    note: str
+
+
+
 
 

@@ -860,6 +860,106 @@ def delete_saved_filter(filter_id: int, user_id: int) -> bool:
     return False
 
 
+CUSTOMER_LAST_INTERACTIONS: Dict[int, datetime] = {
+    1: datetime(2026, 1, 15, 10, 0, 0),
+    2: datetime(2026, 2, 2, 9, 30, 0),
+    3: datetime(2026, 1, 5, 8, 0, 0),
+    4: datetime(2026, 3, 1, 14, 0, 0),
+    5: datetime(2025, 12, 1, 10, 0, 0),
+}
+
+
+def get_periodic_care_customers(
+    days_threshold: int = 30,
+    current_user: dict = None,
+) -> List[dict]:
+    """
+    AC S3-09: Lập danh sách khách hàng định kỳ cần chăm sóc:
+    - Khách hàng không có tương tác nào trong vòng N ngày gần nhất (mặc định 30 ngày).
+    - Ưu tiên sắp xếp theo giá trị hợp đồng (total_contract_value) giảm dần.
+    - Cảnh báo rủi ro rời bỏ nếu có.
+    """
+    from app.services import opportunity_service, ticket_service
+
+    now = datetime.now()
+    results = []
+
+    all_opps = opportunity_service.FAKE_OPPORTUNITIES
+
+    for c in FAKE_CUSTOMERS:
+        c_id = c["id"]
+        last_dt = CUSTOMER_LAST_INTERACTIONS.get(c_id) or c.get("created_at") or now
+        # Tính số ngày kể từ lần tương tác gần nhất
+        days_diff = (now - last_dt).days if now > last_dt else 0
+
+        if days_diff >= days_threshold:
+            # Tính tổng giá trị hợp đồng đã ký
+            won_value = sum(
+                float(o.get("value", 0))
+                for o in all_opps
+                if o.get("customer_id") == c_id and o.get("stage") == "CLOSED_WON"
+            )
+            # Kiểm tra churn risk
+            risk = ticket_service.evaluate_churn_risk(c_id)
+            owner = auth_service.get_user_by_id(c.get("owner_id"))
+
+            results.append({
+                "customer_id": c_id,
+                "customer_name": c["name"],
+                "tax_code": c.get("tax_code"),
+                "status": c.get("status", "CUSTOMER"),
+                "owner_id": c.get("owner_id"),
+                "owner_name": owner["full_name"] if owner else None,
+                "last_interaction_date": last_dt,
+                "days_since_last_interaction": days_diff,
+                "total_contract_value": won_value,
+                "churn_risk": risk["is_at_risk"],
+            })
+
+    # Sắp xếp theo giá trị hợp đồng giảm dần
+    results.sort(key=lambda x: (x["total_contract_value"], x["days_since_last_interaction"]), reverse=True)
+    return results
+
+
+def mark_customer_care_interaction(
+    customer_id: int,
+    interaction_type: str,
+    note: str,
+    current_user: dict,
+) -> dict:
+    """AC S3-09: Đánh dấu đã liên hệ chăm sóc, ghi nhận activity và cập nhật ngày tương tác mới nhất."""
+    customer = get_customer_by_id(customer_id)
+    if not customer:
+        raise ValueError(f"Khách hàng #{customer_id} không tồn tại")
+
+    now = datetime.now()
+    CUSTOMER_LAST_INTERACTIONS[customer_id] = now
+
+    # Tự động ghi nhận một activity tương tác
+    from app.services import activity_service
+    new_act_id = max([a["id"] for a in activity_service.FAKE_ACTIVITIES], default=0) + 1
+    user_name = current_user.get("full_name") or current_user.get("username") or "user"
+    act_item = {
+        "id": new_act_id,
+        "title": f"Chăm sóc định kỳ: {interaction_type.upper()}",
+        "type": interaction_type.upper(),
+        "description": f"{note} (Ghi nhận bởi {user_name})",
+        "customer_id": customer_id,
+        "owner_id": current_user["id"],
+        "team_id": current_user.get("team_id", 1),
+    }
+    activity_service.FAKE_ACTIVITIES.append(act_item)
+
+    return {
+        "customer_id": customer_id,
+        "customer_name": customer["name"],
+        "last_interaction_date": now,
+        "message": f"Đã ghi nhận chăm sóc khách hàng thành công qua {interaction_type}",
+        "activity": act_item,
+    }
+
+
+
 
 
 
