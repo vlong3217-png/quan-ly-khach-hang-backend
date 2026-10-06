@@ -21,6 +21,7 @@ class CustomerBase(BaseModel):
     website: Optional[str] = Field(None, max_length=255, description="Website doanh nghiệp")
     address: Optional[str] = Field(None, max_length=500, description="Địa chỉ công ty")
     status: CustomerStatus = Field(default=CustomerStatus.PROSPECT, description="Trạng thái khách hàng")
+    parent_company_id: Optional[int] = Field(None, description="ID công ty mẹ (nếu là công ty con / chi nhánh)")
 
     # Giữ tương thích ngược với các trường cũ nếu có client dùng
     email: Optional[str] = None
@@ -41,6 +42,7 @@ class CustomerUpdate(BaseModel):
     website: Optional[str] = Field(None, max_length=255)
     address: Optional[str] = Field(None, max_length=500)
     status: Optional[CustomerStatus] = None
+    parent_company_id: Optional[int] = None
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
 
@@ -52,6 +54,7 @@ class CustomerUpdate(BaseModel):
 
 class CustomerResponse(CustomerBase):
     id: int
+    parent_company_name: Optional[str] = None
     owner_id: int
     owner_name: Optional[str] = None
     team_id: Optional[int] = None
@@ -59,6 +62,7 @@ class CustomerResponse(CustomerBase):
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
 
 
 class CustomerListResponse(BaseModel):
@@ -102,4 +106,22 @@ class MergeCustomerRequest(BaseModel):
     primary_customer_id: int
     secondary_customer_id: int
     chosen_fields: Optional[dict] = None  # ghi đè các trường nếu chọn từ secondary (ví dụ: phone, address, website)
+
+
+class ChildCompanySummary(BaseModel):
+    id: int
+    name: str
+    tax_code: Optional[str] = None
+    status: str
+    total_won_value: float = 0.0
+    total_open_value: float = 0.0
+
+
+class GroupCompanyTreeResponse(BaseModel):
+    parent: CustomerResponse
+    subsidiaries: List[ChildCompanySummary]
+    total_group_won_value: float
+    total_group_open_value: float
+    total_members: int
+
 

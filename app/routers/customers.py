@@ -27,11 +27,13 @@ from app.schemas.customer import (
     Customer360Response,
     DuplicateCandidate,
     MergeCustomerRequest,
+    GroupCompanyTreeResponse,
 )
 from app.services.customer_service import (
     create_customer_record,
     delete_customer_record,
     find_duplicate_customers,
+    get_company_group_tree,
     get_customer_by_id,
     get_customer_360,
     get_customers_by_scope,
@@ -39,6 +41,7 @@ from app.services.customer_service import (
     merge_customers,
     update_customer_record,
 )
+
 
 
 
@@ -258,10 +261,41 @@ def merge_customer_profiles(
         )
 
 
+@router.get("/{customer_id}/group-tree", response_model=GroupCompanyTreeResponse)
+def get_customer_group_tree(
+    customer_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-05: Sơ đồ phân cấp công ty mẹ - con và tổng giá trị hợp đồng toàn tập đoàn.
+    """
+    customer = get_customer_by_id(customer_id)
+    if not customer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Customer with ID {customer_id} not found",
+        )
+
+    if not check_scope_access(current_user, customer["owner_id"], customer.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập dữ liệu công ty này",
+        )
+
+    tree = get_company_group_tree(customer_id)
+    if not tree:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy cây tập đoàn cho công ty #{customer_id}",
+        )
+    return tree
+
+
 @router.delete(
     "/{customer_id}",
     dependencies=[Depends(require_roles(["ADMIN"]))],
 )
+
 
 def delete_customer(customer_id: int):
     """
