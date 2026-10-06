@@ -47,13 +47,14 @@ def list_customers(
     ),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
+    status: Optional[str] = Query(None, description="Lọc theo trạng thái: PROSPECT, IN_TRANSACTION, CUSTOMER, DISCONTINUED"),
     page: Optional[int] = Query(None, ge=1, description="Số trang (bắt đầu từ 1)"),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng khách hàng mỗi trang (mặc định 20)"),
     skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (offset)"),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    List customers based on the user's role and requested scope, with optional search and pagination.
+    List customers based on the user's role and requested scope, with optional search, status filter, and pagination.
 
     - ADMIN: defaults to ALL, can request MY/MY_TEAM/TEAM/ALL
     - MANAGER: defaults to TEAM, can request MY/MY_TEAM/TEAM (ALL -> 403)
@@ -84,6 +85,7 @@ def list_customers(
         search=search_query,
         skip=effective_skip,
         limit=effective_limit,
+        status_filter=status,
     )
 
     total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
@@ -114,13 +116,13 @@ def get_customer(
     if customer is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Kh??ng t??m th???y kh??ch h??ng",
+            detail="Không tìm thấy khách hàng",
         )
 
     if not check_scope_access(current_user, customer["owner_id"], customer.get("team_id")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Kh??ng c?? quy???n truy c???p d??? li???u kh??ch h??ng n??y",
+            detail="Không có quyền truy cập dữ liệu khách hàng này",
         )
 
     return customer
@@ -129,11 +131,11 @@ def get_customer(
 @router.post("", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
 def create_customer(
     payload: CustomerCreate,
-    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    current_user: dict = Depends(get_current_user),
 ):
     """
-    Create a new customer (ADMIN or MANAGER only).
-    - USER role calling this will receive 403 Forbidden.
+    AC S3-01: Tạo mới hồ sơ khách hàng doanh nghiệp.
+    Tất cả nhân viên kinh doanh đều có thể tạo khách hàng thuộc quyền sở hữu của mình.
     """
     new_customer = create_customer_record(payload.model_dump(), current_user)
     return new_customer

@@ -1,59 +1,95 @@
 """
-Customer service with data scope filtering (MY/TEAM/ALL).
-
-Provides demo customer data, scope-aware query functions, and CRUD operations.
+Customer service with enterprise customer data, duplicate tax code validation and data scope filtering (S3-01).
 """
 
 import copy
+from datetime import datetime
 from typing import Optional
-from app.core.dependencies import DataScope
+from fastapi import HTTPException, status
 
-# Initial customer data for testing scope filtering
+from app.core.dependencies import DataScope
+from app.services import auth_service
+
 INITIAL_CUSTOMERS = [
     {
         "id": 1,
-        "name": "Nguyễn Văn A",
-        "email": "nguyenvana@example.com",
-        "phone": "0901234567",
-        "company": "Công ty ABC",
+        "name": "Công ty Cổ phần Công nghệ ABC",
+        "tax_code": "0101234567",
+        "industry": "Công nghệ thông tin",
+        "company_size": "100 - 500 nhân sự",
+        "website": "https://abc-tech.vn",
+        "address": "Tầng 5, Tòa nhà Keangnam, Cầu Giấy, Hà Nội",
+        "status": "CUSTOMER",
+        "email": "contact@abc-tech.vn",
+        "phone": "02431234567",
+        "company": "Công ty Cổ phần Công nghệ ABC",
         "owner_id": 1,   # Owned by Admin (User 1)
         "team_id": 1,     # Team A
+        "created_at": datetime(2026, 1, 10, 8, 30, 0),
     },
     {
         "id": 2,
-        "name": "Trần Thị B",
-        "email": "tranthib@example.com",
-        "phone": "0912345678",
-        "company": "Công ty XYZ",
+        "name": "Công ty TNHH Giải pháp Phần mềm XYZ",
+        "tax_code": "0309876543",
+        "industry": "Tài chính - Ngân hàng",
+        "company_size": "50 - 100 nhân sự",
+        "website": "https://xyz-solutions.com",
+        "address": "Quận 1, TP. Hồ Chí Minh",
+        "status": "IN_TRANSACTION",
+        "email": "sales@xyz-solutions.com",
+        "phone": "02839876543",
+        "company": "Công ty TNHH Giải pháp Phần mềm XYZ",
         "owner_id": 2,   # Owned by Manager (User 2, Team A)
         "team_id": 1,     # Team A
+        "created_at": datetime(2026, 2, 1, 9, 0, 0),
     },
     {
         "id": 3,
-        "name": "Lê Văn C",
-        "email": "levanc@example.com",
-        "phone": "0923456789",
-        "company": "Công ty DEF",
+        "name": "Công ty Tập đoàn Xây dựng DEF",
+        "tax_code": "0104567890",
+        "industry": "Bất động sản & Xây dựng",
+        "company_size": "Trên 500 nhân sự",
+        "website": "https://defgroup.vn",
+        "address": "Hai Bà Trưng, Hà Nội",
+        "status": "PROSPECT",
+        "email": "info@defgroup.vn",
+        "phone": "02434567890",
+        "company": "Công ty Tập đoàn Xây dựng DEF",
         "owner_id": 3,   # Owned by User 1 (User 3, Team A)
         "team_id": 1,     # Team A
+        "created_at": datetime(2026, 2, 15, 10, 15, 0),
     },
     {
         "id": 4,
-        "name": "Phạm Thị D",
-        "email": "phamthid@example.com",
-        "phone": "0934567890",
-        "company": "Công ty GHI",
+        "name": "Công ty Cổ phần Bán lẻ GHI",
+        "tax_code": "0305678901",
+        "industry": "Bán lẻ & Tiêu dùng",
+        "company_size": "100 - 500 nhân sự",
+        "website": "https://ghi-retail.com",
+        "address": "Bình Thạnh, TP. Hồ Chí Minh",
+        "status": "PROSPECT",
+        "email": "support@ghi-retail.com",
+        "phone": "02835678901",
+        "company": "Công ty Cổ phần Bán lẻ GHI",
         "owner_id": 4,   # Owned by User 2 (User 4, Team B)
         "team_id": 2,     # Team B
+        "created_at": datetime(2026, 3, 1, 14, 0, 0),
     },
     {
         "id": 5,
-        "name": "Hoàng Văn E",
-        "email": "hoangvane@example.com",
-        "phone": "0945678901",
-        "company": "Công ty JKL",
+        "name": "Công ty Nông nghiệp Sạch JKL",
+        "tax_code": None,  # Có thể chưa có MST
+        "industry": "Nông nghiệp",
+        "company_size": "Dưới 50 nhân sự",
+        "website": None,
+        "address": "Đà Lạt, Lâm Đồng",
+        "status": "DISCONTINUED",
+        "email": "jkl-farm@example.com",
+        "phone": "02633890123",
+        "company": "Công ty Nông nghiệp Sạch JKL",
         "owner_id": 4,   # Owned by User 2 (User 4, Team B)
         "team_id": 2,     # Team B
+        "created_at": datetime(2026, 3, 5, 16, 20, 0),
     },
 ]
 
@@ -66,11 +102,22 @@ def reset_fake_customers() -> None:
     FAKE_CUSTOMERS = copy.deepcopy(INITIAL_CUSTOMERS)
 
 
+def _enrich_customer_names(customer: dict) -> dict:
+    """Bổ sung owner_name và team_name cho customer response."""
+    c = copy.deepcopy(customer)
+    owner = auth_service.get_user_by_id(c.get("owner_id"))
+    c["owner_name"] = owner["full_name"] if owner else None
+
+    team = auth_service.get_team_by_id(c.get("team_id"))
+    c["team_name"] = team["name"] if team else None
+    return c
+
+
 def get_raw_customer_by_id(customer_id: int) -> Optional[dict]:
     """Find a customer by ID without scope filter (returns raw dict or None)."""
     for c in FAKE_CUSTOMERS:
         if c["id"] == customer_id:
-            return c
+            return _enrich_customer_names(c)
     return None
 
 
@@ -80,13 +127,13 @@ def get_customers_by_scope(
     search: Optional[str] = None,
     skip: Optional[int] = None,
     limit: Optional[int] = None,
+    status_filter: Optional[str] = None,
 ) -> tuple[int, list[dict]]:
     """
-    Return total count and customers filtered by the user's data scope, optional search term, and pagination.
-
-    - MY: only customers where owner_id == current user's id
-    - TEAM / MY_TEAM: only customers where team_id == current user's team_id
-    - ALL: all customers (no filter)
+    AC S3-01:
+    - Nhân viên (USER) chỉ thấy khách hàng mình sở hữu (owner_id == user_id).
+    - Trưởng nhóm (MANAGER) thấy toàn bộ khách hàng của nhóm (team_id == user_team_id).
+    - Quản trị viên (ADMIN) thấy tất cả.
     """
     if scope == DataScope.ALL:
         results = list(FAKE_CUSTOMERS)
@@ -100,14 +147,20 @@ def get_customers_by_scope(
         user_id = current_user["id"]
         results = [c for c in FAKE_CUSTOMERS if c.get("owner_id") == user_id]
 
+    if status_filter:
+        sf = status_filter.strip().upper()
+        results = [c for c in results if str(c.get("status", "")).upper() == sf]
+
     if search:
         s = search.lower().strip()
         results = [
             c for c in results
             if s in c.get("name", "").lower()
-            or s in c.get("email", "").lower()
-            or s in c.get("company", "").lower()
-            or s in c.get("phone", "").lower()
+            or s in (c.get("tax_code") or "").lower()
+            or s in (c.get("email") or "").lower()
+            or s in (c.get("company") or "").lower()
+            or s in (c.get("phone") or "").lower()
+            or s in (c.get("industry") or "").lower()
         ]
 
     total = len(results)
@@ -122,60 +175,100 @@ def get_customers_by_scope(
     else:
         paged_results = results
 
-    return total, paged_results
+    enriched_paged = [_enrich_customer_names(c) for c in paged_results]
+    return total, enriched_paged
 
 
-
-def get_customer_by_id_and_scope(
-    customer_id: int,
-    current_user: dict,
-    scope: DataScope,
-) -> Optional[dict]:
-    """
-    Get a single customer by ID, filtered by scope.
-    Returns None if the customer doesn't exist or is outside the user's scope.
-    """
-    customers = get_customers_by_scope(current_user, scope)
-    for c in customers:
-        if c["id"] == customer_id:
-            return c
-    return None
+def validate_tax_code_uniqueness(tax_code: Optional[str], exclude_id: Optional[int] = None) -> None:
+    """AC S3-01: Mã số thuế nếu có thì phải là duy nhất."""
+    if not tax_code or not tax_code.strip():
+        return
+    clean_tax = tax_code.strip()
+    for c in FAKE_CUSTOMERS:
+        if exclude_id and c["id"] == exclude_id:
+            continue
+        if c.get("tax_code") and c["tax_code"].strip().lower() == clean_tax.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Mã số thuế '{clean_tax}' đã tồn tại cho khách hàng '{c['name']}'",
+            )
 
 
 def create_customer_record(data: dict, current_user: dict) -> dict:
-    """Create a new customer record and add it to FAKE_CUSTOMERS."""
+    """
+    AC S3-01: Khai báo tên công ty, mã số thuế, ngành nghề, quy mô, website, địa chỉ, người sở hữu.
+    """
+    tax_code = data.get("tax_code")
+    validate_tax_code_uniqueness(tax_code)
+
+    # Xác định người sở hữu (owner_id)
+    owner_id = data.get("owner_id")
+    if owner_id is not None:
+        owner_user = auth_service.get_user_by_id(owner_id)
+        if not owner_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Người sở hữu với ID {owner_id} không tồn tại",
+            )
+        team_id = data.get("team_id") or owner_user.get("team_id")
+    else:
+        owner_id = current_user["id"]
+        team_id = data.get("team_id") or current_user.get("team_id")
+
     new_id = (max(c["id"] for c in FAKE_CUSTOMERS) + 1) if FAKE_CUSTOMERS else 1
     new_customer = {
         "id": new_id,
-        "name": data["name"],
+        "name": data["name"].strip(),
+        "tax_code": tax_code.strip() if tax_code else None,
+        "industry": data.get("industry"),
+        "company_size": data.get("company_size"),
+        "website": data.get("website"),
+        "address": data.get("address"),
+        "status": data.get("status", "PROSPECT"),
         "email": data.get("email"),
         "phone": data.get("phone"),
-        "company": data.get("company"),
-        "owner_id": current_user["id"],
-        "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
+        "company": data.get("company") or data["name"].strip(),
+        "owner_id": owner_id,
+        "team_id": team_id,
+        "created_at": datetime.utcnow(),
     }
     FAKE_CUSTOMERS.append(new_customer)
-    return new_customer
+    return _enrich_customer_names(new_customer)
 
 
 def update_customer_record(
     customer_id: int,
     data: dict,
 ) -> Optional[dict]:
-    """Update fields of an existing customer."""
-    customer = get_raw_customer_by_id(customer_id)
+    """Cập nhật thông tin khách hàng kèm kiểm tra trùng MST."""
+    customer = None
+    for c in FAKE_CUSTOMERS:
+        if c["id"] == customer_id:
+            customer = c
+            break
     if customer is None:
         return None
 
+    if "tax_code" in data and data["tax_code"] is not None:
+        validate_tax_code_uniqueness(data["tax_code"], exclude_id=customer_id)
+
+    if "owner_id" in data and data["owner_id"] is not None:
+        owner_user = auth_service.get_user_by_id(data["owner_id"])
+        if not owner_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Người sở hữu với ID {data['owner_id']} không tồn tại",
+            )
+
     for key, value in data.items():
-        if value is not None and key not in ("id", "owner_id"):
+        if value is not None and key != "id":
             customer[key] = value
 
-    return customer
+    return _enrich_customer_names(customer)
 
 
 def delete_customer_record(customer_id: int) -> bool:
-    """Delete a customer by ID. Returns True if deleted, False if not found."""
+    """Delete a customer by ID."""
     global FAKE_CUSTOMERS
     initial_len = len(FAKE_CUSTOMERS)
     FAKE_CUSTOMERS = [c for c in FAKE_CUSTOMERS if c["id"] != customer_id]
