@@ -10,7 +10,8 @@ Role restrictions:
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Response, status
+
 
 from app.core.dependencies import (
     DataScope,
@@ -28,19 +29,26 @@ from app.schemas.customer import (
     DuplicateCandidate,
     MergeCustomerRequest,
     GroupCompanyTreeResponse,
+    CustomerImportPreviewResponse,
+    CustomerImportCommitRequest,
+    CustomerImportCommitResponse,
 )
 from app.services.customer_service import (
+    commit_customer_import,
     create_customer_record,
     delete_customer_record,
     find_duplicate_customers,
+    generate_customer_template_excel,
     get_company_group_tree,
     get_customer_by_id,
     get_customer_360,
     get_customers_by_scope,
     get_raw_customer_by_id,
     merge_customers,
+    preview_customer_import_excel,
     update_customer_record,
 )
+
 
 
 
@@ -291,10 +299,65 @@ def get_customer_group_tree(
     return tree
 
 
+@router.get("/import/template")
+def download_customer_import_template(
+    current_user: dict = Depends(get_current_user),
+):
+    """AC S3-06: Tải file Excel mẫu để chuẩn bị dữ liệu nhập khẩu."""
+    excel_bytes = generate_customer_template_excel()
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=mau_nhap_khach_hang.xlsx"},
+    )
+
+
+@router.post("/import/preview", response_model=CustomerImportPreviewResponse)
+async def preview_customer_import(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-06: Tải file Excel lên để xem trước, kiểm tra tính hợp lệ và cảnh báo trùng lặp từng dòng.
+    """
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tệp tin phải có định dạng .xlsx",
+        )
+    content = await file.read()
+    try:
+        preview_result = preview_customer_import_excel(content)
+        return preview_result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Lỗi khi đọc file Excel: {str(e)}",
+        )
+
+
+@router.post("/import/commit", response_model=CustomerImportCommitResponse)
+def commit_customer_import_records(
+    payload: CustomerImportCommitRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-06: Tiến hành lưu các dòng khách hàng vào hệ thống với tuỳ chọn xử lý trùng (SKIP / UPDATE).
+    """
+    rows_data = [r.model_dump() for r in payload.rows]
+    result = commit_customer_import(
+        rows=rows_data,
+        duplicate_handling=payload.duplicate_handling,
+        current_user=current_user,
+    )
+    return result
+
+
 @router.delete(
     "/{customer_id}",
     dependencies=[Depends(require_roles(["ADMIN"]))],
 )
+
 
 
 def delete_customer(customer_id: int):

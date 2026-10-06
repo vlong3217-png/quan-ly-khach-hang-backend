@@ -567,4 +567,233 @@ def get_company_group_tree(parent_id: int) -> Optional[dict]:
     }
 
 
+def generate_customer_template_excel() -> bytes:
+    """AC S3-06: Tải tệp Excel mẫu chứa các cột tiêu chuẩn để import."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "KhachHang_Template"
+
+    headers = [
+        "Tên khách hàng (*)",
+        "Mã số thuế",
+        "Ngành nghề",
+        "Quy mô",
+        "Website",
+        "Địa chỉ",
+        "Số điện thoại",
+        "Email",
+        "Trạng thái (PROSPECT/CUSTOMER)",
+    ]
+    ws.append(headers)
+
+    # Style header
+    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Sample rows
+    sample_rows = [
+        [
+            "Công ty Cổ phần Thép Đông Nam",
+            "0109998881",
+            "Sản xuất & Chế tạo",
+            "100 - 500 nhân sự",
+            "https://dongnamsteel.vn",
+            "KCN Phố Nối A, Hưng Yên",
+            "02213888999",
+            "contact@dongnamsteel.vn",
+            "PROSPECT",
+        ],
+        [
+            "Công ty Dịch vụ Vận tải Hải Vân",
+            "0307776662",
+            "Logistics & Vận tải",
+            "50 - 100 nhân sự",
+            "https://haivanlogistics.com",
+            "Hải An, Hải Phòng",
+            "02253666777",
+            "info@haivanlogistics.com",
+            "CUSTOMER",
+        ],
+    ]
+    for row in sample_rows:
+        ws.append(row)
+
+    # Auto width
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def preview_customer_import_excel(file_content: bytes) -> dict:
+    """AC S3-06: Xem trước dữ liệu, phát hiện lỗi từng dòng, kiểm tra trùng MST."""
+    import io
+    import openpyxl
+
+    wb = openpyxl.load_workbook(io.BytesIO(file_content), data_only=True)
+    ws = wb.active
+
+    preview_rows = []
+    seen_tax_codes_in_file = set()
+
+    # Tìm index của các cột từ dòng 1
+    header_cells = [c.value for c in ws[1]]
+    
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        if not any(row):  # Dòng trống hoàn toàn
+            continue
+
+        name = str(row[0]).strip() if row[0] is not None else None
+        tax_code = str(row[1]).strip() if len(row) > 1 and row[1] is not None else None
+        industry = str(row[2]).strip() if len(row) > 2 and row[2] is not None else None
+        company_size = str(row[3]).strip() if len(row) > 3 and row[3] is not None else None
+        website = str(row[4]).strip() if len(row) > 4 and row[4] is not None else None
+        address = str(row[5]).strip() if len(row) > 5 and row[5] is not None else None
+        phone = str(row[6]).strip() if len(row) > 6 and row[6] is not None else None
+        email = str(row[7]).strip() if len(row) > 7 and row[7] is not None else None
+        status_val = str(row[8]).strip() if len(row) > 8 and row[8] is not None else "PROSPECT"
+
+        errors = []
+        if not name:
+            errors.append("Tên công ty/khách hàng không được để trống")
+
+        is_duplicate = False
+        duplicate_reasons = []
+        existing_id = None
+
+        if tax_code:
+            # Kiểm tra trùng với file
+            if tax_code in seen_tax_codes_in_file:
+                is_duplicate = True
+                duplicate_reasons.append("Trùng MST với dòng khác trong chính tệp này")
+            seen_tax_codes_in_file.add(tax_code)
+
+            # Kiểm tra trùng với hệ thống
+            existing = next((c for c in FAKE_CUSTOMERS if c.get("tax_code") == tax_code), None)
+            if existing:
+                is_duplicate = True
+                duplicate_reasons.append(f"Trùng MST với khách hàng #{existing['id']} ({existing['name']}) trên hệ thống")
+                existing_id = existing["id"]
+
+        preview_rows.append({
+            "row_number": row_idx,
+            "name": name,
+            "tax_code": tax_code,
+            "industry": industry,
+            "company_size": company_size,
+            "website": website,
+            "address": address,
+            "status": status_val,
+            "phone": phone,
+            "email": email,
+            "is_valid": len(errors) == 0,
+            "errors": errors,
+            "is_duplicate": is_duplicate,
+            "duplicate_reasons": duplicate_reasons,
+            "existing_customer_id": existing_id,
+        })
+
+    valid_count = sum(1 for r in preview_rows if r["is_valid"] and not r["is_duplicate"])
+    invalid_count = sum(1 for r in preview_rows if not r["is_valid"])
+    dup_count = sum(1 for r in preview_rows if r["is_duplicate"])
+
+    return {
+        "total_rows": len(preview_rows),
+        "valid_rows_count": valid_count,
+        "invalid_rows_count": invalid_count,
+        "duplicate_rows_count": dup_count,
+        "rows": preview_rows,
+    }
+
+
+def commit_customer_import(
+    rows: List[dict],
+    duplicate_handling: str = "SKIP",
+    current_user: dict = None,
+) -> dict:
+    """AC S3-06: Thực hiện import vào hệ thống theo tùy chọn SKIP hoặc UPDATE."""
+    inserted = 0
+    updated = 0
+    skipped = 0
+    failed = 0
+    messages = []
+
+    user_id = current_user["id"] if current_user else 1
+    user_team = current_user.get("team_id") if current_user else 1
+
+    for row in rows:
+        if not row.get("is_valid", True) or not row.get("name"):
+            failed += 1
+            messages.append(f"Dòng {row.get('row_number')}: Dữ liệu không hợp lệ, bỏ qua")
+            continue
+
+        existing_id = row.get("existing_customer_id")
+        tax_code = row.get("tax_code")
+
+        # Kiểm tra lại xem có trùng với DB không
+        existing_cust = None
+        if existing_id:
+            existing_cust = next((c for c in FAKE_CUSTOMERS if c["id"] == existing_id), None)
+        elif tax_code:
+            existing_cust = next((c for c in FAKE_CUSTOMERS if c.get("tax_code") == tax_code), None)
+
+        if existing_cust:
+            if duplicate_handling.upper() == "UPDATE":
+                # Cập nhật thông tin khách hàng hiện tại
+                for field in ["name", "industry", "company_size", "website", "address", "phone", "email", "status"]:
+                    if row.get(field):
+                        existing_cust[field] = row[field]
+                updated += 1
+                messages.append(f"Dòng {row.get('row_number')}: Cập nhật khách hàng #{existing_cust['id']} ({existing_cust['name']})")
+            else:
+                # Bỏ qua dòng trùng
+                skipped += 1
+                messages.append(f"Dòng {row.get('row_number')}: Trùng MST {tax_code}, bỏ qua theo cài đặt SKIP")
+        else:
+            # Thêm mới
+            new_id = (max(c["id"] for c in FAKE_CUSTOMERS) + 1) if FAKE_CUSTOMERS else 1
+            new_c = {
+                "id": new_id,
+                "name": row["name"],
+                "tax_code": tax_code,
+                "industry": row.get("industry"),
+                "company_size": row.get("company_size"),
+                "website": row.get("website"),
+                "address": row.get("address"),
+                "status": row.get("status") or "PROSPECT",
+                "phone": row.get("phone"),
+                "email": row.get("email"),
+                "company": row["name"],
+                "owner_id": user_id,
+                "team_id": user_team,
+                "created_at": datetime.now(),
+            }
+            FAKE_CUSTOMERS.append(new_c)
+            inserted += 1
+            messages.append(f"Dòng {row.get('row_number')}: Tạo mới thành công khách hàng #{new_id} ({row['name']})")
+
+    return {
+        "inserted_count": inserted,
+        "updated_count": updated,
+        "skipped_count": skipped,
+        "failed_count": failed,
+        "messages": messages,
+    }
+
+
+
 

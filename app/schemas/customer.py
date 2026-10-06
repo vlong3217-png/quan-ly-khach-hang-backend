@@ -125,3 +125,43 @@ class GroupCompanyTreeResponse(BaseModel):
     total_members: int
 
 
+class CustomerImportPreviewRow(BaseModel):
+    row_number: int
+    name: Optional[str] = None
+    tax_code: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    status: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    is_valid: bool = True
+    errors: List[str] = []
+    is_duplicate: bool = False
+    duplicate_reasons: List[str] = []
+    existing_customer_id: Optional[int] = None
+
+
+class CustomerImportPreviewResponse(BaseModel):
+    total_rows: int
+    valid_rows_count: int
+    invalid_rows_count: int
+    duplicate_rows_count: int
+    rows: List[CustomerImportPreviewRow]
+
+
+class CustomerImportCommitRequest(BaseModel):
+    duplicate_handling: str = "SKIP"  # "SKIP" (bỏ qua), "UPDATE" (cập nhật nếu trùng MST)
+    rows: List[CustomerImportPreviewRow]
+
+
+class CustomerImportCommitResponse(BaseModel):
+    inserted_count: int
+    updated_count: int
+    skipped_count: int
+    failed_count: int
+    messages: List[str] = []
+
+
+
