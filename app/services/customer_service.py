@@ -362,3 +362,153 @@ def get_customer_360(customer_id: int) -> Optional[dict]:
         "churn_risk": False,
     }
 
+
+def _normalize_str(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    import re
+    # Lowercase and remove punctuation/extra spaces
+    s = s.lower().strip()
+    s = re.sub(r"[,\.\-_/\\]", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def find_duplicate_customers(customer_id: int) -> List[dict]:
+    """
+    AC S3-04: Phát hiện trùng dựa trên:
+    - Trùng Mã số thuế (tax_code)
+    - Tên doanh nghiệp tương tự (chứa nhau hoặc độ tương đồng cao)
+    - Trùng website (domain) hoặc email/phone
+    """
+    target = get_customer_by_id(customer_id)
+    if not target:
+        return []
+
+    duplicates = []
+    target_name_norm = _normalize_str(target.get("name"))
+    target_tax = target.get("tax_code")
+    target_website = _normalize_str(target.get("website"))
+    target_phone = target.get("phone")
+
+    for c in FAKE_CUSTOMERS:
+        if c["id"] == customer_id:
+            continue
+
+        reasons = []
+        score = 0.0
+
+        # 1. Tax code match (100% confidence)
+        if target_tax and c.get("tax_code") and target_tax == c.get("tax_code"):
+            reasons.append(f"Trùng mã số thuế: {target_tax}")
+            score = max(score, 1.0)
+
+        # 2. Website match
+        c_web = _normalize_str(c.get("website"))
+        if target_website and c_web and (target_website in c_web or c_web in target_website):
+            reasons.append(f"Trùng hoặc tương đồng website: {c.get('website')}")
+            score = max(score, 0.9)
+
+        # 3. Phone match
+        if target_phone and c.get("phone") and target_phone == c.get("phone"):
+            reasons.append(f"Trùng số điện thoại: {target_phone}")
+            score = max(score, 0.85)
+
+        # 4. Name similarity
+        c_name_norm = _normalize_str(c.get("name"))
+        if target_name_norm and c_name_norm:
+            # Check if name contains each other (e.g. 'công ty cổ phần abc' and 'công ty abc')
+            words_target = set(target_name_norm.split())
+            words_c = set(c_name_norm.split())
+            common_words = words_target.intersection(words_c)
+            total_words = words_target.union(words_c)
+            jaccard = len(common_words) / len(total_words) if total_words else 0
+
+            if jaccard >= 0.5 or (target_name_norm in c_name_norm) or (c_name_norm in target_name_norm):
+                reasons.append(f"Tên doanh nghiệp tương tự ({int(jaccard * 100)}% từ khóa trùng khớp)")
+                score = max(score, min(0.95, round(jaccard, 2)))
+
+        if reasons:
+            duplicates.append({
+                "customer": _enrich_customer_names(c),
+                "match_reasons": reasons,
+                "confidence_score": score,
+            })
+
+    # Sắp xếp confidence_score giảm dần
+    duplicates.sort(key=lambda x: x["confidence_score"], reverse=True)
+    return duplicates
+
+
+def merge_customers(
+    primary_id: int,
+    secondary_id: int,
+    chosen_fields: Optional[dict] = None,
+    current_user_username: str = "manager",
+) -> dict:
+    """
+    AC S3-04: Gộp hai khách hàng:
+    - Giữ lại hồ sơ chính (primary_id).
+    - Chuyển toàn bộ contacts, opportunities, activities từ secondary sang primary.
+    - Cập nhật các trường thông tin được chọn (chosen_fields).
+    - Xóa hoặc vô hiệu hóa hồ sơ phụ (secondary_id).
+    """
+    if primary_id == secondary_id:
+        raise ValueError("Hồ sơ chính và hồ sơ phụ không thể trùng nhau")
+
+    primary = None
+    secondary = None
+    for c in FAKE_CUSTOMERS:
+        if c["id"] == primary_id:
+            primary = c
+        elif c["id"] == secondary_id:
+            secondary = c
+
+    if not primary:
+        raise ValueError(f"Không tìm thấy hồ sơ chính ID #{primary_id}")
+    if not secondary:
+        raise ValueError(f"Không tìm thấy hồ sơ phụ ID #{secondary_id}")
+
+    # 1. Cập nhật các trường được chọn vào primary
+    if chosen_fields:
+        for k, v in chosen_fields.items():
+            if v is not None and k not in ("id", "created_at"):
+                primary[k] = v
+
+    # 2. Chuyển Contacts từ secondary sang primary
+    from app.services import contact_service
+    for contact in contact_service.FAKE_CONTACTS:
+        if contact.get("customer_id") == secondary_id:
+            contact["customer_id"] = primary_id
+            contact["history"].append({
+                "action": "MERGE",
+                "from_customer_id": secondary_id,
+                "to_customer_id": primary_id,
+                "note": f"Gộp khách hàng #{secondary_id} vào #{primary_id}",
+                "performed_by": current_user_username,
+                "timestamp": datetime.now(),
+            })
+
+    # 3. Chuyển Opportunities từ secondary sang primary
+    from app.services import opportunity_service
+    for opp in opportunity_service.FAKE_OPPORTUNITIES:
+        if opp.get("customer_id") == secondary_id:
+            opp["customer_id"] = primary_id
+
+    # 4. Chuyển Activities từ secondary sang primary
+    from app.services import activity_service
+    for act in activity_service.FAKE_ACTIVITIES:
+        if act.get("customer_id") == secondary_id:
+            act["customer_id"] = primary_id
+
+    # 5. Chuyển Attachments từ secondary sang primary
+    for att in CUSTOMER_ATTACHMENTS:
+        if att.get("customer_id") == secondary_id:
+            att["customer_id"] = primary_id
+
+    # 6. Xóa secondary khỏi danh sách khách hàng
+    delete_customer_record(secondary_id)
+
+    return _enrich_customer_names(primary)
+
+

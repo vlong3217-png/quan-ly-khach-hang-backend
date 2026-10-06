@@ -9,7 +9,7 @@ Role restrictions:
   (data and actions are constrained by MY / TEAM / ALL scope).
 """
 
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.dependencies import (
@@ -25,16 +25,21 @@ from app.schemas.customer import (
     CustomerResponse,
     CustomerUpdate,
     Customer360Response,
+    DuplicateCandidate,
+    MergeCustomerRequest,
 )
 from app.services.customer_service import (
     create_customer_record,
     delete_customer_record,
+    find_duplicate_customers,
     get_customer_by_id,
     get_customer_360,
     get_customers_by_scope,
     get_raw_customer_by_id,
+    merge_customers,
     update_customer_record,
 )
+
 
 
 router = APIRouter(
@@ -204,10 +209,60 @@ def update_customer(
     return updated
 
 
+@router.get("/{customer_id}/duplicates", response_model=List[DuplicateCandidate])
+def check_duplicate_customers(
+    customer_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-04: Tự động cảnh báo và phát hiện hồ sơ khách hàng trùng lặp:
+    - Trùng Mã số thuế (tax_code)
+    - Tên doanh nghiệp tương tự
+    - Trùng website, điện thoại
+    """
+    customer = get_customer_by_id(customer_id)
+    if not customer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Customer with ID {customer_id} not found",
+        )
+    return find_duplicate_customers(customer_id)
+
+
+@router.post(
+    "/merge",
+    response_model=CustomerResponse,
+    dependencies=[Depends(require_roles(["ADMIN", "MANAGER"]))],
+)
+def merge_customer_profiles(
+    payload: MergeCustomerRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-04: Gộp khách hàng (Chỉ Trưởng nhóm - MANAGER hoặc ADMIN mới có quyền gộp).
+    - Giữ lại hồ sơ chính, chuyển toàn bộ liên hệ, cơ hội, lịch sử tương tác từ hồ sơ phụ sang chính.
+    """
+    try:
+        user_name = current_user.get("username") or current_user.get("full_name") or current_user.get("email") or "manager"
+        merged = merge_customers(
+            primary_id=payload.primary_customer_id,
+            secondary_id=payload.secondary_customer_id,
+            chosen_fields=payload.chosen_fields,
+            current_user_username=user_name,
+        )
+        return merged
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
 @router.delete(
     "/{customer_id}",
     dependencies=[Depends(require_roles(["ADMIN"]))],
 )
+
 def delete_customer(customer_id: int):
     """
     Delete a customer (ADMIN only).
