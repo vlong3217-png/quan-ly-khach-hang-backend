@@ -32,11 +32,15 @@ from app.schemas.customer import (
     CustomerImportPreviewResponse,
     CustomerImportCommitRequest,
     CustomerImportCommitResponse,
+    SavedFilterCreate,
+    SavedFilterResponse,
 )
 from app.services.customer_service import (
     commit_customer_import,
     create_customer_record,
+    create_saved_filter,
     delete_customer_record,
+    delete_saved_filter,
     find_duplicate_customers,
     generate_customer_template_excel,
     get_company_group_tree,
@@ -44,10 +48,12 @@ from app.services.customer_service import (
     get_customer_360,
     get_customers_by_scope,
     get_raw_customer_by_id,
+    list_saved_filters,
     merge_customers,
     preview_customer_import_excel,
     update_customer_record,
 )
+
 
 
 
@@ -68,6 +74,10 @@ def list_customers(
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
     status: Optional[str] = Query(None, description="Lọc theo trạng thái: PROSPECT, IN_TRANSACTION, CUSTOMER, DISCONTINUED"),
+    industry: Optional[str] = Query(None, description="Lọc theo ngành nghề"),
+    company_size: Optional[str] = Query(None, description="Lọc theo quy mô doanh nghiệp"),
+    address: Optional[str] = Query(None, description="Lọc theo địa chỉ / khu vực"),
+    owner_id: Optional[int] = Query(None, description="Lọc theo nhân viên phụ trách"),
     page: Optional[int] = Query(None, ge=1, description="Số trang (bắt đầu từ 1)"),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng khách hàng mỗi trang (mặc định 20)"),
     skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (offset)"),
@@ -106,7 +116,12 @@ def list_customers(
         skip=effective_skip,
         limit=effective_limit,
         status_filter=status,
+        industry_filter=industry,
+        company_size_filter=company_size,
+        address_filter=address,
+        owner_id_filter=owner_id,
     )
+
 
     total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
 
@@ -121,8 +136,44 @@ def list_customers(
     }
 
 
+@router.get("/saved-filters", response_model=List[SavedFilterResponse])
+def get_user_saved_filters(
+    current_user: dict = Depends(get_current_user),
+):
+    """AC S3-07: Lấy danh sách các bộ lọc khách hàng đã lưu của người dùng hiện tại."""
+    return list_saved_filters(user_id=current_user["id"])
+
+
+@router.post("/saved-filters", response_model=SavedFilterResponse, status_code=status.HTTP_201_CREATED)
+def save_customer_filter(
+    payload: SavedFilterCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    """AC S3-07: Lưu bộ lọc tùy biến để tái sử dụng nhanh chóng."""
+    return create_saved_filter(
+        user_id=current_user["id"],
+        name=payload.name,
+        filter_criteria=payload.filter_criteria,
+    )
+
+
+@router.delete("/saved-filters/{filter_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_saved_filter(
+    filter_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """AC S3-07: Xóa bộ lọc đã lưu."""
+    success = delete_saved_filter(filter_id=filter_id, user_id=current_user["id"])
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy bộ lọc đã lưu để xóa",
+        )
+    return None
+
 
 @router.get("/{customer_id}", response_model=CustomerResponse)
+
 def get_customer(
     customer_id: int,
     current_user: dict = Depends(get_current_user),
@@ -357,6 +408,7 @@ def commit_customer_import_records(
     "/{customer_id}",
     dependencies=[Depends(require_roles(["ADMIN"]))],
 )
+
 
 
 
