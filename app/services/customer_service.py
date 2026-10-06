@@ -121,6 +121,10 @@ def get_raw_customer_by_id(customer_id: int) -> Optional[dict]:
     return None
 
 
+get_customer_by_id = get_raw_customer_by_id
+
+
+
 def get_customers_by_scope(
     current_user: dict,
     scope: DataScope,
@@ -273,3 +277,88 @@ def delete_customer_record(customer_id: int) -> bool:
     initial_len = len(FAKE_CUSTOMERS)
     FAKE_CUSTOMERS = [c for c in FAKE_CUSTOMERS if c["id"] != customer_id]
     return len(FAKE_CUSTOMERS) < initial_len
+
+
+CUSTOMER_ATTACHMENTS: List[dict] = [
+    {
+        "id": 1,
+        "customer_id": 1,
+        "filename": "hop_dong_nguyen_tac_2026.pdf",
+        "file_url": "/uploads/documents/hop_dong_nguyen_tac_2026.pdf",
+        "file_size_bytes": 1048576,
+        "uploaded_by": "admin",
+        "created_at": datetime(2026, 1, 15, 10, 0, 0),
+    },
+    {
+        "id": 2,
+        "customer_id": 1,
+        "filename": "giay_phep_kinh_doanh.pdf",
+        "file_url": "/uploads/documents/giay_phep_kinh_doanh.pdf",
+        "file_size_bytes": 524288,
+        "uploaded_by": "admin",
+        "created_at": datetime(2026, 1, 10, 8, 45, 0),
+    },
+]
+
+
+def add_customer_attachment(customer_id: int, filename: str, file_url: str, file_size_bytes: int, uploaded_by: str) -> dict:
+    new_id = max([a["id"] for a in CUSTOMER_ATTACHMENTS], default=0) + 1
+    item = {
+        "id": new_id,
+        "customer_id": customer_id,
+        "filename": filename,
+        "file_url": file_url,
+        "file_size_bytes": file_size_bytes,
+        "uploaded_by": uploaded_by,
+        "created_at": datetime.now(),
+    }
+    CUSTOMER_ATTACHMENTS.append(item)
+    return item
+
+
+def get_customer_360(customer_id: int) -> Optional[dict]:
+    """Tổng hợp Customer 360 View toàn diện."""
+    customer = get_customer_by_id(customer_id)
+    if not customer:
+        return None
+
+    # 1. Contacts
+    from app.services import contact_service
+    contacts = contact_service.list_contacts(customer_id=customer_id)
+
+    # 2. Opportunities (Open vs Won/Lost)
+    from app.services import opportunity_service
+    all_opps = opportunity_service.FAKE_OPPORTUNITIES
+    cust_opps = [o for o in all_opps if o.get("customer_id") == customer_id]
+    
+    open_stages = ["PROSPECTING", "QUALIFICATION", "PROPOSAL", "NEGOTIATION"]
+    closed_stages = ["CLOSED_WON", "CLOSED_LOST"]
+
+    open_opps = [o for o in cust_opps if o.get("stage") in open_stages]
+    closed_opps = [o for o in cust_opps if o.get("stage") in closed_stages]
+
+    total_won_value = sum(float(o.get("value", 0)) for o in closed_opps if o.get("stage") == "CLOSED_WON")
+    total_open_value = sum(float(o.get("value", 0)) for o in open_opps)
+
+    # 3. Activities timeline
+    from app.services import activity_service
+    all_activities = activity_service.FAKE_ACTIVITIES
+    cust_activities = [a for a in all_activities if a.get("customer_id") == customer_id]
+    # Sắp xếp timeline theo id giảm dần
+    cust_activities.sort(key=lambda x: x.get("id", 0), reverse=True)
+
+    # 4. Attachments
+    attachments = [a for a in CUSTOMER_ATTACHMENTS if a.get("customer_id") == customer_id]
+
+    return {
+        "customer": customer,
+        "contacts": contacts,
+        "open_opportunities": open_opps,
+        "closed_opportunities": closed_opps,
+        "activities_timeline": cust_activities,
+        "attachments": attachments,
+        "total_won_value": total_won_value,
+        "total_open_value": total_open_value,
+        "churn_risk": False,
+    }
+

@@ -24,14 +24,18 @@ from app.schemas.customer import (
     CustomerListResponse,
     CustomerResponse,
     CustomerUpdate,
+    Customer360Response,
 )
 from app.services.customer_service import (
     create_customer_record,
     delete_customer_record,
+    get_customer_by_id,
+    get_customer_360,
     get_customers_by_scope,
     get_raw_customer_by_id,
     update_customer_record,
 )
+
 
 router = APIRouter(
     prefix="/customers",
@@ -126,6 +130,34 @@ def get_customer(
         )
 
     return customer
+
+
+@router.get("/{customer_id}/360", response_model=Customer360Response)
+def get_customer_360_view(
+    customer_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-03: Customer 360 View toàn diện.
+    Bao gồm thông tin công ty, danh sách người liên hệ, cơ hội đang mở / đã ký,
+    dòng thời gian hoạt động tương tác, tài liệu đính kèm, tổng giá trị hợp đồng.
+    """
+    customer = get_customer_by_id(customer_id)
+    if customer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Customer with ID {customer_id} not found",
+        )
+
+    if not check_scope_access(current_user, customer["owner_id"], customer.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập dữ liệu khách hàng này",
+        )
+
+    view_360 = get_customer_360(customer_id)
+    return view_360
+
 
 
 @router.post("", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
