@@ -141,12 +141,17 @@ def get_customers_by_scope(
     skip: Optional[int] = None,
     limit: Optional[int] = None,
     status_filter: Optional[str] = None,
+    industry_filter: Optional[str] = None,
+    company_size_filter: Optional[str] = None,
+    address_filter: Optional[str] = None,
+    owner_id_filter: Optional[int] = None,
 ) -> tuple[int, list[dict]]:
     """
-    AC S3-01:
+    AC S3-01 & S3-07:
     - Nhân viên (USER) chỉ thấy khách hàng mình sở hữu (owner_id == user_id).
     - Trưởng nhóm (MANAGER) thấy toàn bộ khách hàng của nhóm (team_id == user_team_id).
     - Quản trị viên (ADMIN) thấy tất cả.
+    - Tìm kiếm và lọc đa điều kiện: ngành nghề, quy mô, địa chỉ/khu vực, người phụ trách, trạng thái.
     """
     if scope == DataScope.ALL:
         results = list(FAKE_CUSTOMERS)
@@ -164,6 +169,21 @@ def get_customers_by_scope(
         sf = status_filter.strip().upper()
         results = [c for c in results if str(c.get("status", "")).upper() == sf]
 
+    if industry_filter:
+        ind = industry_filter.strip().lower()
+        results = [c for c in results if ind in str(c.get("industry") or "").lower()]
+
+    if company_size_filter:
+        cs = company_size_filter.strip().lower()
+        results = [c for c in results if cs in str(c.get("company_size") or "").lower()]
+
+    if address_filter:
+        addr = address_filter.strip().lower()
+        results = [c for c in results if addr in str(c.get("address") or "").lower()]
+
+    if owner_id_filter is not None:
+        results = [c for c in results if c.get("owner_id") == owner_id_filter]
+
     if search:
         s = search.lower().strip()
         results = [
@@ -177,6 +197,7 @@ def get_customers_by_scope(
         ]
 
     total = len(results)
+
 
     # Áp dụng phân trang nếu có skip / limit
     if skip is not None and limit is not None:
@@ -793,6 +814,46 @@ def commit_customer_import(
         "failed_count": failed,
         "messages": messages,
     }
+
+
+FAKE_SAVED_FILTERS: List[dict] = [
+    {
+        "id": 1,
+        "user_id": 1,
+        "name": "Khách hàng công nghệ tiềm năng",
+        "filter_criteria": {
+            "industry": "Công nghệ thông tin",
+            "status": "PROSPECT",
+        },
+        "created_at": datetime(2026, 1, 15, 8, 0, 0),
+    }
+]
+
+
+def list_saved_filters(user_id: int) -> List[dict]:
+    return [f for f in FAKE_SAVED_FILTERS if f["user_id"] == user_id]
+
+
+def create_saved_filter(user_id: int, name: str, filter_criteria: dict) -> dict:
+    new_id = max([f["id"] for f in FAKE_SAVED_FILTERS], default=0) + 1
+    item = {
+        "id": new_id,
+        "user_id": user_id,
+        "name": name,
+        "filter_criteria": filter_criteria,
+        "created_at": datetime.now(),
+    }
+    FAKE_SAVED_FILTERS.append(item)
+    return item
+
+
+def delete_saved_filter(filter_id: int, user_id: int) -> bool:
+    for i, f in enumerate(FAKE_SAVED_FILTERS):
+        if f["id"] == filter_id and f["user_id"] == user_id:
+            FAKE_SAVED_FILTERS.pop(i)
+            return True
+    return False
+
 
 
 

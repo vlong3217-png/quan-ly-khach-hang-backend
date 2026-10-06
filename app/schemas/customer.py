@@ -164,4 +164,20 @@ class CustomerImportCommitResponse(BaseModel):
     messages: List[str] = []
 
 
+class SavedFilterBase(BaseModel):
+    name: str
+    filter_criteria: dict
+
+
+class SavedFilterCreate(SavedFilterBase):
+    pass
+
+
+class SavedFilterResponse(SavedFilterBase):
+    id: int
+    user_id: int
+    created_at: datetime
+
+
+
 
