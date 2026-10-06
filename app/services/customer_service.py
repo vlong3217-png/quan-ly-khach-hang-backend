@@ -381,6 +381,10 @@ def get_customer_360(customer_id: int) -> Optional[dict]:
     # 4. Attachments
     attachments = [a for a in CUSTOMER_ATTACHMENTS if a.get("customer_id") == customer_id]
 
+    # 5. Churn risk evaluation
+    from app.services import ticket_service
+    risk_eval = ticket_service.evaluate_churn_risk(customer_id)
+
     return {
         "customer": customer,
         "contacts": contacts,
@@ -390,8 +394,9 @@ def get_customer_360(customer_id: int) -> Optional[dict]:
         "attachments": attachments,
         "total_won_value": total_won_value,
         "total_open_value": total_open_value,
-        "churn_risk": False,
+        "churn_risk": risk_eval["is_at_risk"],
     }
+
 
 
 def _normalize_str(s: Optional[str]) -> str:

@@ -14,6 +14,7 @@ from app.routers.activities import router as activities_router
 from app.routers.quotes import router as quotes_router
 from app.routers.menu import router as menu_router
 from app.routers.contacts import router as contacts_router
+from app.routers.tickets import router as tickets_router
 
 app = FastAPI(
     title="Customer Management API",
@@ -75,6 +76,7 @@ app.include_router(quotes_router)
 app.include_router(menu_router)
 app.include_router(menu_router, prefix="/auth")
 app.include_router(contacts_router)
+app.include_router(tickets_router)
 
 from app.routers.audit_logs import router as audit_logs_router
 app.include_router(audit_logs_router)
