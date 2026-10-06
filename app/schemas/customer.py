@@ -90,3 +90,16 @@ class Customer360Response(BaseModel):
     total_won_value: float = 0.0
     total_open_value: float = 0.0
     churn_risk: bool = False
+
+
+class DuplicateCandidate(BaseModel):
+    customer: CustomerResponse
+    match_reasons: List[str]
+    confidence_score: float  # e.g. 0.0 - 1.0
+
+
+class MergeCustomerRequest(BaseModel):
+    primary_customer_id: int
+    secondary_customer_id: int
+    chosen_fields: Optional[dict] = None  # ghi đè các trường nếu chọn từ secondary (ví dụ: phone, address, website)
+
