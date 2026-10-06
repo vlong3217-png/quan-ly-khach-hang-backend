@@ -103,14 +103,23 @@ def reset_fake_customers() -> None:
 
 
 def _enrich_customer_names(customer: dict) -> dict:
-    """Bổ sung owner_name và team_name cho customer response."""
+    """Bổ sung owner_name, team_name và parent_company_name cho customer response."""
     c = copy.deepcopy(customer)
     owner = auth_service.get_user_by_id(c.get("owner_id"))
     c["owner_name"] = owner["full_name"] if owner else None
 
     team = auth_service.get_team_by_id(c.get("team_id"))
     c["team_name"] = team["name"] if team else None
+
+    parent_id = c.get("parent_company_id")
+    if parent_id:
+        parent = next((p for p in FAKE_CUSTOMERS if p["id"] == parent_id), None)
+        c["parent_company_name"] = parent["name"] if parent else None
+    else:
+        c["parent_company_name"] = None
+
     return c
+
 
 
 def get_raw_customer_by_id(customer_id: int) -> Optional[dict]:
@@ -229,6 +238,7 @@ def create_customer_record(data: dict, current_user: dict) -> dict:
         "website": data.get("website"),
         "address": data.get("address"),
         "status": data.get("status", "PROSPECT"),
+        "parent_company_id": data.get("parent_company_id"),
         "email": data.get("email"),
         "phone": data.get("phone"),
         "company": data.get("company") or data["name"].strip(),
@@ -510,5 +520,51 @@ def merge_customers(
     delete_customer_record(secondary_id)
 
     return _enrich_customer_names(primary)
+
+
+def get_company_group_tree(parent_id: int) -> Optional[dict]:
+    """
+    AC S3-05: Sơ đồ phân cấp công ty mẹ - công ty con / chi nhánh
+    và tổng hợp hợp đồng/cơ hội toàn tập đoàn.
+    """
+    parent = get_customer_by_id(parent_id)
+    if not parent:
+        return None
+
+    from app.services import opportunity_service
+    all_opps = opportunity_service.FAKE_OPPORTUNITIES
+
+    # Tìm các công ty con trực tiếp
+    children = [c for c in FAKE_CUSTOMERS if c.get("parent_company_id") == parent_id]
+    
+    subsidiary_summaries = []
+    total_group_won = sum(float(o.get("value", 0)) for o in all_opps if o.get("customer_id") == parent_id and o.get("stage") == "CLOSED_WON")
+    total_group_open = sum(float(o.get("value", 0)) for o in all_opps if o.get("customer_id") == parent_id and o.get("stage") in ("PROSPECTING", "QUALIFICATION", "PROPOSAL", "NEGOTIATION"))
+
+    for child in children:
+        c_id = child["id"]
+        c_won = sum(float(o.get("value", 0)) for o in all_opps if o.get("customer_id") == c_id and o.get("stage") == "CLOSED_WON")
+        c_open = sum(float(o.get("value", 0)) for o in all_opps if o.get("customer_id") == c_id and o.get("stage") in ("PROSPECTING", "QUALIFICATION", "PROPOSAL", "NEGOTIATION"))
+        
+        total_group_won += c_won
+        total_group_open += c_open
+
+        subsidiary_summaries.append({
+            "id": c_id,
+            "name": child["name"],
+            "tax_code": child.get("tax_code"),
+            "status": child.get("status", "PROSPECT"),
+            "total_won_value": c_won,
+            "total_open_value": c_open,
+        })
+
+    return {
+        "parent": parent,
+        "subsidiaries": subsidiary_summaries,
+        "total_group_won_value": total_group_won,
+        "total_group_open_value": total_group_open,
+        "total_members": len(subsidiary_summaries) + 1,
+    }
+
 
 
