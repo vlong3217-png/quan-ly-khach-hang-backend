@@ -15,6 +15,11 @@ from app.routers.quotes import router as quotes_router
 from app.routers.menu import router as menu_router
 from app.routers.contacts import router as contacts_router
 from app.routers.tickets import router as tickets_router
+from app.models import Base
+from app.core.database import engine
+
+# Tự động tạo các bảng SQL nếu chưa tồn tại
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Customer Management API",
