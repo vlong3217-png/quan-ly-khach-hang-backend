@@ -9,6 +9,8 @@ from fastapi import HTTPException, status
 
 from app.core.dependencies import DataScope
 from app.services import auth_service
+from app.core.database import SessionLocal
+from app.models.customer import Customer as CustomerModel
 
 INITIAL_CUSTOMERS = [
     {
@@ -268,6 +270,33 @@ def create_customer_record(data: dict, current_user: dict) -> dict:
         "created_at": datetime.utcnow(),
     }
     FAKE_CUSTOMERS.append(new_customer)
+    
+    # Đồng bộ lưu vào CSDL MySQL
+    try:
+        db = SessionLocal()
+        db_customer = CustomerModel(
+            id=new_id,
+            name=new_customer["name"],
+            tax_code=new_customer.get("tax_code"),
+            industry=new_customer.get("industry"),
+            company_size=new_customer.get("company_size"),
+            website=new_customer.get("website"),
+            address=new_customer.get("address"),
+            status=new_customer.get("status", "PROSPECT"),
+            parent_company_id=new_customer.get("parent_company_id"),
+            email=new_customer.get("email"),
+            phone=new_customer.get("phone"),
+            company=new_customer.get("company"),
+            owner_id=new_customer["owner_id"],
+            team_id=new_customer.get("team_id"),
+            created_at=new_customer["created_at"],
+        )
+        db.merge(db_customer)
+        db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return _enrich_customer_names(new_customer)
 
 
@@ -299,6 +328,19 @@ def update_customer_record(
         if value is not None and key != "id":
             customer[key] = value
 
+    # Đồng bộ cập nhật vào CSDL MySQL
+    try:
+        db = SessionLocal()
+        db_cust = db.query(CustomerModel).filter(CustomerModel.id == customer_id).first()
+        if db_cust:
+            for key, value in data.items():
+                if hasattr(db_cust, key) and value is not None:
+                    setattr(db_cust, key, value)
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return _enrich_customer_names(customer)
 
 
@@ -307,7 +349,21 @@ def delete_customer_record(customer_id: int) -> bool:
     global FAKE_CUSTOMERS
     initial_len = len(FAKE_CUSTOMERS)
     FAKE_CUSTOMERS = [c for c in FAKE_CUSTOMERS if c["id"] != customer_id]
-    return len(FAKE_CUSTOMERS) < initial_len
+    deleted = len(FAKE_CUSTOMERS) < initial_len
+
+    # Đồng bộ xóa trong CSDL MySQL
+    if deleted:
+        try:
+            db = SessionLocal()
+            db_cust = db.query(CustomerModel).filter(CustomerModel.id == customer_id).first()
+            if db_cust:
+                db.delete(db_cust)
+                db.commit()
+            db.close()
+        except Exception:
+            pass
+
+    return deleted
 
 
 CUSTOMER_ATTACHMENTS: List[dict] = [
