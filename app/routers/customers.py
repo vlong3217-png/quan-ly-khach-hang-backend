@@ -60,6 +60,7 @@ from app.services.customer_service import (
     mark_customer_care_interaction,
     merge_customers,
     preview_customer_import_excel,
+    preview_merge_customers,
     update_customer_record,
 )
 
@@ -421,6 +422,49 @@ def check_duplicate_customers(
 
 
 @router.post(
+    "/merge-preview",
+    response_model=CustomerMergePreviewResponse,
+    dependencies=[Depends(require_roles(["ADMIN", "MANAGER"]))],
+)
+def preview_customer_merge(
+    payload: MergeCustomerRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-04: Xem trước so sánh hai hồ sơ khách hàng trước khi gộp.
+    Kiểm tra quyền truy cập data scope ở cả hai khách hàng.
+    """
+    primary = get_raw_customer_by_id(payload.primary_customer_id)
+    secondary = get_raw_customer_by_id(payload.secondary_customer_id)
+    if not primary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy hồ sơ chính ID #{payload.primary_customer_id}",
+        )
+    if not secondary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy hồ sơ phụ ID #{payload.secondary_customer_id}",
+        )
+
+    if not check_scope_access(current_user, primary.get("owner_id", 0), primary.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập hồ sơ chính trong phạm vi quản lý",
+        )
+    if not check_scope_access(current_user, secondary.get("owner_id", 0), secondary.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập hồ sơ phụ trong phạm vi quản lý",
+        )
+
+    try:
+        return preview_merge_customers(payload.primary_customer_id, payload.secondary_customer_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post(
     "/merge",
     response_model=CustomerResponse,
     dependencies=[Depends(require_roles(["ADMIN", "MANAGER"]))],
@@ -432,7 +476,32 @@ def merge_customer_profiles(
     """
     AC S3-04: Gộp khách hàng (Chỉ Trưởng nhóm - MANAGER hoặc ADMIN mới có quyền gộp).
     - Giữ lại hồ sơ chính, chuyển toàn bộ liên hệ, cơ hội, lịch sử tương tác từ hồ sơ phụ sang chính.
+    - Kiểm tra quyền truy cập data scope ở cả hai khách hàng.
     """
+    primary = get_raw_customer_by_id(payload.primary_customer_id)
+    secondary = get_raw_customer_by_id(payload.secondary_customer_id)
+    if not primary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy hồ sơ chính ID #{payload.primary_customer_id}",
+        )
+    if not secondary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy hồ sơ phụ ID #{payload.secondary_customer_id}",
+        )
+
+    if not check_scope_access(current_user, primary.get("owner_id", 0), primary.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập hồ sơ chính trong phạm vi quản lý",
+        )
+    if not check_scope_access(current_user, secondary.get("owner_id", 0), secondary.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập hồ sơ phụ trong phạm vi quản lý",
+        )
+
     try:
         user_name = current_user.get("username") or current_user.get("full_name") or current_user.get("email") or "manager"
         merged = merge_customers(

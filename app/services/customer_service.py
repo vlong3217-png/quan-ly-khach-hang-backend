@@ -576,46 +576,157 @@ def find_duplicate_customers(customer_id: int) -> List[dict]:
     return duplicates
 
 
-def merge_customers(
-    primary_id: int,
-    secondary_id: int,
-    chosen_fields: Optional[dict] = None,
-    current_user_username: str = "manager",
-) -> dict:
-    """
-    AC S3-04: Gộp hai khách hàng:
-    - Giữ lại hồ sơ chính (primary_id).
-    - Chuyển toàn bộ contacts, opportunities, activities từ secondary sang primary.
-    - Cập nhật các trường thông tin được chọn (chosen_fields).
-    - Xóa hoặc vô hiệu hóa hồ sơ phụ (secondary_id).
-    """
+def preview_merge_customers(primary_id: int, secondary_id: int) -> dict:
+    """AC S3-04: API xem trước so sánh hai hồ sơ và số lượng quan hệ sẽ chuyển."""
     if primary_id == secondary_id:
         raise ValueError("Hồ sơ chính và hồ sơ phụ không thể trùng nhau")
 
-    primary = None
-    secondary = None
-    for c in FAKE_CUSTOMERS:
-        if c["id"] == primary_id:
-            primary = c
-        elif c["id"] == secondary_id:
-            secondary = c
-
+    primary = get_customer_by_id(primary_id)
+    secondary = get_customer_by_id(secondary_id)
     if not primary:
         raise ValueError(f"Không tìm thấy hồ sơ chính ID #{primary_id}")
     if not secondary:
         raise ValueError(f"Không tìm thấy hồ sơ phụ ID #{secondary_id}")
 
-    # 1. Cập nhật các trường được chọn vào primary
-    if chosen_fields:
-        for k, v in chosen_fields.items():
+    fields_to_compare = [
+        ("name", "Tên doanh nghiệp"),
+        ("tax_code", "Mã số thuế"),
+        ("industry", "Ngành nghề"),
+        ("company_size", "Quy mô"),
+        ("website", "Website"),
+        ("address", "Địa chỉ"),
+        ("phone", "Số điện thoại"),
+        ("email", "Email"),
+        ("status", "Trạng thái"),
+    ]
+    comparison_fields = []
+    for f_key, _ in fields_to_compare:
+        p_val = primary.get(f_key)
+        s_val = secondary.get(f_key)
+        comparison_fields.append({
+            "field_name": f_key,
+            "primary_value": str(p_val) if p_val is not None else None,
+            "secondary_value": str(s_val) if s_val is not None else None,
+            "is_different": p_val != s_val,
+        })
+
+    from app.services import contact_service, opportunity_service, activity_service
+    contacts_cnt = len([c for c in contact_service.list_contacts() if c.get("customer_id") == secondary_id])
+    opps_cnt = len([o for o in opportunity_service.FAKE_OPPORTUNITIES if o.get("customer_id") == secondary_id])
+    acts_cnt = len([a for a in activity_service.FAKE_ACTIVITIES if a.get("customer_id") == secondary_id])
+    atts_cnt = len([a for a in CUSTOMER_ATTACHMENTS if a.get("customer_id") == secondary_id])
+
+    return {
+        "primary": primary,
+        "secondary": secondary,
+        "comparison_fields": comparison_fields,
+        "contacts_to_transfer": contacts_cnt,
+        "opportunities_to_transfer": opps_cnt,
+        "activities_to_transfer": acts_cnt,
+        "attachments_to_transfer": atts_cnt,
+    }
+
+
+def merge_customers(
+    primary_id: int,
+    secondary_id: int,
+    chosen_fields: Optional[Any] = None,
+    current_user_username: str = "manager",
+) -> dict:
+    """
+    AC S3-04: Gộp hai khách hàng bằng một database transaction:
+    - Lưu lịch sử gộp và snapshot định danh khách hàng cũ vào customer_merge_history.
+    - Cập nhật chosen_fields vào primary_id.
+    - Chuyển toàn bộ contacts, opportunities, activities, attachments từ secondary sang primary.
+    - Xóa secondary_id khỏi CSDL.
+    - Rollback toàn bộ nếu có bất kỳ bước nào thất bại.
+    """
+    if primary_id == secondary_id:
+        raise ValueError("Hồ sơ chính và hồ sơ phụ không thể trùng nhau")
+
+    primary = get_customer_by_id(primary_id)
+    secondary = get_customer_by_id(secondary_id)
+    if not primary:
+        raise ValueError(f"Không tìm thấy hồ sơ chính ID #{primary_id}")
+    if not secondary:
+        raise ValueError(f"Không tìm thấy hồ sơ phụ ID #{secondary_id}")
+
+    import json
+    from app.core.database import SessionLocal
+    from app.models.customer import Customer as CustomerModel, CustomerMergeHistory as CustomerMergeHistoryModel
+    from app.models.contact import Contact as ContactModel, ContactCompanyHistory as ContactCompanyHistoryModel
+
+    # Chuẩn hóa chosen_dict
+    chosen_dict = {}
+    if chosen_fields is not None:
+        if hasattr(chosen_fields, "model_dump"):
+            chosen_dict = chosen_fields.model_dump(exclude_unset=True)
+        elif isinstance(chosen_fields, dict):
+            chosen_dict = {k: v for k, v in chosen_fields.items() if v is not None and k not in ("id", "created_at")}
+
+    # 1. Thực thi gộp trong 1 Database Transaction
+    db = SessionLocal()
+    try:
+        db_primary = db.query(CustomerModel).filter(CustomerModel.id == primary_id).first()
+        db_secondary = db.query(CustomerModel).filter(CustomerModel.id == secondary_id).first()
+
+        # Lưu lịch sử gộp và định danh khách hàng cũ
+        secondary_snapshot = json.dumps(secondary, default=str, ensure_ascii=False)
+        merge_hist = CustomerMergeHistoryModel(
+            primary_customer_id=primary_id,
+            secondary_customer_id=secondary_id,
+            secondary_customer_name=secondary.get("name"),
+            secondary_snapshot=secondary_snapshot,
+            merged_by=current_user_username,
+        )
+        db.add(merge_hist)
+
+        # Cập nhật chosen_fields
+        if chosen_dict:
+            for k, v in chosen_dict.items():
+                if v is not None:
+                    primary[k] = v
+                    if db_primary and hasattr(db_primary, k):
+                        setattr(db_primary, k, v)
+
+        # Chuyển contacts trong database và lưu contact history
+        db_contacts = db.query(ContactModel).filter(ContactModel.customer_id == secondary_id).all()
+        for c_mod in db_contacts:
+            c_mod.customer_id = primary_id
+            c_mod.is_primary = False
+            h_mod = ContactCompanyHistoryModel(
+                contact_id=c_mod.id,
+                action="MERGE",
+                from_customer_id=secondary_id,
+                to_customer_id=primary_id,
+                note=f"Gộp từ khách hàng #{secondary_id} vào #{primary_id}",
+                performed_by=current_user_username,
+            )
+            db.add(h_mod)
+
+        # Xóa secondary trong database
+        if db_secondary:
+            db.delete(db_secondary)
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+    # 2. Đồng bộ in-memory
+    if chosen_dict:
+        for k, v in chosen_dict.items():
             if v is not None and k not in ("id", "created_at"):
                 primary[k] = v
 
-    # 2. Chuyển Contacts từ secondary sang primary
+    # Chuyển Contacts
     from app.services import contact_service
     for contact in contact_service.FAKE_CONTACTS:
         if contact.get("customer_id") == secondary_id:
             contact["customer_id"] = primary_id
+            contact["is_primary"] = False
             contact["history"].append({
                 "action": "MERGE",
                 "from_customer_id": secondary_id,
@@ -625,24 +736,24 @@ def merge_customers(
                 "timestamp": datetime.now(),
             })
 
-    # 3. Chuyển Opportunities từ secondary sang primary
+    # Chuyển Opportunities
     from app.services import opportunity_service
     for opp in opportunity_service.FAKE_OPPORTUNITIES:
         if opp.get("customer_id") == secondary_id:
             opp["customer_id"] = primary_id
 
-    # 4. Chuyển Activities từ secondary sang primary
+    # Chuyển Activities
     from app.services import activity_service
     for act in activity_service.FAKE_ACTIVITIES:
         if act.get("customer_id") == secondary_id:
             act["customer_id"] = primary_id
 
-    # 5. Chuyển Attachments từ secondary sang primary
+    # Chuyển Attachments
     for att in CUSTOMER_ATTACHMENTS:
         if att.get("customer_id") == secondary_id:
             att["customer_id"] = primary_id
 
-    # 6. Xóa secondary khỏi danh sách khách hàng
+    # Xóa secondary
     delete_customer_record(secondary_id)
 
     return _enrich_customer_names(primary)
