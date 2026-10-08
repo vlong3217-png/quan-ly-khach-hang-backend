@@ -77,15 +77,27 @@ def execute_handover(source_user_id: int, target_user_id: int) -> Dict[str, Any]
         )
 
     # 5. Chuyển giao dữ liệu
+    from app.services.audit_log_service import log_change
     transferred_items = []
     for item in assigned_data_store:
         if item.get("owner_id") == source_user_id:
+            old_owner = item["owner_id"]
             item["owner_id"] = target_user_id
             transferred_items.append({
                 "id": item["id"],
                 "type": item.get("type", "customer"),
                 "name": item.get("name"),
             })
+            log_change(
+                user_id=1,
+                user_name="Admin",
+                entity_type="DATA_OWNERSHIP",
+                entity_id=f"CUST-{item['id']}",
+                action="TRANSFER_OWNER",
+                field_name="owner_id",
+                old_value=str(old_owner),
+                new_value=str(target_user_id),
+            )
 
     return {
         "success": True,

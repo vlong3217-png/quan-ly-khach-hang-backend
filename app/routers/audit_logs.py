@@ -47,14 +47,3 @@ def list_audit_logs_endpoint(
         limit=limit,
     )
 
-
-@router.delete(
-    "",
-    summary="Xóa toàn bộ nhật ký hệ thống (ADMIN only)",
-)
-def clear_audit_logs_endpoint(admin_user: dict = Depends(require_admin)):
-    """Xóa toàn bộ nhật ký trong CSDL và RAM."""
-    from app.services.audit_log_service import clear_all_audit_logs
-    count = clear_all_audit_logs()
-    return {"message": f"Đã xóa thành công {count} bản ghi nhật ký hệ thống", "deleted_count": count}
-
