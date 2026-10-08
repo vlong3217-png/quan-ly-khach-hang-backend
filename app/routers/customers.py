@@ -11,6 +11,8 @@ Role restrictions:
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Response, status
+from sqlalchemy.orm import Session
+from app.core.database import get_db
 
 
 from app.core.dependencies import (
@@ -21,11 +23,13 @@ from app.core.dependencies import (
     resolve_scope,
 )
 from app.schemas.customer import (
+    CustomerAttachment,
     CustomerCreate,
     CustomerListResponse,
     CustomerResponse,
     CustomerUpdate,
     Customer360Response,
+    CustomerMergePreviewResponse,
     DuplicateCandidate,
     MergeCustomerRequest,
     GroupCompanyTreeResponse,
@@ -38,6 +42,7 @@ from app.schemas.customer import (
     MarkCareInteractionRequest,
 )
 from app.services.customer_service import (
+    add_customer_attachment,
     commit_customer_import,
     create_customer_record,
     create_saved_filter,
@@ -266,6 +271,72 @@ def get_customer_360_view(
     return view_360
 
 
+@router.post("/{customer_id}/attachments", response_model=CustomerAttachment, status_code=status.HTTP_201_CREATED)
+async def upload_customer_attachment(
+    customer_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S3-03: Tải lên và lưu tệp đính kèm thực tế cho khách hàng.
+    Kiểm tra quyền truy cập data scope của người dùng đối với khách hàng.
+    """
+    import os
+    customer = get_customer_by_id(customer_id)
+    if customer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Customer with ID {customer_id} not found",
+        )
+
+    if not check_scope_access(current_user, customer["owner_id"], customer.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền tải lên tệp đính kèm cho khách hàng này",
+        )
+
+    contents = await file.read()
+    upload_dir = os.path.join("uploads", "attachments", str(customer_id))
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, file.filename)
+    with open(file_path, "wb") as f:
+        f.write(contents)
+
+    file_url = f"/uploads/attachments/{customer_id}/{file.filename}"
+    user_name = current_user.get("username") or current_user.get("full_name") or "user"
+    attachment = add_customer_attachment(
+        customer_id=customer_id,
+        filename=file.filename,
+        file_url=file_url,
+        file_size_bytes=len(contents),
+        uploaded_by=user_name,
+    )
+    return attachment
+
+
+@router.get("/{customer_id}/attachments", response_model=List[CustomerAttachment])
+def list_customer_attachments(
+    customer_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """AC S3-03: Lấy danh sách tệp đính kèm thực tế của khách hàng."""
+    customer = get_customer_by_id(customer_id)
+    if customer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Customer with ID {customer_id} not found",
+        )
+
+    if not check_scope_access(current_user, customer["owner_id"], customer.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền xem tệp đính kèm của khách hàng này",
+        )
+
+    from app.services.customer_service import CUSTOMER_ATTACHMENTS
+    return [a for a in CUSTOMER_ATTACHMENTS if a.get("customer_id") == customer_id]
+
+
 
 @router.post("", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
 def create_customer(
@@ -285,6 +356,7 @@ def update_customer(
     customer_id: int,
     payload: CustomerUpdate,
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Update a customer record with scope verification:
@@ -298,13 +370,13 @@ def update_customer(
     if customer is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Kh??ng t??m th???y kh??ch h??ng",
+            detail="Không tìm thấy khách hàng",
         )
 
     if not check_scope_access(current_user, customer["owner_id"], customer.get("team_id")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Kh??ng c?? quy???n ch???nh s???a d??? li???u kh??ch h??ng n??y",
+            detail="Không có quyền chỉnh sửa dữ liệu khách hàng này",
         )
 
     old_owner = customer.get("owner_id")
@@ -321,7 +393,9 @@ def update_customer(
             field_name="owner_id",
             old_value=str(old_owner),
             new_value=str(payload.owner_id),
+            db=db,
         )
+        db.commit()
 
     return updated
 

@@ -3,9 +3,11 @@ Customer service with enterprise customer data, duplicate tax code validation an
 """
 
 import copy
+import re
 from datetime import datetime
 from typing import Optional
 from fastapi import HTTPException, status
+
 
 from app.core.dependencies import DataScope
 from app.services import auth_service
@@ -409,7 +411,7 @@ def get_customer_360(customer_id: int) -> Optional[dict]:
     if not customer:
         return None
 
-    # 1. Contacts
+    # 1. Contacts từ CSDL
     from app.services import contact_service
     contacts = contact_service.list_contacts(customer_id=customer_id)
 
@@ -426,6 +428,15 @@ def get_customer_360(customer_id: int) -> Optional[dict]:
 
     total_won_value = sum(float(o.get("value", 0)) for o in closed_opps if o.get("stage") == "CLOSED_WON")
     total_open_value = sum(float(o.get("value", 0)) for o in open_opps)
+
+    # AC S3-03: Xác minh tổng giá trị đã ký từ các báo giá / hợp đồng thực tế
+    try:
+        from app.services import quote_service
+        for q in quote_service.FAKE_QUOTES:
+            if q.get("customer_id") == customer_id and q.get("status") in ("ACCEPTED", "WON"):
+                total_won_value += float(q.get("amount", 0))
+    except Exception:
+        pass
 
     # 3. Activities timeline
     from app.services import activity_service
@@ -455,33 +466,66 @@ def get_customer_360(customer_id: int) -> Optional[dict]:
 
 
 
-def _normalize_str(s: Optional[str]) -> str:
-    if not s:
+def normalize_tax_code(tax_code: Optional[str]) -> str:
+    """Chuẩn hóa mã số thuế: loại bỏ khoảng trắng, dấu gạch nối, dấu chấm, viết hoa."""
+    if not tax_code:
         return ""
     import re
-    # Lowercase and remove punctuation/extra spaces
-    s = s.lower().strip()
-    s = re.sub(r"[,\.\-_/\\]", " ", s)
-    s = re.sub(r"\s+", " ", s)
-    return s
+    return re.sub(r"[\s\.\-_]+", "", tax_code).upper()
+
+
+def normalize_company_name(name: Optional[str]) -> str:
+    """
+    Chuẩn hóa tên doanh nghiệp:
+    - Loại bỏ các từ định danh loại hình phổ biến (công ty, cty, cp, cổ phần, tnhh, mtv, jsc, ltd, group, tập đoàn)
+    - Loại bỏ dấu câu và chuẩn hóa khoảng trắng
+    """
+    if not name:
+        return ""
+    import re
+    s = name.lower().strip()
+    s = re.sub(r"[,\.\-_/\\()]+", " ", s)
+    legal_terms = [
+        r"\bcông ty\b", r"\bcty\b", r"\bcổ phần\b", r"\bcp\b",
+        r"\btrách nhiệm hữu hạn\b", r"\btnhh\b", r"\bmtv\b",
+        r"\bjsc\b", r"\bltd\b", r"\binc\b", r"\bcorp\b", r"\btập đoàn\b", r"\bgroup\b"
+    ]
+    for term in legal_terms:
+        s = re.sub(term, " ", s, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def normalize_website_domain(url: Optional[str]) -> str:
+    """Trích xuất và chuẩn hóa domain gốc từ website."""
+    if not url:
+        return ""
+    import re
+    u = url.lower().strip()
+    u = re.sub(r"^https?://", "", u)
+    u = re.sub(r"^www\.", "", u)
+    return u.split("/")[0].split("?")[0].split("#")[0].strip()
+
+
+def _normalize_str(s: Optional[str]) -> str:
+    return normalize_company_name(s)
 
 
 def find_duplicate_customers(customer_id: int) -> List[dict]:
     """
     AC S3-04: Phát hiện trùng dựa trên:
-    - Trùng Mã số thuế (tax_code)
-    - Tên doanh nghiệp tương tự (chứa nhau hoặc độ tương đồng cao)
-    - Trùng website (domain) hoặc email/phone
+    - Trùng Mã số thuế (tax_code) sau khi chuẩn hóa
+    - Tên doanh nghiệp tương tự (chứa nhau hoặc độ tương đồng từ khóa cao sau chuẩn hóa)
+    - Trùng domain website gốc hoặc số điện thoại
     """
     target = get_customer_by_id(customer_id)
     if not target:
         return []
 
     duplicates = []
-    target_name_norm = _normalize_str(target.get("name"))
-    target_tax = target.get("tax_code")
-    target_website = _normalize_str(target.get("website"))
-    target_phone = target.get("phone")
+    target_name_norm = normalize_company_name(target.get("name"))
+    target_tax_norm = normalize_tax_code(target.get("tax_code"))
+    target_domain_norm = normalize_website_domain(target.get("website"))
+    target_phone_norm = re.sub(r"[\s\.\-_]+", "", target.get("phone") or "")
 
     for c in FAKE_CUSTOMERS:
         if c["id"] == customer_id:
@@ -491,34 +535,35 @@ def find_duplicate_customers(customer_id: int) -> List[dict]:
         score = 0.0
 
         # 1. Tax code match (100% confidence)
-        if target_tax and c.get("tax_code") and target_tax == c.get("tax_code"):
-            reasons.append(f"Trùng mã số thuế: {target_tax}")
+        c_tax_norm = normalize_tax_code(c.get("tax_code"))
+        if target_tax_norm and c_tax_norm and target_tax_norm == c_tax_norm:
+            reasons.append(f"Trùng mã số thuế: {target.get('tax_code')}")
             score = max(score, 1.0)
 
-        # 2. Website match
-        c_web = _normalize_str(c.get("website"))
-        if target_website and c_web and (target_website in c_web or c_web in target_website):
+        # 2. Website domain match
+        c_domain_norm = normalize_website_domain(c.get("website"))
+        if target_domain_norm and c_domain_norm and (target_domain_norm == c_domain_norm or target_domain_norm in c_domain_norm or c_domain_norm in target_domain_norm):
             reasons.append(f"Trùng hoặc tương đồng website: {c.get('website')}")
-            score = max(score, 0.9)
+            score = max(score, 0.95 if target_domain_norm == c_domain_norm else 0.9)
 
         # 3. Phone match
-        if target_phone and c.get("phone") and target_phone == c.get("phone"):
-            reasons.append(f"Trùng số điện thoại: {target_phone}")
+        c_phone_norm = re.sub(r"[\s\.\-_]+", "", c.get("phone") or "")
+        if target_phone_norm and c_phone_norm and target_phone_norm == c_phone_norm:
+            reasons.append(f"Trùng số điện thoại: {c.get('phone')}")
             score = max(score, 0.85)
 
-        # 4. Name similarity
-        c_name_norm = _normalize_str(c.get("name"))
+        # 4. Name similarity (dựa trên tên đã chuẩn hóa)
+        c_name_norm = normalize_company_name(c.get("name"))
         if target_name_norm and c_name_norm:
-            # Check if name contains each other (e.g. 'công ty cổ phần abc' and 'công ty abc')
             words_target = set(target_name_norm.split())
             words_c = set(c_name_norm.split())
             common_words = words_target.intersection(words_c)
             total_words = words_target.union(words_c)
             jaccard = len(common_words) / len(total_words) if total_words else 0
 
-            if jaccard >= 0.5 or (target_name_norm in c_name_norm) or (c_name_norm in target_name_norm):
+            if jaccard >= 0.4 or (target_name_norm in c_name_norm) or (c_name_norm in target_name_norm):
                 reasons.append(f"Tên doanh nghiệp tương tự ({int(jaccard * 100)}% từ khóa trùng khớp)")
-                score = max(score, min(0.95, round(jaccard, 2)))
+                score = max(score, min(0.95, round(max(jaccard, 0.7), 2)))
 
         if reasons:
             duplicates.append({
@@ -527,7 +572,6 @@ def find_duplicate_customers(customer_id: int) -> List[dict]:
                 "confidence_score": score,
             })
 
-    # Sắp xếp confidence_score giảm dần
     duplicates.sort(key=lambda x: x["confidence_score"], reverse=True)
     return duplicates
 
@@ -602,6 +646,7 @@ def merge_customers(
     delete_customer_record(secondary_id)
 
     return _enrich_customer_names(primary)
+
 
 
 def get_company_group_tree(parent_id: int) -> Optional[dict]:
