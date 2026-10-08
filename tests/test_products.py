@@ -331,3 +331,134 @@ def test_quote_integration_floor_price_workflow():
     assert res_up.json()["requires_discount_approval"] is True
     assert res_up.json()["discount_approval_status"] == "PENDING_APPROVAL"
 
+
+# 10. AC S2-05: Sử dụng Database làm nguồn dữ liệu duy nhất
+def test_product_database_single_source_of_truth_survives_ram_clear():
+    from app.services.product_service import fake_products_db
+
+    admin_headers = get_auth_headers("admin@gmail.com")
+    new_product_payload = {
+        "code": "PROD-DB-ONLY-01",
+        "name": "Sản phẩm DB Độc Lập",
+        "product_type": "ONE_TIME",
+        "unit": "Gói",
+        "list_price": 18000000.0,
+        "floor_price": 14000000.0,
+        "cost_price": 7000000.0,
+    }
+    create_res = client.post("/products", json=new_product_payload, headers=admin_headers)
+    assert create_res.status_code == 201
+    prod_id = create_res.json()["id"]
+
+    # Xóa sạch bộ nhớ RAM fake_products_db để chứng minh dữ liệu đọc 100% từ CSDL
+    fake_products_db.clear()
+
+    # Truy vấn GET detail và GET list
+    detail_res = client.get(f"/products/{prod_id}", headers=admin_headers)
+    assert detail_res.status_code == 200
+    assert detail_res.json()["code"] == "PROD-DB-ONLY-01"
+    assert detail_res.json()["name"] == "Sản phẩm DB Độc Lập"
+
+    list_res = client.get("/products?search=PROD-DB-ONLY-01", headers=admin_headers)
+    assert list_res.status_code == 200
+    assert any(p["code"] == "PROD-DB-ONLY-01" for p in list_res.json()["products"])
+
+
+# 11. AC S2-05: Không bỏ qua lỗi ghi database khi CRUD (Xử lý lỗi nghiêm ngặt)
+def test_create_product_db_error_returns_500(monkeypatch):
+    from sqlalchemy.orm import Session
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    def mock_commit(self):
+        raise Exception("Database disk full error")
+
+    monkeypatch.setattr(Session, "commit", mock_commit)
+
+    payload = {
+        "code": "PROD-ERR-500",
+        "name": "Sản phẩm lỗi DB",
+        "product_type": "ONE_TIME",
+        "unit": "Bộ",
+        "list_price": 10000000.0,
+        "floor_price": 8000000.0,
+    }
+    res = client.post("/products", json=payload, headers=admin_headers)
+    assert res.status_code == 500
+    assert "Lỗi ghi CSDL" in res.json()["detail"]
+
+
+def test_update_product_db_error_returns_500(monkeypatch):
+    from sqlalchemy.orm import Session
+    manager_headers = get_auth_headers("manager@gmail.com")
+
+    def mock_commit(self):
+        raise Exception("Database transaction timeout")
+
+    monkeypatch.setattr(Session, "commit", mock_commit)
+
+    res = client.put("/products/1", json={"name": "Tên mới lỗi"}, headers=manager_headers)
+    assert res.status_code == 500
+    assert "Lỗi ghi CSDL" in res.json()["detail"]
+
+
+def test_delete_product_db_error_returns_500(monkeypatch):
+    from sqlalchemy.orm import Session
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    def mock_commit(self):
+        raise Exception("Database foreign key lock")
+
+    monkeypatch.setattr(Session, "commit", mock_commit)
+
+    res = client.delete("/products/3", headers=admin_headers)
+    assert res.status_code == 500
+    assert "Lỗi ghi CSDL" in res.json()["detail"]
+
+
+# 12. AC S2-05: Kiểm tra quyền giá vốn đúng vai trò Giám đốc kinh doanh (MANAGER)
+def test_cost_price_permissions_business_director():
+    manager_headers = get_auth_headers("manager@gmail.com")
+    user_headers = get_auth_headers("user@gmail.com")
+
+    # Giám đốc kinh doanh (MANAGER) xem được giá vốn
+    res_m = client.get("/products/1", headers=manager_headers)
+    assert res_m.status_code == 200
+    assert res_m.json()["cost_price"] is not None
+
+    # Giám đốc kinh doanh (MANAGER) cập nhật được giá vốn
+    res_update = client.put("/products/1", json={"cost_price": 8500000.0}, headers=manager_headers)
+    assert res_update.status_code == 200
+    assert res_update.json()["cost_price"] == 8500000.0
+
+    # Nhân viên thông thường không xem được giá vốn (bị ẩn thành None)
+    res_u = client.get("/products/1", headers=user_headers)
+    assert res_u.status_code == 200
+    assert res_u.json()["cost_price"] is None
+
+    # Nhân viên thông thường không có quyền cập nhật sản phẩm / giá vốn (403)
+    res_u_update = client.put("/products/1", json={"cost_price": 9999999.0}, headers=user_headers)
+    assert res_u_update.status_code == 403
+
+
+# 13. AC S2-05: Bảo đảm không xóa sản phẩm đã nằm trong báo giá thật (Lưu giữ trong CSDL)
+def test_quoted_product_retained_in_database_as_discontinued():
+    from app.core.database import SessionLocal
+    from app.models.product import Product as ProductModel
+
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # Sản phẩm ID 1 đã nằm trong báo giá số 1
+    del_res = client.delete("/products/1", headers=admin_headers)
+    assert del_res.status_code == 200
+    assert del_res.json()["action"] == "DISCONTINUED"
+
+    # Kiểm tra trực tiếp trong CSDL: bản ghi vẫn tồn tại với status DISCONTINUED
+    db = SessionLocal()
+    try:
+        db_p = db.query(ProductModel).filter(ProductModel.id == 1).first()
+        assert db_p is not None, "Sản phẩm đã nằm trong báo giá không được bị xóa khỏi CSDL"
+        assert db_p.status == "DISCONTINUED"
+        assert db_p.code == "PROD-CRM-BASE"
+    finally:
+        db.close()
+
