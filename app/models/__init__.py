@@ -1,6 +1,6 @@
 """Models package."""
 from app.models.user import Base, User
-from app.models.customer import Customer
+from app.models.customer import Customer, CustomerMergeHistory
 from app.models.opportunity import Opportunity
 from app.models.activity import Activity
 from app.models.quote import Quote
@@ -12,6 +12,7 @@ __all__ = [
     "Base",
     "User",
     "Customer",
+    "CustomerMergeHistory",
     "Opportunity",
     "Activity",
     "Quote",

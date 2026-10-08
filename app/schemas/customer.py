@@ -102,10 +102,40 @@ class DuplicateCandidate(BaseModel):
     confidence_score: float  # e.g. 0.0 - 1.0
 
 
+class MergeChosenFields(BaseModel):
+    name: Optional[str] = None
+    tax_code: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    status: Optional[str] = None
+
+
+class CustomerMergeFieldComparison(BaseModel):
+    field_name: str
+    primary_value: Optional[str] = None
+    secondary_value: Optional[str] = None
+    is_different: bool = False
+
+
+class CustomerMergePreviewResponse(BaseModel):
+    primary: CustomerResponse
+    secondary: CustomerResponse
+    comparison_fields: List[CustomerMergeFieldComparison]
+    contacts_to_transfer: int
+    opportunities_to_transfer: int
+    activities_to_transfer: int
+    attachments_to_transfer: int
+
+
 class MergeCustomerRequest(BaseModel):
     primary_customer_id: int
     secondary_customer_id: int
-    chosen_fields: Optional[dict] = None  # ghi đè các trường nếu chọn từ secondary (ví dụ: phone, address, website)
+    chosen_fields: Optional[MergeChosenFields] = None
+
 
 
 class ChildCompanySummary(BaseModel):

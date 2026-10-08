@@ -24,3 +24,16 @@ class Customer(Base):
     owner_id = Column(Integer, nullable=False, default=1)  # User who owns this customer
     team_id = Column(Integer, nullable=True)               # Team this customer belongs to
     created_at = Column(DateTime, server_default=func.now())
+
+
+class CustomerMergeHistory(Base):
+    __tablename__ = "customer_merge_history"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    primary_customer_id = Column(Integer, nullable=False, index=True)
+    secondary_customer_id = Column(Integer, nullable=False, index=True)
+    secondary_customer_name = Column(String(255), nullable=True)
+    secondary_snapshot = Column(Text, nullable=True)  # JSON string lưu thông tin của secondary trước khi gộp
+    merged_by = Column(String(100), nullable=True)
+    merged_at = Column(DateTime, server_default=func.now())
+
