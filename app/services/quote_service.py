@@ -97,6 +97,10 @@ def create_quote_record(data: dict, current_user: dict) -> dict:
         "customer_id": data.get("customer_id"),
         "owner_id": current_user["id"],
         "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
+        "product_id": data.get("product_id"),
+        "unit_price": data.get("unit_price"),
+        "requires_discount_approval": data.get("requires_discount_approval", False),
+        "discount_approval_status": data.get("discount_approval_status"),
     }
     FAKE_QUOTES.append(new_quote)
     return new_quote

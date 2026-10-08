@@ -1,7 +1,7 @@
 import os
-import uuid
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
+
 import bcrypt
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-this-secret-key")
@@ -14,10 +14,9 @@ def verify_password(
     hashed_password: str
 ) -> bool:
     try:
-        return bcrypt.checkpw(
-            plain_password.encode("utf-8")[:72],
-            hashed_password.encode("utf-8")
-        )
+        pwd_bytes = plain_password.encode("utf-8")[:72]
+        hash_bytes = hashed_password.encode("utf-8")
+        return bcrypt.checkpw(pwd_bytes, hash_bytes)
     except Exception:
         return False
 
@@ -28,17 +27,7 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
 
 
-class PwdContext:
-    @staticmethod
-    def verify(secret: str, hashed: str) -> bool:
-        return verify_password(secret, hashed)
-
-    @staticmethod
-    def hash(secret: str) -> str:
-        return hash_password(secret)
-
-
-pwd_context = PwdContext()
+import uuid
 
 
 def create_access_token(data: dict) -> str:

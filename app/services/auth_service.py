@@ -14,6 +14,8 @@ from app.core.security import (
     create_access_token,
     decode_access_token,
 )
+from app.core.database import SessionLocal
+from app.models.user import User as UserModel
 
 
 VALID_ROLES = ["ADMIN", "MANAGER", "USER"]
@@ -42,6 +44,9 @@ def get_team_by_id(team_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+_DEFAULT_HASHED_PASSWORD = hash_password("123456")
+
+
 def get_initial_users():
     return [
         {
@@ -55,7 +60,7 @@ def get_initial_users():
             "role": "ADMIN",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": None,
         },
         {
@@ -69,7 +74,7 @@ def get_initial_users():
             "role": "MANAGER",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 1,
         },
         {
@@ -83,7 +88,7 @@ def get_initial_users():
             "role": "USER",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 1,
         },
         {
@@ -97,7 +102,7 @@ def get_initial_users():
             "role": "USER",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 2,
         },
         {
@@ -111,7 +116,7 @@ def get_initial_users():
             "role": "USER",
             "is_active": False,
             "status": "LOCKED",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 1,
         },
     ]
@@ -145,13 +150,54 @@ RESET_TOKEN_EXPIRE_MINUTES = 30
 
 def reset_fake_users_db():
     global fake_users_db, fake_user, FAKE_USERS, LOGIN_ATTEMPTS, REVOKED_TOKENS, RESET_TOKENS
+    initial = get_initial_users()
     fake_users_db.clear()
-    fake_users_db.extend(get_initial_users())
+    fake_users_db.extend(initial)
     fake_user = fake_users_db[0]
     FAKE_USERS = fake_users_db
     LOGIN_ATTEMPTS.clear()
     REVOKED_TOKENS.clear()
     RESET_TOKENS.clear()
+
+    try:
+        db = SessionLocal()
+        for u in initial:
+            db_u = db.query(UserModel).filter(UserModel.id == u["id"]).first()
+            if db_u:
+                db_u.email = u["email"]
+                db_u.username = u.get("username")
+                db_u.full_name = u["full_name"]
+                db_u.role = u["role"]
+                db_u.team_id = u.get("team_id")
+                db_u.phone = u.get("phone")
+                db_u.email_signature = u.get("email_signature")
+                db_u.avatar_url = u.get("avatar_url")
+                db_u.is_active = u.get("is_active", True)
+                db_u.status = u.get("status", "ACTIVE")
+                db_u.hashed_password = u["hashed_password"]
+                if hasattr(db_u, "monthly_quota"):
+                    db_u.monthly_quota = u.get("monthly_quota", 0.0)
+            else:
+                new_db_u = UserModel(
+                    id=u["id"],
+                    email=u["email"],
+                    username=u.get("username"),
+                    full_name=u["full_name"],
+                    role=u["role"],
+                    team_id=u.get("team_id"),
+                    phone=u.get("phone"),
+                    email_signature=u.get("email_signature"),
+                    avatar_url=u.get("avatar_url"),
+                    is_active=u.get("is_active", True),
+                    status=u.get("status", "ACTIVE"),
+                    hashed_password=u["hashed_password"],
+                    monthly_quota=u.get("monthly_quota", 0.0),
+                )
+                db.add(new_db_u)
+        db.commit()
+        db.close()
+    except Exception:
+        pass
 
 
 reset_fake_users = reset_fake_users_db
@@ -161,6 +207,15 @@ def update_user_role(user_id: int, new_role: str) -> Optional[dict]:
     user = get_user_by_id(user_id)
     if user:
         user["role"] = new_role.upper()
+        try:
+            db = SessionLocal()
+            db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+            if db_u:
+                db_u.role = user["role"]
+                db.commit()
+            db.close()
+        except Exception:
+            pass
     return user
 
 
@@ -168,6 +223,15 @@ def update_user_team(user_id: int, new_team_id: Optional[int]) -> Optional[dict]
     user = get_user_by_id(user_id)
     if user:
         user["team_id"] = new_team_id
+        try:
+            db = SessionLocal()
+            db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+            if db_u:
+                db_u.team_id = new_team_id
+                db.commit()
+            db.close()
+        except Exception:
+            pass
     return user
 
 
@@ -179,6 +243,20 @@ def update_user_assignment(user_id: int, new_role: Optional[str] = None, new_tea
         user["role"] = new_role.upper()
     if new_team_id is not None or "team_id" in user:
         user["team_id"] = new_team_id
+
+    try:
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if db_u:
+            if new_role is not None:
+                db_u.role = user["role"]
+            if new_team_id is not None:
+                db_u.team_id = user["team_id"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return user
 
 
@@ -187,6 +265,36 @@ security_bearer = HTTPBearer(auto_error=False)
 
 def get_user_by_email(email: str) -> Optional[dict]:
     clean_email = (email or "").strip().lower()
+    try:
+        db = SessionLocal()
+        u = db.query(UserModel).filter(UserModel.email == clean_email).first()
+        if u:
+            token_ver = 1
+            for f in fake_users_db:
+                if f["id"] == u.id:
+                    token_ver = f.get("token_version", 1)
+                    break
+            res = {
+                "id": u.id,
+                "email": u.email,
+                "username": u.username,
+                "full_name": u.full_name,
+                "role": u.role,
+                "hashed_password": u.hashed_password,
+                "is_active": u.is_active if u.is_active is not None else True,
+                "team_id": u.team_id,
+                "status": u.status or "ACTIVE",
+                "phone": u.phone,
+                "email_signature": u.email_signature,
+                "avatar_url": u.avatar_url,
+                "token_version": token_ver,
+            }
+            db.close()
+            return res
+        db.close()
+    except Exception:
+        pass
+
     for u in fake_users_db:
         if u["email"].lower() == clean_email:
             return u
@@ -197,6 +305,36 @@ def get_user_by_email(email: str) -> Optional[dict]:
 
 def get_user_by_identifier(identifier: str) -> Optional[dict]:
     clean = (identifier or "").strip().lower()
+    try:
+        db = SessionLocal()
+        u = db.query(UserModel).filter((UserModel.email == clean) | (UserModel.username == clean)).first()
+        if u:
+            token_ver = 1
+            for f in fake_users_db:
+                if f["id"] == u.id:
+                    token_ver = f.get("token_version", 1)
+                    break
+            res = {
+                "id": u.id,
+                "email": u.email,
+                "username": u.username,
+                "full_name": u.full_name,
+                "role": u.role,
+                "hashed_password": u.hashed_password,
+                "is_active": u.is_active if u.is_active is not None else True,
+                "team_id": u.team_id,
+                "status": u.status or "ACTIVE",
+                "phone": u.phone,
+                "email_signature": u.email_signature,
+                "avatar_url": u.avatar_url,
+                "token_version": token_ver,
+            }
+            db.close()
+            return res
+        db.close()
+    except Exception:
+        pass
+
     for u in fake_users_db:
         if clean == u["email"].lower() or (u.get("username") and clean == u["username"].lower()):
             return u
@@ -206,6 +344,36 @@ def get_user_by_identifier(identifier: str) -> Optional[dict]:
 
 
 def get_user_by_id(user_id: int) -> Optional[dict]:
+    try:
+        db = SessionLocal()
+        u = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if u:
+            token_ver = 1
+            for f in fake_users_db:
+                if f["id"] == u.id:
+                    token_ver = f.get("token_version", 1)
+                    break
+            res = {
+                "id": u.id,
+                "email": u.email,
+                "username": u.username,
+                "full_name": u.full_name,
+                "role": u.role,
+                "hashed_password": u.hashed_password,
+                "is_active": u.is_active if u.is_active is not None else True,
+                "team_id": u.team_id,
+                "status": u.status or "ACTIVE",
+                "phone": u.phone,
+                "email_signature": u.email_signature,
+                "avatar_url": u.avatar_url,
+                "token_version": token_ver,
+            }
+            db.close()
+            return res
+        db.close()
+    except Exception:
+        pass
+
     for u in fake_users_db:
         if u["id"] == user_id:
             return u
@@ -423,6 +591,22 @@ def change_password(
     user["hashed_password"] = hash_password(clean_new_pass)
     # AC S1-04: Đổi xong thu hồi các phiên đăng nhập khác
     user["token_version"] = user.get("token_version", 1) + 1
+
+    for f in fake_users_db:
+        if f["id"] == user["id"]:
+            f["token_version"] = user["token_version"]
+            f["hashed_password"] = user["hashed_password"]
+
+    try:
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user["id"]).first()
+        if db_u:
+            db_u.hashed_password = user["hashed_password"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return True, "Đổi mật khẩu thành công"
 
 
@@ -477,5 +661,16 @@ def reset_password_with_token(token: str, new_password: str) -> tuple[bool, str]
 
     user["hashed_password"] = hash_password(new_password.strip())
     record["used"] = True
+
+    try:
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user["id"]).first()
+        if db_u:
+            db_u.hashed_password = user["hashed_password"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return True, "Đặt lại mật khẩu thành công"
 
