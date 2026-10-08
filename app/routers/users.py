@@ -133,6 +133,21 @@ def update_my_profile(
     if profile_in.email_signature is not None:
         current_user["email_signature"] = profile_in.email_signature
 
+    # Đồng bộ lưu vào CSDL MySQL
+    try:
+        from app.core.database import SessionLocal
+        from app.models.user import User as UserModel
+        db = SessionLocal()
+        db_user = db.query(UserModel).filter(UserModel.id == current_user["id"]).first()
+        if db_user:
+            db_user.full_name = current_user["full_name"]
+            db_user.phone = current_user.get("phone")
+            db_user.email_signature = current_user.get("email_signature")
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return {
         "id": current_user["id"],
         "email": current_user["email"],
@@ -230,6 +245,18 @@ async def upload_my_avatar_endpoint(
     avatar_url = f"/uploads/avatars/{unique_filename}"
     current_user["avatar_url"] = avatar_url
 
+    try:
+        from app.core.database import SessionLocal
+        from app.models.user import User as UserModel
+        db = SessionLocal()
+        db_user = db.query(UserModel).filter(UserModel.id == current_user["id"]).first()
+        if db_user:
+            db_user.avatar_url = avatar_url
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return {
         "id": current_user["id"],
         "email": current_user["email"],
@@ -252,6 +279,18 @@ async def upload_my_avatar_endpoint(
 def delete_my_avatar_endpoint(current_user: dict = Depends(get_current_user)):
     """Xóa ảnh đại diện hiện tại và đặt về None."""
     current_user["avatar_url"] = None
+    try:
+        from app.core.database import SessionLocal
+        from app.models.user import User as UserModel
+        db = SessionLocal()
+        db_user = db.query(UserModel).filter(UserModel.id == current_user["id"]).first()
+        if db_user:
+            db_user.avatar_url = None
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return {
         "id": current_user["id"],
         "email": current_user["email"],
@@ -355,7 +394,25 @@ def put_user_endpoint(
     user_in: UserUpdate,
     admin_user: dict = Depends(require_admin),
 ):
-    return update_user(user_id, user_in)
+    prev_user = get_user_by_id(user_id)
+    old_role = prev_user.get("role")
+    res = update_user(user_id, user_in)
+    if user_in.role and old_role != res["role"]:
+        try:
+            from app.services.audit_log_service import log_change
+            log_change(
+                user_id=admin_user["id"],
+                user_name=admin_user.get("full_name", "Admin"),
+                entity_type="ROLE",
+                entity_id=str(user_id),
+                action="UPDATE_ROLE",
+                field_name="role",
+                old_value=old_role,
+                new_value=res["role"],
+            )
+        except Exception:
+            pass
+    return res
 
 
 @router.patch(
@@ -369,7 +426,25 @@ def patch_user_endpoint(
     user_in: UserUpdate,
     admin_user: dict = Depends(require_admin),
 ):
-    return update_user(user_id, user_in)
+    prev_user = get_user_by_id(user_id)
+    old_role = prev_user.get("role")
+    res = update_user(user_id, user_in)
+    if user_in.role and old_role != res["role"]:
+        try:
+            from app.services.audit_log_service import log_change
+            log_change(
+                user_id=admin_user["id"],
+                user_name=admin_user.get("full_name", "Admin"),
+                entity_type="ROLE",
+                entity_id=str(user_id),
+                action="UPDATE_ROLE",
+                field_name="role",
+                old_value=old_role,
+                new_value=res["role"],
+            )
+        except Exception:
+            pass
+    return res
 
 
 @router.patch(
@@ -383,11 +458,29 @@ def patch_user_status_endpoint(
     status_in: UserStatusUpdate,
     admin_user: dict = Depends(require_admin),
 ):
-    return update_user_status(
+    res = update_user_status(
         user_id=user_id,
         status_in=status_in,
         current_admin=admin_user,
     )
+
+    # Ghi nhật ký thay đổi quyền sở hữu/trạng thái tài khoản (AC S2-04)
+    try:
+        from app.services.audit_log_service import log_change
+        log_change(
+            user_id=admin_user["id"],
+            user_name=admin_user.get("full_name", "Admin"),
+            entity_type="DATA_OWNERSHIP" if status_in.handover_to_user_id else "ROLE",
+            entity_id=str(user_id),
+            action="LOCK_USER" if status_in.status.upper() == "LOCKED" else "UNLOCK_USER",
+            field_name="status",
+            old_value="ACTIVE" if status_in.status.upper() == "LOCKED" else "LOCKED",
+            new_value=status_in.status.upper(),
+        )
+    except Exception:
+        pass
+
+    return res
 
 
 @router.post(
@@ -401,10 +494,28 @@ def handover_user_data_endpoint(
     handover_in: DataHandoverRequest,
     admin_user: dict = Depends(require_admin),
 ):
-    return execute_handover(
+    res = execute_handover(
         source_user_id=user_id,
         target_user_id=handover_in.target_user_id,
     )
+
+    # Ghi log bàn giao dữ liệu (AC S2-04: DATA_OWNERSHIP)
+    try:
+        from app.services.audit_log_service import log_change
+        log_change(
+            user_id=admin_user["id"],
+            user_name=admin_user.get("full_name", "Admin"),
+            entity_type="DATA_OWNERSHIP",
+            entity_id=f"USER-{user_id}",
+            action="TRANSFER_OWNER",
+            field_name="owner_id",
+            old_value=f"user_{user_id}",
+            new_value=f"user_{handover_in.target_user_id}",
+        )
+    except Exception:
+        pass
+
+    return res
 
 
 # ============================================================================
@@ -514,7 +625,25 @@ def assign_user_team_endpoint(
             detail="Người giữ vai trò Trưởng nhóm (MANAGER) bắt buộc phải thuộc một nhóm kinh doanh",
         )
 
+    old_team = user.get("team_id")
     updated_user = update_user_team(user_id, payload.team_id)
+
+    # Ghi log thay đổi nhóm kinh doanh (AC S2-04)
+    try:
+        from app.services.audit_log_service import log_change
+        log_change(
+            user_id=admin_user["id"],
+            user_name=admin_user.get("full_name", "Admin"),
+            entity_type="DATA_OWNERSHIP",
+            entity_id=str(user_id),
+            action="ASSIGN_TEAM",
+            field_name="team_id",
+            old_value=str(old_team) if old_team else "None",
+            new_value=str(payload.team_id) if payload.team_id else "None",
+        )
+    except Exception:
+        pass
+
     team_info = get_team_by_id(updated_user.get("team_id"))
     team_name = team_info["name"] if team_info else None
     return TeamInfo(
@@ -563,7 +692,38 @@ def assign_user_role_and_team_endpoint(
             detail="Người giữ vai trò Trưởng nhóm (MANAGER) bắt buộc phải thuộc một nhóm kinh doanh",
         )
 
+    old_role = user.get("role")
+    old_team = user.get("team_id")
     updated_user = update_user_assignment(user_id, new_role=target_role, new_team_id=target_team)
+
+    # Ghi log thay đổi vai trò / nhóm vào Nhật ký hệ thống (AC S2-04)
+    try:
+        from app.services.audit_log_service import log_change
+        if old_role != updated_user["role"]:
+            log_change(
+                user_id=admin_user["id"],
+                user_name=admin_user.get("full_name", "Admin"),
+                entity_type="ROLE",
+                entity_id=str(user_id),
+                action="UPDATE_ROLE",
+                field_name="role",
+                old_value=old_role,
+                new_value=updated_user["role"],
+            )
+        if old_team != updated_user.get("team_id"):
+            log_change(
+                user_id=admin_user["id"],
+                user_name=admin_user.get("full_name", "Admin"),
+                entity_type="DATA_OWNERSHIP",
+                entity_id=str(user_id),
+                action="ASSIGN_TEAM",
+                field_name="team_id",
+                old_value=str(old_team) if old_team else "None",
+                new_value=str(updated_user.get("team_id")),
+            )
+    except Exception:
+        pass
+
     return UserDetailResponse(
         id=updated_user["id"],
         email=updated_user["email"],

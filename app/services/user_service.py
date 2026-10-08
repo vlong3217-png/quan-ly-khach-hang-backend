@@ -474,6 +474,25 @@ def execute_user_import(file_contents: bytes) -> Dict[str, Any]:
             "temporary_lock_until": None,
         }
         fake_users_db.append(new_user)
+        try:
+            db = SessionLocal()
+            db_u = UserModel(
+                id=max_id,
+                email=new_user["email"],
+                username=new_user["username"],
+                full_name=new_user["full_name"],
+                role=new_user["role"],
+                hashed_password=new_user["hashed_password"],
+                is_active=new_user["is_active"],
+                team_id=new_user["team_id"],
+                status=new_user["status"],
+            )
+            db.merge(db_u)
+            db.commit()
+            db.close()
+        except Exception:
+            pass
+
         imported_count += 1
         details.append({
             "row_number": row_num,
