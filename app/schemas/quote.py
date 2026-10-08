@@ -9,6 +9,10 @@ class QuoteCreate(BaseModel):
     status: str = "DRAFT"
     customer_id: Optional[int] = None
     team_id: Optional[int] = None
+    product_id: Optional[int] = None
+    unit_price: Optional[float] = None
+    requires_discount_approval: Optional[bool] = False
+    discount_approval_status: Optional[str] = None
 
 
 class QuoteUpdate(BaseModel):
@@ -16,6 +20,10 @@ class QuoteUpdate(BaseModel):
     amount: Optional[float] = None
     status: Optional[str] = None
     customer_id: Optional[int] = None
+    product_id: Optional[int] = None
+    unit_price: Optional[float] = None
+    requires_discount_approval: Optional[bool] = None
+    discount_approval_status: Optional[str] = None
 
 
 class QuoteResponse(BaseModel):
@@ -26,6 +34,10 @@ class QuoteResponse(BaseModel):
     customer_id: Optional[int] = None
     owner_id: int
     team_id: Optional[int] = None
+    product_id: Optional[int] = None
+    unit_price: Optional[float] = None
+    requires_discount_approval: Optional[bool] = False
+    discount_approval_status: Optional[str] = None
 
 
 class QuoteListResponse(BaseModel):

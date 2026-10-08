@@ -1,23 +1,52 @@
-"""Customer schemas for request and response validation."""
+"""Customer schemas for request and response validation (S3-01)."""
 
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CustomerStatus(str, Enum):
+    PROSPECT = "PROSPECT"               # Tiềm năng
+    IN_TRANSACTION = "IN_TRANSACTION"   # Đang giao dịch
+    CUSTOMER = "CUSTOMER"               # Khách hàng
+    DISCONTINUED = "DISCONTINUED"       # Ngừng hợp tác
 
 
 class CustomerBase(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=255, description="Tên công ty / khách hàng doanh nghiệp")
+    tax_code: Optional[str] = Field(None, max_length=50, description="Mã số thuế (nếu có phải là duy nhất)")
+    industry: Optional[str] = Field(None, max_length=100, description="Ngành nghề kinh doanh")
+    company_size: Optional[str] = Field(None, max_length=100, description="Quy mô doanh nghiệp")
+    website: Optional[str] = Field(None, max_length=255, description="Website doanh nghiệp")
+    address: Optional[str] = Field(None, max_length=500, description="Địa chỉ công ty")
+    status: CustomerStatus = Field(default=CustomerStatus.PROSPECT, description="Trạng thái khách hàng")
+    parent_company_id: Optional[int] = Field(None, description="ID công ty mẹ (nếu là công ty con / chi nhánh)")
+
+    # Giữ tương thích ngược với các trường cũ nếu có client dùng
     email: Optional[str] = None
     phone: Optional[str] = None
     company: Optional[str] = None
 
 
 class CustomerCreate(CustomerBase):
-    team_id: Optional[int] = None
+    owner_id: Optional[int] = Field(None, description="ID người sở hữu (mặc định là người tạo)")
+    team_id: Optional[int] = Field(None, description="ID nhóm kinh doanh phụ trách")
 
 
 class CustomerUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    tax_code: Optional[str] = Field(None, max_length=50)
+    industry: Optional[str] = Field(None, max_length=100)
+    company_size: Optional[str] = Field(None, max_length=100)
+    website: Optional[str] = Field(None, max_length=255)
+    address: Optional[str] = Field(None, max_length=500)
+    status: Optional[CustomerStatus] = None
+    parent_company_id: Optional[int] = None
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+
+    # Tương thích ngược
     email: Optional[str] = None
     phone: Optional[str] = None
     company: Optional[str] = None
@@ -25,14 +54,179 @@ class CustomerUpdate(BaseModel):
 
 class CustomerResponse(CustomerBase):
     id: int
+    parent_company_name: Optional[str] = None
     owner_id: int
+    owner_name: Optional[str] = None
     team_id: Optional[int] = None
+    team_name: Optional[str] = None
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
 
 
 class CustomerListResponse(BaseModel):
     scope: str
     total: int
     customers: List[CustomerResponse]
+    skip: Optional[int] = 0
+    limit: Optional[int] = 20
+    page: Optional[int] = 1
+    total_pages: Optional[int] = 1
+
+
+class CustomerAttachment(BaseModel):
+    id: int
+    filename: str
+    file_url: str
+    file_size_bytes: int
+    uploaded_by: str
+    created_at: datetime
+
+
+class Customer360Response(BaseModel):
+    customer: CustomerResponse
+    contacts: List[dict] = []
+    open_opportunities: List[dict] = []
+    closed_opportunities: List[dict] = []
+    activities_timeline: List[dict] = []
+    attachments: List[CustomerAttachment] = []
+    total_won_value: float = 0.0
+    total_open_value: float = 0.0
+    churn_risk: bool = False
+
+
+class DuplicateCandidate(BaseModel):
+    customer: CustomerResponse
+    match_reasons: List[str]
+    confidence_score: float  # e.g. 0.0 - 1.0
+
+
+class MergeChosenFields(BaseModel):
+    name: Optional[str] = None
+    tax_code: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    status: Optional[str] = None
+
+
+class CustomerMergeFieldComparison(BaseModel):
+    field_name: str
+    primary_value: Optional[str] = None
+    secondary_value: Optional[str] = None
+    is_different: bool = False
+
+
+class CustomerMergePreviewResponse(BaseModel):
+    primary: CustomerResponse
+    secondary: CustomerResponse
+    comparison_fields: List[CustomerMergeFieldComparison]
+    contacts_to_transfer: int
+    opportunities_to_transfer: int
+    activities_to_transfer: int
+    attachments_to_transfer: int
+
+
+class MergeCustomerRequest(BaseModel):
+    primary_customer_id: int
+    secondary_customer_id: int
+    chosen_fields: Optional[MergeChosenFields] = None
+
+
+
+class ChildCompanySummary(BaseModel):
+    id: int
+    name: str
+    tax_code: Optional[str] = None
+    status: str
+    total_won_value: float = 0.0
+    total_open_value: float = 0.0
+
+
+class GroupCompanyTreeResponse(BaseModel):
+    parent: CustomerResponse
+    subsidiaries: List[ChildCompanySummary]
+    total_group_won_value: float
+    total_group_open_value: float
+    total_members: int
+
+
+class CustomerImportPreviewRow(BaseModel):
+    row_number: int
+    name: Optional[str] = None
+    tax_code: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    status: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    is_valid: bool = True
+    errors: List[str] = []
+    is_duplicate: bool = False
+    duplicate_reasons: List[str] = []
+    existing_customer_id: Optional[int] = None
+
+
+class CustomerImportPreviewResponse(BaseModel):
+    total_rows: int
+    valid_rows_count: int
+    invalid_rows_count: int
+    duplicate_rows_count: int
+    rows: List[CustomerImportPreviewRow]
+
+
+class CustomerImportCommitRequest(BaseModel):
+    duplicate_handling: str = "SKIP"  # "SKIP" (bỏ qua), "UPDATE" (cập nhật nếu trùng MST)
+    rows: List[CustomerImportPreviewRow]
+
+
+class CustomerImportCommitResponse(BaseModel):
+    inserted_count: int
+    updated_count: int
+    skipped_count: int
+    failed_count: int
+    messages: List[str] = []
+
+
+class SavedFilterBase(BaseModel):
+    name: str
+    filter_criteria: dict
+
+
+class SavedFilterCreate(SavedFilterBase):
+    pass
+
+
+class SavedFilterResponse(SavedFilterBase):
+    id: int
+    user_id: int
+    created_at: datetime
+
+
+class PeriodicCareCustomerItem(BaseModel):
+    customer_id: int
+    customer_name: str
+    tax_code: Optional[str] = None
+    status: str
+    owner_id: int
+    owner_name: Optional[str] = None
+    last_interaction_date: Optional[datetime] = None
+    days_since_last_interaction: int
+    total_contract_value: float = 0.0
+    churn_risk: bool = False
+
+
+class MarkCareInteractionRequest(BaseModel):
+    interaction_type: str = "CALL"  # CALL, MEETING, EMAIL, NOTE
+    note: str
+
+
+
+
+

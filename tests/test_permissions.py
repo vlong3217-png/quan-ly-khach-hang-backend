@@ -365,7 +365,7 @@ def test_get_customer_detail_by_id_scope_enforcement():
     # USER 1 views customer of USER 2 (id=4, Team 2) -> 403 Forbidden
     res_other = client.get("/customers/4", headers=user1_headers)
     assert res_other.status_code == 403
-    assert "Kh??ng c?? quy???n truy c???p d??? li???u" in res_other.json()["detail"]
+    assert "quyền truy cập" in res_other.json()["detail"].lower()
 
     # MANAGER views customer in same team (id=3, Team 1) -> 200
     res_mgr_same = client.get("/customers/3", headers=mgr_headers)
@@ -393,11 +393,11 @@ def test_update_customer_by_id_scope_enforcement():
     # USER 1 updates own customer -> 200
     res_user_own = client.put(
         "/customers/3",
-        json={"name": "L?? V??n C (Updated by Owner)"},
+        json={"name": "Lê Văn C (Updated by Owner)"},
         headers=user1_headers,
     )
     assert res_user_own.status_code == 200
-    assert res_user_own.json()["name"] == "L?? V??n C (Updated by Owner)"
+    assert res_user_own.json()["name"] == "Lê Văn C (Updated by Owner)"
 
     # USER 1 tries to update customer 2 (Manager, Team 1) -> 403 Forbidden
     res_user_other = client.put(
@@ -406,7 +406,7 @@ def test_update_customer_by_id_scope_enforcement():
         headers=user1_headers,
     )
     assert res_user_other.status_code == 403
-    assert "Kh??ng c?? quy???n ch???nh s???a" in res_user_other.json()["detail"]
+    assert "quyền chỉnh sửa" in res_user_other.json()["detail"].lower()
 
     # MANAGER updates customer in same team (customer 3) -> 200
     res_mgr_team = client.put(
