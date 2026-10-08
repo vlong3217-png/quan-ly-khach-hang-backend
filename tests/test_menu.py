@@ -174,9 +174,6 @@ def test_admin_receives_all_menu_groups_and_items():
         assert "menu-customers-list" in all_ids
         assert "menu-customers-create" in all_ids
         assert "menu-customers-export" in all_ids
-        assert "menu-reports" in all_ids
-        assert "menu-reports-sales" in all_ids
-        assert "menu-reports-performance" in all_ids
         assert "menu-teams" in all_ids
         assert "menu-teams-members" in all_ids
         assert "menu-teams-assignments" in all_ids
@@ -193,7 +190,6 @@ def test_admin_menu_access_checks():
     for menu_id in [
         "menu-dashboard",
         "menu-customers-export",
-        "menu-reports",
         "menu-teams",
         "menu-settings",
         "menu-settings-roles",
@@ -244,7 +240,6 @@ def test_manager_receives_core_and_management_menus_only():
     assert "menu-customers-list" in all_ids
     assert "menu-customers-create" in all_ids
     assert "menu-customers-export" in all_ids, "MANAGER must have customer export"
-    assert "menu-reports" in all_ids, "MANAGER must have reports"
     assert "menu-teams" in all_ids, "MANAGER must have teams"
 
     # Restricted items
@@ -255,11 +250,11 @@ def test_manager_receives_core_and_management_menus_only():
 
 
 def test_manager_menu_access_checks():
-    """MANAGER access check tests: allowed for reports/export, 403 for settings."""
+    """MANAGER access check tests: allowed for export/teams, 403 for settings."""
     headers = get_auth_headers("manager@gmail.com")
 
     # Allowed items -> 200
-    for menu_id in ["menu-dashboard", "menu-customers-export", "menu-reports", "menu-teams"]:
+    for menu_id in ["menu-dashboard", "menu-customers-export", "menu-teams"]:
         res = client.get(f"/auth/menu/check/{menu_id}", headers=headers)
         assert res.status_code == 200
         assert res.json()["allowed"] is True
@@ -312,13 +307,12 @@ def test_user_receives_only_core_menu_without_export():
 
     # Restricted items
     assert "menu-customers-export" not in all_ids, "USER must NOT see menu-customers-export"
-    assert "menu-reports" not in all_ids, "USER must NOT see menu-reports"
     assert "menu-teams" not in all_ids, "USER must NOT see menu-teams"
     assert "menu-settings" not in all_ids, "USER must NOT see menu-settings"
 
 
 def test_user_menu_access_checks():
-    """USER access checks: allowed for dashboard/list/create, 403 for export/reports/teams/settings."""
+    """USER access checks: allowed for dashboard/list/create, 403 for export/teams/settings."""
     headers = get_auth_headers("user1@gmail.com")
 
     # Allowed -> 200
@@ -330,8 +324,6 @@ def test_user_menu_access_checks():
     # Forbidden -> 403
     for menu_id in [
         "menu-customers-export",
-        "menu-reports",
-        "menu-reports-sales",
         "menu-teams",
         "menu-teams-members",
         "menu-settings",
