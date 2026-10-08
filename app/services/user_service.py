@@ -5,6 +5,9 @@ from app.schemas.user import UserCreate, UserStatusUpdate, UserUpdate
 from app.services.auth_service import fake_users_db
 from app.services.data_handover_service import execute_handover
 
+from app.core.database import SessionLocal
+from app.models.user import User as UserModel
+
 ALLOWED_ROLES = {"ADMIN", "MANAGER", "USER"}
 ALLOWED_STATUSES = {"ACTIVE", "LOCKED"}
 
@@ -94,6 +97,27 @@ def create_user(user_in: UserCreate) -> dict:
     }
 
     fake_users_db.append(new_user)
+
+    # Đồng bộ lưu vào CSDL MySQL
+    try:
+        db = SessionLocal()
+        db_user = UserModel(
+            id=new_id,
+            email=new_user["email"],
+            username=new_user["username"],
+            full_name=new_user["full_name"],
+            role=new_user["role"],
+            hashed_password=new_user["hashed_password"],
+            is_active=new_user["is_active"],
+            team_id=new_user.get("team_id"),
+            status=new_user["status"],
+        )
+        db.merge(db_user)
+        db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return new_user
 
 
@@ -155,6 +179,29 @@ def update_user(user_id: int, user_in: UserUpdate) -> dict:
             )
         user["hashed_password"] = hash_password(user_in.password.strip())
 
+    # Đồng bộ cập nhật vào CSDL MySQL
+    try:
+        db = SessionLocal()
+        db_user = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if db_user:
+            if user_in.email is not None:
+                db_user.email = user["email"]
+            if user_in.username is not None:
+                db_user.username = user["username"]
+            if user_in.full_name is not None:
+                db_user.full_name = user["full_name"]
+            if user_in.role is not None:
+                db_user.role = user["role"]
+            if user_in.is_active is not None:
+                db_user.is_active = user["is_active"]
+                db_user.status = user["status"]
+            if user_in.password is not None:
+                db_user.hashed_password = user["hashed_password"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return user
 
 
@@ -202,6 +249,19 @@ def update_user_status(
         user["status"] = "ACTIVE"
         user["is_active"] = True
         message = f"Đã mở khóa tài khoản thành công cho user #{user_id}"
+
+    try:
+        from app.core.database import SessionLocal
+        from app.models.user import User as UserModel
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if db_u:
+            db_u.status = user["status"]
+            db_u.is_active = user["is_active"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
 
     return {
         "id": user["id"],
@@ -427,6 +487,25 @@ def execute_user_import(file_contents: bytes) -> Dict[str, Any]:
             "temporary_lock_until": None,
         }
         fake_users_db.append(new_user)
+        try:
+            db = SessionLocal()
+            db_u = UserModel(
+                id=max_id,
+                email=new_user["email"],
+                username=new_user["username"],
+                full_name=new_user["full_name"],
+                role=new_user["role"],
+                hashed_password=new_user["hashed_password"],
+                is_active=new_user["is_active"],
+                team_id=new_user["team_id"],
+                status=new_user["status"],
+            )
+            db.merge(db_u)
+            db.commit()
+            db.close()
+        except Exception:
+            pass
+
         imported_count += 1
         details.append({
             "row_number": row_num,

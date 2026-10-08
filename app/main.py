@@ -13,6 +13,16 @@ from app.routers.opportunities import router as opportunities_router
 from app.routers.activities import router as activities_router
 from app.routers.quotes import router as quotes_router
 from app.routers.menu import router as menu_router
+from app.routers.contacts import router as contacts_router
+from app.routers.tickets import router as tickets_router
+from app.models import Base
+from app.core.database import engine
+
+# Tự động tạo các bảng SQL nếu kết nối cơ sở dữ liệu khả dụng
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception:
+    pass
 
 app = FastAPI(
     title="Customer Management API",
@@ -73,8 +83,28 @@ app.include_router(activities_router)
 app.include_router(quotes_router)
 app.include_router(menu_router)
 app.include_router(menu_router, prefix="/auth")
+app.include_router(contacts_router)
+app.include_router(tickets_router)
 
 from app.routers.audit_logs import router as audit_logs_router
 app.include_router(audit_logs_router)
+
+from app.routers.products import router as products_router
+app.include_router(products_router)
+
+from app.routers.organizations import router as organizations_router
+app.include_router(organizations_router)
+
+from app.routers.master_data import router as master_data_router
+app.include_router(master_data_router)
+
+from app.routers.custom_fields import router as custom_fields_router
+app.include_router(custom_fields_router)
+
+from app.routers.pipeline import router as pipeline_stages_router
+app.include_router(pipeline_stages_router)
+
+from app.routers.win_loss import router as win_loss_router
+app.include_router(win_loss_router)
 
 

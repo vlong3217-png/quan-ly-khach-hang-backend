@@ -109,32 +109,6 @@ MASTER_MENU_GROUPS: List[dict] = [
         "description": "B??o c??o th???ng k?? s??? li???u v?? qu???n l?? t??? ch???c",
         "items": [
             {
-                "id": "menu-reports",
-                "title": "B??o c??o & Th???ng k??",
-                "path": "/dashboard/reports",
-                "roles": [ROLE_ADMIN, ROLE_MANAGER],
-                "permissions": [PERMISSION_REPORT_VIEW],
-                "badge": "Qu???n l??",
-                "badge_variant": "warning",
-                "description": "Xem b??o c??o doanh s???, chuy???n ?????i v?? th???ng k?? d??? li???u",
-                "children": [
-                    {
-                        "id": "menu-reports-sales",
-                        "title": "B??o c??o doanh s???",
-                        "path": "/dashboard/reports/sales",
-                        "roles": [ROLE_ADMIN, ROLE_MANAGER],
-                        "permissions": [PERMISSION_REPORT_VIEW],
-                    },
-                    {
-                        "id": "menu-reports-performance",
-                        "title": "Hi???u su???t ?????i ng??",
-                        "path": "/dashboard/reports/performance",
-                        "roles": [ROLE_ADMIN, ROLE_MANAGER],
-                        "permissions": [PERMISSION_REPORT_VIEW],
-                    },
-                ],
-            },
-            {
                 "id": "menu-teams",
                 "title": "Qu???n l?? ?????i nh??m",
                 "path": "/dashboard/teams",
@@ -156,6 +130,14 @@ MASTER_MENU_GROUPS: List[dict] = [
                         "roles": [ROLE_ADMIN, ROLE_MANAGER],
                     },
                 ],
+            },
+            {
+                "id": "menu-reports",
+                "title": "Báo cáo thống kê",
+                "path": "/dashboard/reports",
+                "roles": [ROLE_ADMIN, ROLE_MANAGER],
+                "permissions": [PERMISSION_REPORT_VIEW],
+                "description": "Báo cáo hiệu suất kinh doanh, cơ hội và tương tác khách hàng",
             },
         ],
     },

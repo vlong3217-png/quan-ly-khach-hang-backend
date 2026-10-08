@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.core.database import get_db
+from sqlalchemy.orm import Session
 from app.schemas.audit_log import AuditLogListResponse
 from app.services.audit_log_service import VALID_ENTITY_TYPES, get_audit_logs, log_change
 from app.services.auth_service import require_admin
@@ -19,12 +21,13 @@ router = APIRouter(
 )
 def list_audit_logs_endpoint(
     user_id: Optional[int] = Query(None, description="Lọc theo ID người thực hiện"),
-    entity_type: Optional[str] = Query(None, description="Lọc theo loại đối tượng: ROLE, DISCOUNT, TARGET, DATA_OWNERSHIP"),
+    entity_type: Optional[str] = Query(None, description="Lọc theo loại đối tượng: USER, ROLE, DISCOUNT, TARGET, DATA_OWNERSHIP"),
     from_date: Optional[datetime] = Query(None, description="Thời điểm bắt đầu (ISO format)"),
     to_date: Optional[datetime] = Query(None, description="Thời điểm kết thúc (ISO format)"),
     skip: int = Query(0, ge=0, description="Vị trí bắt đầu"),
     limit: int = Query(50, ge=1, le=200, description="Số lượng bản ghi tối đa"),
     admin_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
     """
     AC S2-04:
@@ -45,4 +48,6 @@ def list_audit_logs_endpoint(
         to_date=to_date,
         skip=skip,
         limit=limit,
+        db=db,
     )
+
