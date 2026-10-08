@@ -32,6 +32,7 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
         PERMISSION_CUSTOMER_EDIT,
         PERMISSION_CUSTOMER_DELETE,
         PERMISSION_CUSTOMER_EXPORT,
+        PERMISSION_REPORT_VIEW,
         PERMISSION_SYSTEM_SETTINGS,
     ],
     ROLE_MANAGER: [
@@ -39,6 +40,7 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
         PERMISSION_CUSTOMER_CREATE,
         PERMISSION_CUSTOMER_EDIT,
         PERMISSION_CUSTOMER_EXPORT,
+        PERMISSION_REPORT_VIEW,
     ],
     ROLE_USER: [
         PERMISSION_CUSTOMER_VIEW,
@@ -128,6 +130,14 @@ MASTER_MENU_GROUPS: List[dict] = [
                         "roles": [ROLE_ADMIN, ROLE_MANAGER],
                     },
                 ],
+            },
+            {
+                "id": "menu-reports",
+                "title": "Báo cáo thống kê",
+                "path": "/dashboard/reports",
+                "roles": [ROLE_ADMIN, ROLE_MANAGER],
+                "permissions": [PERMISSION_REPORT_VIEW],
+                "description": "Báo cáo hiệu suất kinh doanh, cơ hội và tương tác khách hàng",
             },
         ],
     },

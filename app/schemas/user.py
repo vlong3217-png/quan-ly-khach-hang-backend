@@ -32,7 +32,7 @@ class UserProfileResponse(BaseModel):
 
 
 class UserProfileUpdate(BaseModel):
-    full_name: Optional[str] = Field(None, min_length=1, max_length=255, description="Họ và tên người dùng")
+    full_name: Optional[str] = Field(None, description="Họ và tên người dùng")
     phone: Optional[str] = Field(None, description="Số điện thoại Việt Nam (10 số)")
     email_signature: Optional[str] = Field(None, description="Chữ ký email khi gửi báo giá")
 
@@ -40,6 +40,10 @@ class UserProfileUpdate(BaseModel):
     email: Optional[str] = Field(None, description="Không được phép tự sửa")
     role: Optional[str] = Field(None, description="Không được phép tự sửa")
     team_id: Optional[Any] = Field(None, description="Không được phép tự sửa")
+
+
+class UserTargetUpdate(BaseModel):
+    monthly_quota: float = Field(..., ge=0, description="Chỉ tiêu doanh số hàng tháng (VNĐ)")
 
 
 class UserCreate(BaseModel):

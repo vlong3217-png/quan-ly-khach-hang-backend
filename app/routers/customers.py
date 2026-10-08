@@ -307,7 +307,22 @@ def update_customer(
             detail="Kh??ng c?? quy???n ch???nh s???a d??? li???u kh??ch h??ng n??y",
         )
 
+    old_owner = customer.get("owner_id")
     updated = update_customer_record(customer_id, payload.model_dump(exclude_unset=True))
+
+    if payload.owner_id is not None and payload.owner_id != old_owner:
+        from app.services.audit_log_service import log_change
+        log_change(
+            user_id=current_user["id"],
+            user_name=current_user.get("full_name", current_user.get("username", "User")),
+            entity_type="DATA_OWNERSHIP",
+            entity_id=f"CUST-{customer_id}",
+            action="TRANSFER_OWNER",
+            field_name="owner_id",
+            old_value=str(old_owner),
+            new_value=str(payload.owner_id),
+        )
+
     return updated
 
 

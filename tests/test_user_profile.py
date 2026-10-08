@@ -97,3 +97,73 @@ def test_update_my_profile_prevent_self_change_team():
     res = client.put("/users/me", json={"team_id": 99}, headers=headers)
     assert res.status_code == 400
     assert "không được phép tự thay đổi nhóm" in res.json()["detail"]
+
+
+def test_update_my_profile_empty_or_whitespace_fullname():
+    """
+    AC S2-02: Từ chối họ tên rỗng hoặc chỉ chứa toàn khoảng trắng.
+    """
+    headers = get_auth_headers("user1@gmail.com")
+
+    # Họ tên rỗng
+    res1 = client.put("/users/me", json={"full_name": ""}, headers=headers)
+    assert res1.status_code == 400
+    assert "Họ và tên không được để trống" in res1.json()["detail"]
+
+    # Họ tên toàn khoảng trắng
+    res2 = client.put("/users/me", json={"full_name": "   "}, headers=headers)
+    assert res2.status_code == 400
+    assert "Họ và tên không được để trống" in res2.json()["detail"]
+
+    # Họ tên tab và newline
+    res3 = client.put("/users/me", json={"full_name": "\t  \n "}, headers=headers)
+    assert res3.status_code == 400
+    assert "Họ và tên không được để trống" in res3.json()["detail"]
+
+
+def test_update_my_profile_database_persistence():
+    """
+    AC S2-02: Xác nhận dữ liệu được lưu trực tiếp và chính xác vào cơ sở dữ liệu.
+    """
+    from app.core.database import SessionLocal
+    from app.models.user import User as UserModel
+
+    headers = get_auth_headers("user1@gmail.com")
+    new_name = "Nguyễn Văn Lưu Vào Database Thật"
+    new_phone = "0977889900"
+    new_signature = "Chữ ký lưu Database"
+
+    res = client.put(
+        "/users/me",
+        json={"full_name": new_name, "phone": new_phone, "email_signature": new_signature},
+        headers=headers,
+    )
+    assert res.status_code == 200
+
+    # Kiểm tra trực tiếp qua SQL Database Session
+    db = SessionLocal()
+    user_in_db = db.query(UserModel).filter(UserModel.email == "user@gmail.com").first()
+    assert user_in_db is not None
+    assert user_in_db.full_name == new_name
+    assert user_in_db.phone == new_phone
+    assert user_in_db.email_signature == new_signature
+    db.close()
+
+
+def test_update_my_profile_rollback_on_database_failure(monkeypatch):
+    """
+    AC S2-02: Khi ghi cơ sở dữ liệu thất bại, hệ thống phải rollback và trả lỗi 500.
+    """
+    from sqlalchemy.orm import Session
+
+    headers = get_auth_headers("user1@gmail.com")
+
+    def mock_commit(self):
+        raise RuntimeError("Simulated Database I/O Failure")
+
+    monkeypatch.setattr(Session, "commit", mock_commit)
+
+    res = client.put("/users/me", json={"full_name": "Tên Sẽ Bị Rollback"}, headers=headers)
+    assert res.status_code == 500
+    assert "Lỗi lưu thông tin hồ sơ vào cơ sở dữ liệu" in res.json()["detail"]
+

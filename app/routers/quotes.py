@@ -78,7 +78,39 @@ def create_quote(
     payload: QuoteCreate,
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
 ):
-    new_q = create_quote_record(payload.model_dump(), current_user)
+    quote_data = payload.model_dump()
+
+    # AC S2-05: Tích hợp kiểm tra giá sàn vào quy trình tạo báo giá
+    prod_id = quote_data.get("product_id")
+    check_price = quote_data.get("unit_price") or quote_data.get("amount")
+    if prod_id and check_price:
+        try:
+            from app.services.product_service import check_discount_approval
+            discount_info = check_discount_approval(prod_id, float(check_price))
+            if discount_info["needs_approval"]:
+                quote_data["requires_discount_approval"] = True
+                quote_data["discount_approval_status"] = "PENDING_APPROVAL"
+            else:
+                quote_data["requires_discount_approval"] = False
+                quote_data["discount_approval_status"] = "APPROVED"
+        except HTTPException:
+            pass
+
+    new_q = create_quote_record(quote_data, current_user)
+
+    # Ghi nhận Audit Log cho nghiệp vụ định giá / chiết khấu (AC S2-04)
+    from app.services.audit_log_service import log_change
+    log_change(
+        user_id=current_user["id"],
+        user_name=current_user.get("full_name", current_user.get("username", "User")),
+        entity_type="DISCOUNT",
+        entity_id=f"QUOTE-{new_q['id']}",
+        action="CREATE_QUOTE",
+        field_name="amount",
+        old_value=None,
+        new_value=str(new_q["amount"]),
+    )
+
     return new_q
 
 
@@ -101,7 +133,41 @@ def update_quote(
             detail="Không có quyền chỉnh sửa dữ liệu báo giá này",
         )
 
-    updated = update_quote_record(quote_id, payload.model_dump(exclude_unset=True))
+    quote_update_data = payload.model_dump(exclude_unset=True)
+
+    # AC S2-05: Kiểm tra giá sàn khi cập nhật báo giá
+    prod_id = quote_update_data.get("product_id") or q_item.get("product_id")
+    check_price = quote_update_data.get("unit_price") or quote_update_data.get("amount")
+    if prod_id and check_price:
+        try:
+            from app.services.product_service import check_discount_approval
+            discount_info = check_discount_approval(prod_id, float(check_price))
+            if discount_info["needs_approval"]:
+                quote_update_data["requires_discount_approval"] = True
+                quote_update_data["discount_approval_status"] = "PENDING_APPROVAL"
+            else:
+                quote_update_data["requires_discount_approval"] = False
+                quote_update_data["discount_approval_status"] = "APPROVED"
+        except HTTPException:
+            pass
+
+    old_amount = q_item["amount"]
+    updated = update_quote_record(quote_id, quote_update_data)
+
+    # Ghi nhận Audit Log nếu thay đổi giá trị/chiết khấu (AC S2-04)
+    if payload.amount is not None and payload.amount != old_amount:
+        from app.services.audit_log_service import log_change
+        log_change(
+            user_id=current_user["id"],
+            user_name=current_user.get("full_name", current_user.get("username", "User")),
+            entity_type="DISCOUNT",
+            entity_id=f"QUOTE-{quote_id}",
+            action="UPDATE_DISCOUNT",
+            field_name="amount",
+            old_value=str(old_amount),
+            new_value=str(updated["amount"]),
+        )
+
     return updated
 
 

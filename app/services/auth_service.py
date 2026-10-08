@@ -44,6 +44,9 @@ def get_team_by_id(team_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+_DEFAULT_HASHED_PASSWORD = hash_password("123456")
+
+
 def get_initial_users():
     return [
         {
@@ -57,7 +60,7 @@ def get_initial_users():
             "role": "ADMIN",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": None,
         },
         {
@@ -71,7 +74,7 @@ def get_initial_users():
             "role": "MANAGER",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 1,
         },
         {
@@ -85,7 +88,7 @@ def get_initial_users():
             "role": "USER",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 1,
         },
         {
@@ -99,7 +102,7 @@ def get_initial_users():
             "role": "USER",
             "is_active": True,
             "status": "ACTIVE",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 2,
         },
         {
@@ -113,7 +116,7 @@ def get_initial_users():
             "role": "USER",
             "is_active": False,
             "status": "LOCKED",
-            "hashed_password": hash_password("123456"),
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 1,
         },
     ]

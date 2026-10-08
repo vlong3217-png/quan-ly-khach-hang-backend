@@ -146,3 +146,67 @@ def test_role_change_automatically_writes_audit_log():
     assert latest_log["old_value"] == "USER"
     assert latest_log["new_value"] == "MANAGER"
     assert latest_log["user_id"] == 1
+
+
+def test_clear_audit_logs_endpoint_removed():
+    """AC S2-04: Đã loại bỏ endpoint xóa toàn bộ audit log khỏi API ứng dụng (405 Method Not Allowed)."""
+    admin_headers = get_auth_headers("admin@gmail.com")
+    res = client.delete("/audit-logs", headers=admin_headers)
+    assert res.status_code == 405
+
+
+def test_discount_change_automatically_writes_audit_log():
+    """AC S2-04: Thay đổi chiết khấu / giá trị báo giá tự động ghi nhật ký với entity_type='DISCOUNT'."""
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # Cập nhật giá trị báo giá ID 1 từ 55,000,000 lên 70,000,000
+    update_res = client.put("/quotes/1", json={"amount": 70000000.0}, headers=admin_headers)
+    assert update_res.status_code == 200
+
+    # Kiểm tra log ghi nhận
+    log_res = client.get("/audit-logs?entity_type=DISCOUNT", headers=admin_headers)
+    assert log_res.status_code == 200
+    latest_log = log_res.json()["items"][0]
+    assert latest_log["entity_type"] == "DISCOUNT"
+    assert latest_log["entity_id"] == "QUOTE-1"
+    assert latest_log["action"] == "UPDATE_DISCOUNT"
+    assert latest_log["field_name"] == "amount"
+    assert "55000000" in latest_log["old_value"]
+    assert "70000000" in latest_log["new_value"]
+
+
+def test_target_change_automatically_writes_audit_log():
+    """AC S2-04: Thay đổi chỉ tiêu kinh doanh tự động ghi nhật ký với entity_type='TARGET'."""
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # Cập nhật chỉ tiêu kinh doanh cho user ID 3
+    quota_res = client.put("/users/3/target", json={"monthly_quota": 250000000.0}, headers=admin_headers)
+    assert quota_res.status_code == 200
+
+    # Kiểm tra log ghi nhận
+    log_res = client.get("/audit-logs?entity_type=TARGET", headers=admin_headers)
+    assert log_res.status_code == 200
+    latest_log = log_res.json()["items"][0]
+    assert latest_log["entity_type"] == "TARGET"
+    assert latest_log["entity_id"] == "USER-3"
+    assert latest_log["field_name"] == "monthly_quota"
+    assert latest_log["new_value"] == "250000000.0"
+
+
+def test_data_ownership_change_automatically_writes_audit_log():
+    """AC S2-04: Thay đổi quyền sở hữu dữ liệu khách hàng tự động ghi nhật ký với entity_type='DATA_OWNERSHIP'."""
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # Chuyển quyền sở hữu khách hàng ID 1 cho user ID 4
+    cust_res = client.put("/customers/1", json={"owner_id": 4}, headers=admin_headers)
+    assert cust_res.status_code == 200
+
+    # Kiểm tra log ghi nhận
+    log_res = client.get("/audit-logs?entity_type=DATA_OWNERSHIP", headers=admin_headers)
+    assert log_res.status_code == 200
+    latest_log = log_res.json()["items"][0]
+    assert latest_log["entity_type"] == "DATA_OWNERSHIP"
+    assert latest_log["entity_id"] == "CUST-1"
+    assert latest_log["field_name"] == "owner_id"
+    assert latest_log["new_value"] == "4"
+

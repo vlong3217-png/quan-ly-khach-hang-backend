@@ -38,13 +38,14 @@ def log_change(
     old_value: Any,
     new_value: Any,
     ip_address: Optional[str] = None,
+    db: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     AC S2-04: Ghi lại mọi thay đổi trên chiết khấu, chỉ tiêu, quyền sở hữu dữ liệu và vai trò người dùng.
     Mỗi bản ghi có người thực hiện, thời điểm, giá trị trước và sau.
-    Đồng bộ lưu vào CSDL MySQL.
+    Đồng bộ lưu bền vững vào CSDL MySQL/SQLite cùng transaction với thay đổi nghiệp vụ.
     """
-    now = datetime.utcnow()
+    now = datetime.now()
     new_entry = {
         "user_id": user_id,
         "user_name": user_name,
@@ -58,29 +59,33 @@ def log_change(
         "ip_address": ip_address or "127.0.0.1",
     }
 
-    # Lưu vào MySQL
-    try:
-        db = SessionLocal()
-        db_log = AuditLogModel(
-            user_id=new_entry["user_id"],
-            user_name=new_entry["user_name"],
-            entity_type=new_entry["entity_type"],
-            entity_id=new_entry["entity_id"],
-            action=new_entry["action"],
-            field_name=new_entry["field_name"],
-            old_value=new_entry["old_value"],
-            new_value=new_entry["new_value"],
-            timestamp=new_entry["timestamp"],
-            ip_address=new_entry["ip_address"],
-        )
+    db_log = AuditLogModel(
+        user_id=new_entry["user_id"],
+        user_name=new_entry["user_name"],
+        entity_type=new_entry["entity_type"],
+        entity_id=new_entry["entity_id"],
+        action=new_entry["action"],
+        field_name=new_entry["field_name"],
+        old_value=new_entry["old_value"],
+        new_value=new_entry["new_value"],
+        timestamp=new_entry["timestamp"],
+        ip_address=new_entry["ip_address"],
+    )
+
+    if db is not None:
         db.add(db_log)
-        db.commit()
-        db.refresh(db_log)
-        new_entry["id"] = db_log.id
-        db.close()
-    except Exception:
-        next_id = max([log["id"] for log in fake_audit_logs_db], default=0) + 1
-        new_entry["id"] = next_id
+        new_entry["id"] = max([log["id"] for log in fake_audit_logs_db], default=0) + 1
+    else:
+        try:
+            db_local = SessionLocal()
+            db_local.add(db_log)
+            db_local.commit()
+            db_local.refresh(db_log)
+            new_entry["id"] = db_log.id
+            db_local.close()
+        except Exception:
+            next_id = max([log["id"] for log in fake_audit_logs_db], default=0) + 1
+            new_entry["id"] = next_id
 
     fake_audit_logs_db.append(new_entry)
     return new_entry
