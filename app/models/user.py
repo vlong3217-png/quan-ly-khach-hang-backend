@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Text
+from sqlalchemy import Column, Integer, String, Boolean, Text, Float
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -19,3 +19,4 @@ class User(Base):
     phone = Column(String(50), nullable=True)
     email_signature = Column(Text, nullable=True)
     avatar_url = Column(String(500), nullable=True)
+    monthly_quota = Column(Float, nullable=True, default=0.0)

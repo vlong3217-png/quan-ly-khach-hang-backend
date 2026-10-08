@@ -5,6 +5,8 @@ Quote API router with role-based access control and data scope filtering.
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.core.database import get_db
+from sqlalchemy.orm import Session
 from app.core.dependencies import (
     DataScope,
     check_scope_access,
@@ -77,6 +79,7 @@ def get_quote(
 def create_quote(
     payload: QuoteCreate,
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
 ):
     quote_data = payload.model_dump()
 
@@ -86,7 +89,7 @@ def create_quote(
     if prod_id and check_price:
         try:
             from app.services.product_service import check_discount_approval
-            discount_info = check_discount_approval(prod_id, float(check_price))
+            discount_info = check_discount_approval(prod_id, float(check_price), db=db)
             if discount_info["needs_approval"]:
                 quote_data["requires_discount_approval"] = True
                 quote_data["discount_approval_status"] = "PENDING_APPROVAL"
@@ -98,18 +101,33 @@ def create_quote(
 
     new_q = create_quote_record(quote_data, current_user)
 
-    # Ghi nhận Audit Log cho nghiệp vụ định giá / chiết khấu (AC S2-04)
+    # Ghi nhận Audit Log cho nghiệp vụ định giá / chiết khấu (AC S2-04) cùng transaction
     from app.services.audit_log_service import log_change
+    user_name = current_user.get("full_name", current_user.get("username", "User"))
     log_change(
         user_id=current_user["id"],
-        user_name=current_user.get("full_name", current_user.get("username", "User")),
+        user_name=user_name,
         entity_type="DISCOUNT",
         entity_id=f"QUOTE-{new_q['id']}",
         action="CREATE_QUOTE",
         field_name="amount",
         old_value=None,
         new_value=str(new_q["amount"]),
+        db=db,
     )
+    if new_q.get("unit_price") is not None:
+        log_change(
+            user_id=current_user["id"],
+            user_name=user_name,
+            entity_type="DISCOUNT",
+            entity_id=f"QUOTE-{new_q['id']}",
+            action="CREATE_QUOTE",
+            field_name="unit_price",
+            old_value=None,
+            new_value=str(new_q["unit_price"]),
+            db=db,
+        )
+    db.commit()
 
     return new_q
 
@@ -119,6 +137,7 @@ def update_quote(
     quote_id: int,
     payload: QuoteUpdate,
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     q_item = get_raw_quote_by_id(quote_id)
     if q_item is None:
@@ -141,7 +160,7 @@ def update_quote(
     if prod_id and check_price:
         try:
             from app.services.product_service import check_discount_approval
-            discount_info = check_discount_approval(prod_id, float(check_price))
+            discount_info = check_discount_approval(prod_id, float(check_price), db=db)
             if discount_info["needs_approval"]:
                 quote_update_data["requires_discount_approval"] = True
                 quote_update_data["discount_approval_status"] = "PENDING_APPROVAL"
@@ -152,21 +171,60 @@ def update_quote(
             pass
 
     old_amount = q_item["amount"]
+    old_unit_price = q_item.get("unit_price")
+    old_status = q_item.get("discount_approval_status")
+
     updated = update_quote_record(quote_id, quote_update_data)
 
-    # Ghi nhận Audit Log nếu thay đổi giá trị/chiết khấu (AC S2-04)
+    # Ghi nhận Audit Log nếu thay đổi giá trị/chiết khấu (AC S2-04) cùng transaction
+    from app.services.audit_log_service import log_change
+    user_name = current_user.get("full_name", current_user.get("username", "User"))
+
+    has_logged = False
     if payload.amount is not None and payload.amount != old_amount:
-        from app.services.audit_log_service import log_change
         log_change(
             user_id=current_user["id"],
-            user_name=current_user.get("full_name", current_user.get("username", "User")),
+            user_name=user_name,
             entity_type="DISCOUNT",
             entity_id=f"QUOTE-{quote_id}",
             action="UPDATE_DISCOUNT",
             field_name="amount",
             old_value=str(old_amount),
             new_value=str(updated["amount"]),
+            db=db,
         )
+        has_logged = True
+
+    if payload.unit_price is not None and payload.unit_price != old_unit_price:
+        log_change(
+            user_id=current_user["id"],
+            user_name=user_name,
+            entity_type="DISCOUNT",
+            entity_id=f"QUOTE-{quote_id}",
+            action="UPDATE_DISCOUNT",
+            field_name="unit_price",
+            old_value=str(old_unit_price),
+            new_value=str(updated.get("unit_price")),
+            db=db,
+        )
+        has_logged = True
+
+    if updated.get("discount_approval_status") != old_status and updated.get("discount_approval_status") is not None:
+        log_change(
+            user_id=current_user["id"],
+            user_name=user_name,
+            entity_type="DISCOUNT",
+            entity_id=f"QUOTE-{quote_id}",
+            action="UPDATE_DISCOUNT",
+            field_name="discount_approval_status",
+            old_value=str(old_status),
+            new_value=str(updated.get("discount_approval_status")),
+            db=db,
+        )
+        has_logged = True
+
+    if has_logged:
+        db.commit()
 
     return updated
 

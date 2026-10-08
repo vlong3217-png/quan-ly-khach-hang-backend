@@ -44,6 +44,7 @@ def log_change(
     AC S2-04: Ghi lại mọi thay đổi trên chiết khấu, chỉ tiêu, quyền sở hữu dữ liệu và vai trò người dùng.
     Mỗi bản ghi có người thực hiện, thời điểm, giá trị trước và sau.
     Đồng bộ lưu bền vững vào CSDL MySQL/SQLite cùng transaction với thay đổi nghiệp vụ.
+    Bảo đảm lỗi ghi nhật ký KHÔNG bị bỏ qua và KHÔNG fallback RAM.
     """
     now = datetime.now()
     new_entry = {
@@ -74,18 +75,20 @@ def log_change(
 
     if db is not None:
         db.add(db_log)
-        new_entry["id"] = max([log["id"] for log in fake_audit_logs_db], default=0) + 1
+        db.flush()
+        new_entry["id"] = db_log.id
     else:
+        db_local = SessionLocal()
         try:
-            db_local = SessionLocal()
             db_local.add(db_log)
             db_local.commit()
             db_local.refresh(db_log)
             new_entry["id"] = db_log.id
+        except Exception as e:
+            db_local.rollback()
+            raise e
+        finally:
             db_local.close()
-        except Exception:
-            next_id = max([log["id"] for log in fake_audit_logs_db], default=0) + 1
-            new_entry["id"] = next_id
 
     fake_audit_logs_db.append(new_entry)
     return new_entry
@@ -98,13 +101,18 @@ def get_audit_logs(
     to_date: Optional[datetime] = None,
     skip: int = 0,
     limit: int = 50,
+    db: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     AC S2-04: Lọc theo người dùng, loại đối tượng, khoảng thời gian.
-    Đọc trực tiếp từ CSDL MySQL (fallback in-memory nếu DB chưa sẵn sàng).
+    Đọc trực tiếp từ CSDL MySQL/SQLite. Không fallback RAM nếu DB gặp lỗi.
     """
-    try:
+    own_session = False
+    if db is None:
         db = SessionLocal()
+        own_session = True
+
+    try:
         query = db.query(AuditLogModel)
 
         if user_id is not None:
@@ -127,36 +135,15 @@ def get_audit_logs(
             .limit(limit)
             .all()
         )
-        db.close()
         return {
             "total": total,
             "items": [_row_to_dict(r) for r in rows],
         }
-    except Exception:
-        # Fallback in-memory
-        results = fake_audit_logs_db
-
-        if user_id is not None:
-            results = [l for l in results if l["user_id"] == user_id]
-
-        if entity_type and entity_type.strip():
-            et_upper = entity_type.strip().upper()
-            results = [l for l in results if l["entity_type"] == et_upper]
-
-        if from_date is not None:
-            results = [l for l in results if l["timestamp"] >= from_date]
-
-        if to_date is not None:
-            results = [l for l in results if l["timestamp"] <= to_date]
-
-        sorted_results = sorted(results, key=lambda x: x["timestamp"], reverse=True)
-        total = len(sorted_results)
-        items = sorted_results[skip : skip + limit]
-
-        return {
-            "total": total,
-            "items": items,
-        }
+    except Exception as e:
+        raise e
+    finally:
+        if own_session:
+            db.close()
 
 
 def clear_all_audit_logs() -> int:

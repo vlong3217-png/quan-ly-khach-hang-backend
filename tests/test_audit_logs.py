@@ -210,3 +210,121 @@ def test_data_ownership_change_automatically_writes_audit_log():
     assert latest_log["field_name"] == "owner_id"
     assert latest_log["new_value"] == "4"
 
+
+def test_audit_log_immutability_no_modification_endpoints():
+    """AC S2-04: Tính bất biến của nhật ký - không có endpoint PUT, PATCH hoặc DELETE để sửa/xóa nhật ký."""
+    admin_headers = get_auth_headers("admin@gmail.com")
+    # Không cho phép DELETE /audit-logs -> 405 Method Not Allowed
+    res_del_all = client.delete("/audit-logs", headers=admin_headers)
+    assert res_del_all.status_code == 405
+
+    # Không cho phép PUT hoặc PATCH trên /audit-logs -> 405 Method Not Allowed
+    res_put_root = client.put("/audit-logs", json={"new_value": "hacked"}, headers=admin_headers)
+    assert res_put_root.status_code == 405
+
+    res_patch_root = client.patch("/audit-logs", json={"new_value": "hacked"}, headers=admin_headers)
+    assert res_patch_root.status_code == 405
+
+    # Không tồn tại bất kỳ endpoint chỉnh sửa hoặc xóa theo ID nào
+    res_put_item = client.put("/audit-logs/1", json={"new_value": "hacked"}, headers=admin_headers)
+    assert res_put_item.status_code in (404, 405)
+
+    res_del_item = client.delete("/audit-logs/1", headers=admin_headers)
+    assert res_del_item.status_code in (404, 405)
+
+
+def test_audit_log_db_failure_does_not_fallback_to_ram(monkeypatch):
+    """AC S2-04: Bảo đảm lỗi ghi nhật ký không bị bỏ qua và không fallback RAM âm thầm."""
+    from unittest.mock import MagicMock
+    from app.core.database import SessionLocal
+
+    # Mock SessionLocal để commit ném ngoại lệ
+    def mock_session_fail():
+        session = MagicMock()
+        session.commit.side_effect = Exception("Database connection failure during audit log write")
+        return session
+
+    monkeypatch.setattr("app.services.audit_log_service.SessionLocal", mock_session_fail)
+
+    with pytest.raises(Exception) as exc_info:
+        log_change(
+            user_id=1,
+            user_name="Admin",
+            entity_type="ROLE",
+            entity_id="99",
+            action="UPDATE_ROLE",
+            field_name="role",
+            old_value="USER",
+            new_value="MANAGER",
+        )
+    assert "Database connection failure" in str(exc_info.value)
+
+
+def test_audit_log_same_transaction_rolls_back_on_error():
+    """AC S2-04: Ghi log cùng transaction với thay đổi nghiệp vụ - rollback nghiệp vụ làm rollback cả audit log."""
+    from app.core.database import SessionLocal
+    from app.models.audit_log import AuditLog as AuditLogModel
+
+    db = SessionLocal()
+    count_before = db.query(AuditLogModel).count()
+
+    try:
+        # Giả lập transaction nghiệp vụ có ghi log
+        log_change(
+            user_id=1,
+            user_name="Admin",
+            entity_type="TARGET",
+            entity_id="USER-999",
+            action="UPDATE_TARGET",
+            field_name="monthly_quota",
+            old_value="0",
+            new_value="100000000",
+            db=db,
+        )
+        # Giả lập lỗi nghiệp vụ xảy ra trước khi commit -> rollback toàn bộ transaction
+        raise ValueError("Nghiệp vụ cập nhật thất bại")
+    except ValueError:
+        db.rollback()
+    finally:
+        count_after = db.query(AuditLogModel).count()
+        db.close()
+
+    # Xác nhận bản ghi audit log KHÔNG bị lưu rời rạc vào DB khi transaction rollback
+    assert count_after == count_before
+
+
+def test_quote_discount_flow_writes_full_audit_logs():
+    """AC S2-04: Ghi đầy đủ từ các luồng thay đổi chiết khấu: tạo báo giá và cập nhật unit_price/amount."""
+    manager_headers = get_auth_headers("manager@gmail.com")
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # 1. Tạo báo giá mới có chiết khấu/định giá
+    create_payload = {
+        "title": "Báo giá Dịch vụ Phần mềm Test S2-04",
+        "amount": 40000000.0,
+        "unit_price": 40000000.0,
+        "product_id": 1,
+    }
+    res_create = client.post("/quotes", json=create_payload, headers=manager_headers)
+    assert res_create.status_code == 201
+    quote_id = res_create.json()["id"]
+
+    # 2. Cập nhật unit_price và amount (thay đổi mức chiết khấu)
+    update_payload = {
+        "amount": 35000000.0,
+        "unit_price": 35000000.0,
+    }
+    res_update = client.put(f"/quotes/{quote_id}", json=update_payload, headers=manager_headers)
+    assert res_update.status_code == 200
+
+    # 3. Quản trị viên kiểm tra nhật ký
+    log_res = client.get("/audit-logs?entity_type=DISCOUNT", headers=admin_headers)
+    assert log_res.status_code == 200
+    items = log_res.json()["items"]
+
+    # Phải có các bản ghi tương ứng với quote_id
+    quote_logs = [l for l in items if l["entity_id"] == f"QUOTE-{quote_id}"]
+    assert len(quote_logs) >= 2
+    fields_logged = {l["field_name"] for l in quote_logs}
+    assert "amount" in fields_logged or "unit_price" in fields_logged
+

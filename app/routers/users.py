@@ -674,6 +674,7 @@ def assign_user_role_endpoint(
     user_id: int,
     payload: UserRoleUpdate,
     admin_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
     user = get_user_by_id(user_id)
 
@@ -697,10 +698,15 @@ def assign_user_role_endpoint(
             detail="Người giữ vai trò Trưởng nhóm (MANAGER) phải được gán một nhóm kinh doanh cụ thể",
         )
 
-    old_role = user.get("role")
-    updated_user = update_user_role(user_id, payload.role)
+    db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+    old_role = db_u.role if db_u else user.get("role")
+    new_role = payload.role.upper()
+    if db_u:
+        db_u.role = new_role
 
-    # AC S2-04: Ghi log thay đổi vai trò người dùng
+    updated_user = update_user_role(user_id, new_role)
+
+    # AC S2-04: Ghi log thay đổi vai trò người dùng cùng transaction với thay đổi nghiệp vụ
     from app.services.audit_log_service import log_change
     log_change(
         user_id=admin_user["id"],
@@ -710,8 +716,10 @@ def assign_user_role_endpoint(
         action="UPDATE_ROLE",
         field_name="role",
         old_value=old_role,
-        new_value=updated_user["role"],
+        new_value=new_role,
+        db=db,
     )
+    db.commit()
 
     return RoleInfo(
         user_id=updated_user["id"],
@@ -950,7 +958,13 @@ def update_user_target_endpoint(
             detail=f"Không tìm thấy người dùng với ID {user_id}",
         )
 
-    old_target = user.get("monthly_quota", 0.0)
+    db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+    old_target = getattr(db_u, "monthly_quota", None) if db_u else user.get("monthly_quota", 0.0)
+    if old_target is None:
+        old_target = user.get("monthly_quota", 0.0)
+
+    if db_u:
+        db_u.monthly_quota = payload.monthly_quota
     user["monthly_quota"] = payload.monthly_quota
 
     from app.services.audit_log_service import log_change
