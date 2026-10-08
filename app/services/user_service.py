@@ -250,6 +250,19 @@ def update_user_status(
         user["is_active"] = True
         message = f"Đã mở khóa tài khoản thành công cho user #{user_id}"
 
+    try:
+        from app.core.database import SessionLocal
+        from app.models.user import User as UserModel
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if db_u:
+            db_u.status = user["status"]
+            db_u.is_active = user["is_active"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return {
         "id": user["id"],
         "email": user["email"],
