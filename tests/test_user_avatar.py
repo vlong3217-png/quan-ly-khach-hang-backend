@@ -193,6 +193,10 @@ def test_upload_avatar_no_orphan_file_on_database_failure(monkeypatch):
     headers = get_auth_headers("user1@gmail.com")
     img_bytes = create_sample_image(200, 200, "PNG")
 
+    avatar_dir = os.path.join(os.getcwd(), "uploads", "avatars")
+    os.makedirs(avatar_dir, exist_ok=True)
+    files_before = set(os.listdir(avatar_dir))
+
     # Giả lập lỗi ghi database
     def mock_commit(self):
         raise RuntimeError("Database commit error on avatar save")
@@ -206,9 +210,9 @@ def test_upload_avatar_no_orphan_file_on_database_failure(monkeypatch):
     )
     assert res.status_code == 500
 
-    # Kiểm tra trong thư mục uploads/avatars không còn file test_orphan
-    avatar_dir = os.path.join(os.getcwd(), "uploads", "avatars")
-    if os.path.exists(avatar_dir):
-        files_after = [f for f in os.listdir(avatar_dir) if "test_orphan" in f]
-        assert len(files_after) == 0
+    # Kiểm tra trong thư mục uploads/avatars: không có bất kỳ file mới nào được giữ lại
+    files_after = set(os.listdir(avatar_dir))
+    new_orphan_files = files_after - files_before
+    assert len(new_orphan_files) == 0, f"Phát hiện file mồ côi chưa được dọn dẹp: {new_orphan_files}"
+
 
