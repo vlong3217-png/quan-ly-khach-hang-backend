@@ -4,5 +4,6 @@ from app.models.customer import Customer
 from app.models.opportunity import Opportunity
 from app.models.activity import Activity
 from app.models.quote import Quote
+from app.models.audit_log import AuditLog
 
-__all__ = ["Base", "User", "Customer", "Opportunity", "Activity", "Quote"]
+__all__ = ["Base", "User", "Customer", "Opportunity", "Activity", "Quote", "AuditLog"]

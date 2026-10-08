@@ -2,17 +2,43 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.services.audit_log_service import fake_audit_logs_db, log_change
+from app.services.audit_log_service import fake_audit_logs_db, log_change, clear_all_audit_logs
 from app.services.auth_service import reset_fake_users
 
 client = TestClient(app)
 
 
+def seed_test_audit_logs():
+    clear_all_audit_logs()
+    # 4 bản ghi phục vụ chạy test
+    l1 = log_change(1, "Admin", "ROLE", "3", "ASSIGN_ROLE", "role", "USER", "MANAGER")
+    l2 = log_change(1, "Admin", "DISCOUNT", "QUOTE-101", "UPDATE_DISCOUNT", "discount_rate", "10%", "25%")
+    l3 = log_change(2, "Manager Team A", "TARGET", "USER-3", "UPDATE_TARGET", "monthly_quota", "100000000", "150000000")
+    l4 = log_change(1, "Admin", "DATA_OWNERSHIP", "CUST-88", "TRANSFER_OWNER", "assigned_to", "user1@gmail.com", "user2@gmail.com")
+
+    # Override timestamps cho các test lọc theo ngày
+    from app.core.database import SessionLocal
+    from app.models.audit_log import AuditLog
+    db = SessionLocal()
+    r1 = db.query(AuditLog).filter(AuditLog.id == l1["id"]).first()
+    if r1: r1.timestamp = datetime(2026, 9, 15, 10, 30, 0)
+    r2 = db.query(AuditLog).filter(AuditLog.id == l2["id"]).first()
+    if r2: r2.timestamp = datetime(2026, 9, 20, 14, 15, 0)
+    r3 = db.query(AuditLog).filter(AuditLog.id == l3["id"]).first()
+    if r3: r3.timestamp = datetime(2026, 9, 25, 9, 0, 0)
+    r4 = db.query(AuditLog).filter(AuditLog.id == l4["id"]).first()
+    if r4: r4.timestamp = datetime(2026, 9, 28, 16, 45, 0)
+    db.commit()
+    db.close()
+
+
 @pytest.fixture(autouse=True)
 def setup_teardown():
     reset_fake_users()
+    seed_test_audit_logs()
     yield
     reset_fake_users()
+    clear_all_audit_logs()
 
 
 def get_auth_headers(email: str = "admin@gmail.com", password: str = "123456") -> dict:
