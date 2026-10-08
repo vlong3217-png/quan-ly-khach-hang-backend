@@ -152,11 +152,17 @@ def test_update_my_profile_database_persistence():
 
 def test_update_my_profile_rollback_on_database_failure(monkeypatch):
     """
-    AC S2-02: Khi ghi cơ sở dữ liệu thất bại, hệ thống phải rollback và trả lỗi 500.
+    AC S2-02: Khi ghi cơ sở dữ liệu thất bại, hệ thống phải rollback, trả lỗi 500
+    và đồng bộ thông tin cũ (không làm biến đổi dữ liệu người dùng).
     """
     from sqlalchemy.orm import Session
 
     headers = get_auth_headers("user1@gmail.com")
+
+    # Lấy tên ban đầu
+    res_orig = client.get("/users/me", headers=headers)
+    assert res_orig.status_code == 200
+    orig_name = res_orig.json()["full_name"]
 
     def mock_commit(self):
         raise RuntimeError("Simulated Database I/O Failure")
@@ -166,4 +172,51 @@ def test_update_my_profile_rollback_on_database_failure(monkeypatch):
     res = client.put("/users/me", json={"full_name": "Tên Sẽ Bị Rollback"}, headers=headers)
     assert res.status_code == 500
     assert "Lỗi lưu thông tin hồ sơ vào cơ sở dữ liệu" in res.json()["detail"]
+
+    # Khôi phục commit bình thường và kiểm tra dữ liệu vẫn là tên cũ
+    monkeypatch.undo()
+    res_after = client.get("/users/me", headers=headers)
+    assert res_after.status_code == 200
+    assert res_after.json()["full_name"] == orig_name
+
+
+def test_update_my_profile_persists_after_backend_restart():
+    """
+    AC S2-02: Xác nhận dữ liệu còn nguyên vẹn sau khi restart backend
+    (mô phỏng xóa sạch RAM/cache in-memory và đọc trực tiếp từ DB).
+    """
+    from app.services import auth_service
+    from app.core.database import SessionLocal
+    from app.models.user import User as UserModel
+
+    headers = get_auth_headers("user1@gmail.com")
+    updated_name = "Người Dùng Sau Khi Restart Server"
+    updated_phone = "0912345678"
+
+    # 1. Cập nhật qua API
+    res = client.put(
+        "/users/me",
+        json={"full_name": updated_name, "phone": updated_phone},
+        headers=headers,
+    )
+    assert res.status_code == 200
+
+    # 2. Mô phỏng khởi động lại backend:
+    # Xóa sạch bản ghi trong memory cache FAKE_USERS
+    auth_service.FAKE_USERS.clear()
+
+    # 3. Đọc trực tiếp từ Database xác nhận dữ liệu đã được lưu bền vững
+    db = SessionLocal()
+    db_user = db.query(UserModel).filter(UserModel.email == "user@gmail.com").first()
+    assert db_user is not None
+    assert db_user.full_name == updated_name
+    assert db_user.phone == updated_phone
+    db.close()
+
+    # 4. Gọi lại GET /users/me (hệ thống tự lấy từ DB khi cache trống)
+    res_after_restart = client.get("/users/me", headers=headers)
+    assert res_after_restart.status_code == 200
+    assert res_after_restart.json()["full_name"] == updated_name
+    assert res_after_restart.json()["phone"] == updated_phone
+
 
