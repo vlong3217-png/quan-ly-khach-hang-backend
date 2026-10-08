@@ -5,8 +5,8 @@ from app.schemas.audit_log import AuditLogEntry
 from app.core.database import SessionLocal
 from app.models.audit_log import AuditLog as AuditLogModel
 
-# Danh mục các loại đối tượng nhạy cảm theo AC S2-04
-VALID_ENTITY_TYPES = {"ROLE", "DISCOUNT", "TARGET", "DATA_OWNERSHIP"}
+# Danh mục các loại đối tượng nhạy cảm theo AC S2-04 và quản lý tài khoản người dùng
+VALID_ENTITY_TYPES = {"ROLE", "DISCOUNT", "TARGET", "DATA_OWNERSHIP", "USER"}
 
 # Bộ nhớ tạm (ban đầu rỗng - không có dữ liệu mẫu)
 fake_audit_logs_db: List[Dict[str, Any]] = []
