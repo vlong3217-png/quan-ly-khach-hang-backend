@@ -14,6 +14,8 @@ from app.core.security import (
     create_access_token,
     decode_access_token,
 )
+from app.core.database import SessionLocal
+from app.models.user import User as UserModel
 
 
 VALID_ROLES = ["ADMIN", "MANAGER", "USER"]
@@ -161,6 +163,15 @@ def update_user_role(user_id: int, new_role: str) -> Optional[dict]:
     user = get_user_by_id(user_id)
     if user:
         user["role"] = new_role.upper()
+        try:
+            db = SessionLocal()
+            db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+            if db_u:
+                db_u.role = user["role"]
+                db.commit()
+            db.close()
+        except Exception:
+            pass
     return user
 
 
@@ -168,6 +179,15 @@ def update_user_team(user_id: int, new_team_id: Optional[int]) -> Optional[dict]
     user = get_user_by_id(user_id)
     if user:
         user["team_id"] = new_team_id
+        try:
+            db = SessionLocal()
+            db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+            if db_u:
+                db_u.team_id = new_team_id
+                db.commit()
+            db.close()
+        except Exception:
+            pass
     return user
 
 
@@ -179,6 +199,20 @@ def update_user_assignment(user_id: int, new_role: Optional[str] = None, new_tea
         user["role"] = new_role.upper()
     if new_team_id is not None or "team_id" in user:
         user["team_id"] = new_team_id
+
+    try:
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if db_u:
+            if new_role is not None:
+                db_u.role = user["role"]
+            if new_team_id is not None:
+                db_u.team_id = user["team_id"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return user
 
 
@@ -423,6 +457,17 @@ def change_password(
     user["hashed_password"] = hash_password(clean_new_pass)
     # AC S1-04: Đổi xong thu hồi các phiên đăng nhập khác
     user["token_version"] = user.get("token_version", 1) + 1
+
+    try:
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user["id"]).first()
+        if db_u:
+            db_u.hashed_password = user["hashed_password"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return True, "Đổi mật khẩu thành công"
 
 
@@ -477,5 +522,16 @@ def reset_password_with_token(token: str, new_password: str) -> tuple[bool, str]
 
     user["hashed_password"] = hash_password(new_password.strip())
     record["used"] = True
+
+    try:
+        db = SessionLocal()
+        db_u = db.query(UserModel).filter(UserModel.id == user["id"]).first()
+        if db_u:
+            db_u.hashed_password = user["hashed_password"]
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
     return True, "Đặt lại mật khẩu thành công"
 
