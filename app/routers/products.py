@@ -1,6 +1,8 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy.orm import Session
 
+from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_roles
 from app.schemas.product import (
     DiscountCheckRequest,
@@ -23,6 +25,7 @@ def list_products(
     page: int = Query(1, ge=1, description="Trang hiện tại"),
     limit: int = Query(20, ge=1, le=100, description="Số sản phẩm trên một trang"),
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Danh sách sản phẩm / dịch vụ.
@@ -35,6 +38,7 @@ def list_products(
         page=page,
         limit=limit,
         current_user=current_user,
+        db=db,
     )
 
 
@@ -42,23 +46,33 @@ def list_products(
 def get_product_detail(
     product_id: int,
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Xem chi tiết sản phẩm / dịch vụ.
     """
-    return product_service.get_product_by_id(product_id=product_id, current_user=current_user)
+    return product_service.get_product_by_id(
+        product_id=product_id,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 def create_product(
     product_in: ProductCreate,
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"], detail="Chỉ Quản trị viên và Giám đốc kinh doanh mới có quyền tạo sản phẩm")),
+    db: Session = Depends(get_db),
 ):
     """
     Tạo mới sản phẩm / dịch vụ.
     Quyền: ADMIN, MANAGER.
     """
-    return product_service.create_product(product_in=product_in, current_user=current_user)
+    return product_service.create_product(
+        product_in=product_in,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.put("/{product_id}", response_model=ProductResponse)
@@ -66,30 +80,42 @@ def update_product(
     product_id: int,
     product_in: ProductUpdate,
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"], detail="Chỉ Quản trị viên và Giám đốc kinh doanh mới có quyền cập nhật sản phẩm")),
+    db: Session = Depends(get_db),
 ):
     """
     Cập nhật sản phẩm / dịch vụ.
     Quyền: ADMIN, MANAGER.
     """
-    return product_service.update_product(product_id=product_id, product_in=product_in, current_user=current_user)
+    return product_service.update_product(
+        product_id=product_id,
+        product_in=product_in,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.delete("/{product_id}")
 def delete_product(
     product_id: int,
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"], detail="Chỉ Quản trị viên và Giám đốc kinh doanh mới có quyền xoá hoặc ngừng kinh doanh sản phẩm")),
+    db: Session = Depends(get_db),
 ):
     """
     Xóa sản phẩm.
     Nếu sản phẩm đã từng xuất hiện trong báo giá, hệ thống tự động chuyển sang DISCONTINUED.
     """
-    return product_service.delete_or_discontinue_product(product_id=product_id, current_user=current_user)
+    return product_service.delete_or_discontinue_product(
+        product_id=product_id,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.post("/check-discount", response_model=DiscountCheckResponse)
 def check_discount(
     req: DiscountCheckRequest,
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Kiểm tra giá chào bán so với giá sàn để xác định xem có cần phê duyệt chiết khấu hay không.
@@ -97,4 +123,5 @@ def check_discount(
     return product_service.check_discount_approval(
         product_id=req.product_id,
         proposed_price=req.proposed_price,
+        db=db,
     )
