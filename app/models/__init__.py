@@ -6,6 +6,20 @@ from app.models.activity import Activity
 from app.models.quote import Quote
 from app.models.audit_log import AuditLog
 from app.models.product import Product
+from app.models.contact import Contact, ContactCompanyHistory
 
-__all__ = ["Base", "User", "Customer", "Opportunity", "Activity", "Quote", "AuditLog", "Product"]
+__all__ = [
+    "Base",
+    "User",
+    "Customer",
+    "Opportunity",
+    "Activity",
+    "Quote",
+    "AuditLog",
+    "Product",
+    "Contact",
+    "ContactCompanyHistory",
+]
+
+
 
