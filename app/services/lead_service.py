@@ -1,16 +1,21 @@
 """
-Lead Service for S4-02 and S4-04:
-- Manual lead creation with mandatory source (S4-02)
-- Excel batch import with template, preview, row-level error reporting (S4-02)
-- Duplicate detection by email, phone, company (S4-04)
-- Suggest attach to existing customers (S4-04)
-- Lead merge preserving activity history and snapshot (S4-04)
+Unified Lead Service:
+- S4-01: Web-to-lead embed code & anti-spam collection
+- S4-02: Manual lead creation with mandatory source & Excel batch import with template/preview
+- S4-03: Campaign tracking linkage
+- S4-04: Duplicate detection, attach to customer, lead merge preserving history
+- S4-05: Lead scoring rules & classification
+- S4-06: Lead allocation rules & assignment
 """
 
 import copy
+import html
 import io
 import json
 import re
+import time
+import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,116 +25,781 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.lead import Lead as LeadModel, LeadMergeHistory as LeadMergeHistoryModel
-from app.models.customer import Customer as CustomerModel
+from app.models.lead import (
+    Lead,
+    LeadSourceConfig,
+    LeadScoringRule,
+    LeadScoringSetting,
+    LeadAllocationRule,
+    LeadAllocationLog,
+    LeadMergeHistory,
+)
+from app.models.customer import Customer
+from app.schemas.lead import (
+    LeadCreate,
+    LeadUpdate,
+    LeadFormCreate,
+    LeadFormUpdate,
+    LeadScoringRuleCreate,
+    LeadScoringRuleUpdate,
+    LeadAllocationRuleCreate,
+    LeadAllocationRuleUpdate,
+    WebToLeadSubmitRequest,
+)
 from app.services import customer_service, auth_service
 from app.services.activity_service import FAKE_ACTIVITIES
 
-INITIAL_LEADS: List[Dict[str, Any]] = [
-    {
-        "id": 1,
-        "name": "Trần Văn Hùng",
-        "company_name": "Công ty TNHH SmartTech",
-        "title": "Trưởng phòng CNTT",
-        "email": "hung.tran@smarttech.vn",
-        "phone": "0912345678",
-        "address": "Cầu Giấy, Hà Nội",
-        "source": "Hội thảo",
-        "campaign_id": 1,
-        "customer_id": None,
-        "status": "NEW",
-        "notes": "Gặp mặt tại hội thảo chuyển đổi số",
-        "merged_into_id": None,
-        "owner_id": 1,
-        "team_id": 1,
-        "created_at": datetime(2026, 3, 1, 9, 0, 0),
-        "updated_at": None,
-    },
-    {
-        "id": 2,
-        "name": "Nguyễn Thị Mai",
-        "company_name": "Tập đoàn Đại Nam",
-        "title": "Giám đốc Marketing",
-        "email": "mai.nguyen@dainam.com",
-        "phone": "0987654321",
-        "address": "Quận 1, TP. Hồ Chí Minh",
-        "source": "Sự kiện",
-        "campaign_id": 1,
-        "customer_id": None,
-        "status": "CONTACTED",
-        "notes": "Nhận danh thiếp tại Tech Expo",
-        "merged_into_id": None,
-        "owner_id": 2,
-        "team_id": 1,
-        "created_at": datetime(2026, 3, 2, 14, 30, 0),
-        "updated_at": None,
-    },
-    {
-        "id": 3,
-        "name": "Lê Hoàng Long",
-        "company_name": "Công ty Cổ phần VinaLogistics",
-        "title": "Phó Giám đốc Điều hành",
-        "email": "long.le@vinalogistics.vn",
-        "phone": "0903456789",
-        "address": "Hải Phòng",
-        "source": "Danh thiếp",
-        "campaign_id": None,
-        "customer_id": None,
-        "status": "QUALIFIED",
-        "notes": "Trao đổi danh thiếp tại gala doanh nhân",
-        "merged_into_id": None,
-        "owner_id": 3,
-        "team_id": 1,
-        "created_at": datetime(2026, 3, 5, 11, 15, 0),
-        "updated_at": None,
-    },
-]
 
-FAKE_LEADS: List[Dict[str, Any]] = copy.deepcopy(INITIAL_LEADS)
-FAKE_LEAD_MERGE_HISTORIES: List[Dict[str, Any]] = []
+# ============================================================================
+# BỘ NHỚ TẠM CHO RATE LIMITING & SUBMISSION (S4-01)
+# ============================================================================
+
+_ip_submission_timestamps: Dict[str, List[float]] = defaultdict(list)
 
 
-def reset_fake_leads() -> None:
-    global FAKE_LEADS, FAKE_LEAD_MERGE_HISTORIES
-    FAKE_LEADS = copy.deepcopy(INITIAL_LEADS)
-    FAKE_LEAD_MERGE_HISTORIES = []
+def _check_rate_limit(ip_address: str, max_per_minute: int = 5) -> bool:
+    """Kiểm tra giới hạn tần suất gửi theo địa chỉ IP (Rate limiting chống spam - S4-01)."""
+    now = time.time()
+    one_minute_ago = now - 60.0
+    _ip_submission_timestamps[ip_address] = [
+        t for t in _ip_submission_timestamps[ip_address] if t > one_minute_ago
+    ]
+    if len(_ip_submission_timestamps[ip_address]) >= max_per_minute:
+        return False
+    _ip_submission_timestamps[ip_address].append(now)
+    return True
 
-    # Đồng bộ với SQLite nếu DB có sẵn
+
+def _generate_embed_snippets(form_key: str, form_name: str, base_url: str = "") -> Dict[str, str]:
+    """Tạo các đoạn mã nhúng chuẩn (Embed Script, Iframe, HTML Form) để chèn vào website."""
+    endpoint = f"{base_url}/lead-forms/{form_key}/submit"
+    render_endpoint = f"{base_url}/lead-forms/{form_key}/render"
+
+    script_code = f"""<!-- Web-to-Lead Form Embed: {html.escape(form_name)} -->
+<div id="crm-lead-form-{form_key}"></div>
+<script>
+(function() {{
+  var container = document.getElementById("crm-lead-form-{form_key}");
+  if (!container) return;
+  var form = document.createElement("form");
+  form.action = "{endpoint}";
+  form.method = "POST";
+  form.innerHTML = `
+    <div style="margin-bottom:10px;"><label>Họ và tên *</label><br/><input type="text" name="full_name" required style="width:100%;padding:8px;box-sizing:border-box;"/></div>
+    <div style="margin-bottom:10px;"><label>Email *</label><br/><input type="email" name="email" required style="width:100%;padding:8px;box-sizing:border-box;"/></div>
+    <div style="margin-bottom:10px;"><label>Số điện thoại</label><br/><input type="tel" name="phone" style="width:100%;padding:8px;box-sizing:border-box;"/></div>
+    <div style="margin-bottom:10px;"><label>Công ty</label><br/><input type="text" name="company" style="width:100%;padding:8px;box-sizing:border-box;"/></div>
+    <div style="margin-bottom:10px;"><label>Nhu cầu quan tâm</label><br/><textarea name="interest" rows="3" style="width:100%;padding:8px;box-sizing:border-box;"></textarea></div>
+    <input type="text" name="hp_website" style="display:none;" tabindex="-1" autocomplete="off"/>
+    <button type="submit" style="background:#2563eb;color:#fff;padding:10px 20px;border:none;border-radius:4px;cursor:pointer;">Gửi thông tin</button>
+  `;
+  form.onsubmit = async function(e) {{
+    e.preventDefault();
+    var data = {{
+      full_name: form.full_name.value,
+      email: form.email.value,
+      phone: form.phone.value,
+      company: form.company.value,
+      interest: form.interest.value,
+      hp_website: form.hp_website.value
+    }};
+    try {{
+      var res = await fetch("{endpoint}", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(data)
+      }});
+      var result = await res.json();
+      if (res.ok) {{
+        container.innerHTML = '<div style="color:green;padding:15px;background:#f0fdf4;border-radius:4px;">Cảm ơn bạn! Chúng tôi đã nhận được thông tin và sẽ liên hệ sớm nhất.</div>';
+      }} else {{
+        alert(result.detail || "Có lỗi xảy ra, vui lòng thử lại.");
+      }}
+    }} catch (err) {{
+      alert("Lỗi kết nối máy chủ");
+    }}
+  }};
+  container.appendChild(form);
+}})();
+</script>"""
+
+    iframe_code = f'<iframe src="{render_endpoint}" width="100%" height="480" frameborder="0" style="border:1px solid #e2e8f0;border-radius:8px;"></iframe>'
+
+    html_form = f"""<!-- Web-to-Lead Raw HTML Form -->
+<form action="{endpoint}" method="POST" class="crm-lead-form">
+  <div><label>Họ và tên *</label><input type="text" name="full_name" required /></div>
+  <div><label>Email *</label><input type="email" name="email" required /></div>
+  <div><label>Số điện thoại</label><input type="tel" name="phone" /></div>
+  <div><label>Công ty</label><input type="text" name="company" /></div>
+  <div><label>Nhu cầu quan tâm</label><textarea name="interest"></textarea></div>
+  <input type="text" name="hp_website" style="display:none;" tabindex="-1" autocomplete="off" />
+  <button type="submit">Gửi thông tin</button>
+</form>"""
+
+    return {
+        "embed_script_tag": script_code,
+        "embed_iframe_code": iframe_code,
+        "embed_html_form": html_form,
+    }
+
+
+# ============================================================================
+# CẤU HÌNH BIỂU MẪU WEB-TO-LEAD (S4-01)
+# ============================================================================
+
+def create_lead_form(payload: LeadFormCreate, user_id: int, db: Optional[Session] = None) -> Dict[str, Any]:
+    form_key = uuid.uuid4().hex[:16]
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
     try:
-        db: Session = SessionLocal()
-        try:
-            db.query(LeadMergeHistoryModel).delete()
-            db.query(LeadModel).delete()
-            for l in INITIAL_LEADS:
-                lead_m = LeadModel(
-                    id=l["id"],
-                    name=l["name"],
-                    company_name=l.get("company_name"),
-                    title=l.get("title"),
-                    email=l.get("email"),
-                    phone=l.get("phone"),
-                    address=l.get("address"),
-                    source=l["source"],
-                    campaign_id=l.get("campaign_id"),
-                    customer_id=l.get("customer_id"),
-                    status=l.get("status", "NEW"),
-                    notes=l.get("notes"),
-                    merged_into_id=l.get("merged_into_id"),
-                    owner_id=l.get("owner_id", 1),
-                    team_id=l.get("team_id"),
-                    created_at=l.get("created_at"),
-                )
-                db.add(lead_m)
-            db.commit()
-        finally:
+        new_form = LeadSourceConfig(
+            form_key=form_key,
+            name=payload.name.strip(),
+            source_name=payload.source_name.strip() if payload.source_name else "Website Form",
+            description=payload.description,
+            target_url=payload.target_url,
+            rate_limit_per_minute=payload.rate_limit_per_minute or 5,
+            is_active=True,
+            created_by=user_id,
+        )
+        db.add(new_form)
+        db.commit()
+        db.refresh(new_form)
+
+        snippets = _generate_embed_snippets(new_form.form_key, new_form.name)
+        return {
+            "id": new_form.id,
+            "form_key": new_form.form_key,
+            "name": new_form.name,
+            "source_name": new_form.source_name,
+            "description": new_form.description,
+            "target_url": new_form.target_url,
+            "is_active": new_form.is_active,
+            "rate_limit_per_minute": new_form.rate_limit_per_minute,
+            "created_by": new_form.created_by,
+            "created_at": new_form.created_at,
+            **snippets,
+        }
+    finally:
+        if should_close:
             db.close()
-    except Exception:
-        pass
 
 
-# ==============================================================================
-# Helper Functions: Normalization & Matching
-# ==============================================================================
+def list_lead_forms(db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        rows = db.query(LeadSourceConfig).order_by(LeadSourceConfig.id.desc()).all()
+        results = []
+        for r in rows:
+            snippets = _generate_embed_snippets(r.form_key, r.name)
+            results.append({
+                "id": r.id,
+                "form_key": r.form_key,
+                "name": r.name,
+                "source_name": r.source_name,
+                "description": r.description,
+                "target_url": r.target_url,
+                "is_active": r.is_active,
+                "rate_limit_per_minute": r.rate_limit_per_minute,
+                "created_by": r.created_by,
+                "created_at": r.created_at,
+                **snippets,
+            })
+        return results
+    finally:
+        if should_close:
+            db.close()
+
+
+def get_lead_form_by_key(form_key: str, db: Optional[Session] = None) -> Optional[LeadSourceConfig]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        return db.query(LeadSourceConfig).filter(LeadSourceConfig.form_key == form_key).first()
+    finally:
+        if should_close:
+            db.close()
+
+
+def get_lead_form_embed_code(form_key: str, base_url: str = "", db: Optional[Session] = None) -> Dict[str, Any]:
+    form = get_lead_form_by_key(form_key, db=db)
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy biểu mẫu với mã nhúng '{form_key}'",
+        )
+    snippets = _generate_embed_snippets(form.form_key, form.name, base_url=base_url)
+    return {
+        "form_key": form.form_key,
+        "name": form.name,
+        "source_name": form.source_name,
+        "endpoint_url": f"{base_url}/lead-forms/{form.form_key}/submit",
+        **snippets,
+    }
+
+
+def process_web_to_lead_submission(
+    form_key: str,
+    payload: WebToLeadSubmitRequest,
+    client_ip: str = "127.0.0.1",
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        form = get_lead_form_by_key(form_key, db=db)
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Mã biểu mẫu '{form_key}' không tồn tại hoặc đã bị xóa",
+            )
+        if not form.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Biểu mẫu này hiện đang tạm ngưng tiếp nhận thông tin",
+            )
+
+        if payload.hp_website and payload.hp_website.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phát hiện hành vi gửi dữ liệu bất thường (Spam detected)",
+            )
+
+        max_rate = form.rate_limit_per_minute or 5
+        if not _check_rate_limit(client_ip, max_per_minute=max_rate):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Bạn đã gửi quá số lần cho phép ({max_rate} lần/phút). Vui lòng đợi và thử lại sau.",
+            )
+
+        clean_phone = None
+        if payload.phone and payload.phone.strip():
+            clean_phone = payload.phone.strip()
+            vn_phone_pattern = re.compile(r"^(0|\+84)(3[2-9]|5[2689]|7[06-9]|8[1-9]|9[0-9])[0-9]{7}$")
+            if not vn_phone_pattern.match(clean_phone):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Số điện thoại không đúng định dạng Việt Nam hợp lệ (10 chữ số, đầu số 03, 05, 07, 08, 09 hoặc +84)",
+                )
+
+        new_lead = Lead(
+            full_name=payload.full_name.strip(),
+            name=payload.full_name.strip(),
+            email=payload.email.strip().lower(),
+            phone=clean_phone,
+            company=payload.company.strip() if payload.company else None,
+            company_name=payload.company.strip() if payload.company else None,
+            interest=payload.interest.strip() if payload.interest else None,
+            source=form.source_name,
+            status="NEW",
+            form_key=form.form_key,
+            ip_address=client_ip,
+        )
+
+        db.add(new_lead)
+        db.commit()
+        db.refresh(new_lead)
+
+        calculate_lead_score(new_lead, db=db, commit=True)
+        allocate_single_lead(new_lead, db=db, commit=True)
+
+        return {
+            "success": True,
+            "message": "Gửi thông tin thành công! Chúng tôi sẽ liên hệ trong thời gian sớm nhất.",
+            "lead_id": new_lead.id,
+            "status": new_lead.status,
+            "source": new_lead.source,
+            "score": new_lead.score,
+            "grade": new_lead.grade,
+            "owner_id": new_lead.owner_id,
+            "allocation_status": new_lead.allocation_status,
+        }
+    finally:
+        if should_close:
+            db.close()
+
+
+# ============================================================================
+# CẤU HÌNH VÀ TÍNH ĐIỂM LEAD (LEAD SCORING - S4-05)
+# ============================================================================
+
+def get_or_create_scoring_settings(db: Session) -> LeadScoringSetting:
+    setting = db.query(LeadScoringSetting).first()
+    if not setting:
+        setting = LeadScoringSetting(hot_threshold=50, warm_threshold=20)
+        db.add(setting)
+        db.commit()
+        db.refresh(setting)
+    return setting
+
+
+def update_scoring_settings(hot_threshold: int, warm_threshold: int, db: Session) -> LeadScoringSetting:
+    if warm_threshold >= hot_threshold:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ngưỡng điểm Ấm (WARM) phải nhỏ hơn ngưỡng điểm Nóng (HOT)",
+        )
+    setting = get_or_create_scoring_settings(db)
+    setting.hot_threshold = hot_threshold
+    setting.warm_threshold = warm_threshold
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+
+def list_scoring_rules(active_only: bool = False, db: Session = None) -> List[LeadScoringRule]:
+    query = db.query(LeadScoringRule)
+    if active_only:
+        query = query.filter(LeadScoringRule.is_active == True)
+    return query.order_by(LeadScoringRule.id.asc()).all()
+
+
+def get_scoring_rule_by_id(rule_id: int, db: Session) -> Optional[LeadScoringRule]:
+    return db.query(LeadScoringRule).filter(LeadScoringRule.id == rule_id).first()
+
+
+def create_scoring_rule(payload: LeadScoringRuleCreate, db: Session) -> LeadScoringRule:
+    valid_fields = ["industry", "company_size", "source", "budget", "job_title", "phone", "email", "interest", "city"]
+    if payload.field_name not in valid_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Trường dữ liệu '{payload.field_name}' không hỗ trợ chấm điểm. Các trường hợp lệ: {', '.join(valid_fields)}",
+        )
+    valid_ops = ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_EMPTY", "IS_EMPTY", "GREATER_THAN", "LESS_THAN", "IN"]
+    op = payload.operator.upper()
+    if op not in valid_ops:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Toán tử '{payload.operator}' không hợp lệ. Các toán tử hợp lệ: {', '.join(valid_ops)}",
+        )
+    rule = LeadScoringRule(
+        name=payload.name.strip(),
+        description=payload.description,
+        field_name=payload.field_name,
+        operator=op,
+        target_value=payload.target_value.strip() if payload.target_value else None,
+        points=payload.points,
+        is_active=payload.is_active,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def update_scoring_rule(rule_id: int, payload: LeadScoringRuleUpdate, db: Session) -> LeadScoringRule:
+    rule = get_scoring_rule_by_id(rule_id, db=db)
+    if not rule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy quy tắc chấm điểm với ID {rule_id}",
+        )
+    if payload.name is not None:
+        rule.name = payload.name.strip()
+    if payload.description is not None:
+        rule.description = payload.description
+    if payload.field_name is not None:
+        rule.field_name = payload.field_name
+    if payload.operator is not None:
+        rule.operator = payload.operator.upper()
+    if payload.target_value is not None:
+        rule.target_value = payload.target_value.strip()
+    if payload.points is not None:
+        rule.points = payload.points
+    if payload.is_active is not None:
+        rule.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def delete_scoring_rule(rule_id: int, db: Session) -> bool:
+    rule = get_scoring_rule_by_id(rule_id, db=db)
+    if not rule:
+        return False
+    db.delete(rule)
+    db.commit()
+    return True
+
+
+def evaluate_rule_match(lead: Lead, rule: LeadScoringRule) -> bool:
+    field = rule.field_name
+    val = getattr(lead, field, None)
+    target = rule.target_value or ""
+    op = rule.operator
+
+    if op == "NOT_EMPTY":
+        return val is not None and str(val).strip() != ""
+    if op == "IS_EMPTY":
+        return val is None or str(val).strip() == ""
+
+    if val is None:
+        return False
+
+    s_val = str(val).strip()
+    s_target = target.strip()
+
+    if op == "EQUALS":
+        return s_val.lower() == s_target.lower()
+    elif op == "NOT_EQUALS":
+        return s_val.lower() != s_target.lower()
+    elif op == "CONTAINS":
+        return s_target.lower() in s_val.lower()
+    elif op == "IN":
+        allowed = [x.strip().lower() for x in s_target.split(",") if x.strip()]
+        return s_val.lower() in allowed
+    elif op in ("GREATER_THAN", "LESS_THAN"):
+        try:
+            num_val = float(val)
+            num_target = float(target)
+            return num_val >= num_target if op == "GREATER_THAN" else num_val <= num_target
+        except (ValueError, TypeError):
+            return False
+    return False
+
+
+def calculate_lead_score(lead: Lead, db: Session, commit: bool = True) -> Tuple[int, str, List[dict]]:
+    settings = get_or_create_scoring_settings(db)
+    rules = list_scoring_rules(active_only=True, db=db)
+
+    total_score = 0
+    matched_details = []
+
+    for rule in rules:
+        if evaluate_rule_match(lead, rule):
+            total_score += rule.points
+            matched_details.append({
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "field_name": rule.field_name,
+                "points": rule.points,
+            })
+
+    if total_score >= settings.hot_threshold:
+        grade = "HOT"
+    elif total_score >= settings.warm_threshold:
+        grade = "WARM"
+    else:
+        grade = "COLD"
+
+    lead.score = total_score
+    lead.grade = grade
+    lead.score_details = json.dumps(matched_details, ensure_ascii=False)
+    lead.last_scored_at = datetime.now(timezone.utc)
+
+    if commit:
+        db.commit()
+        db.refresh(lead)
+
+    return total_score, grade, matched_details
+
+
+def recalculate_single_lead_score(lead_id: int, db: Session) -> Dict[str, Any]:
+    lead = get_lead_by_id(lead_id, db=db)
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+    score, grade, details = calculate_lead_score(lead, db=db, commit=True)
+    return {
+        "lead_id": lead.id,
+        "score": score,
+        "grade": grade,
+        "matched_rules_count": len(details),
+        "score_details": lead.score_details,
+        "message": f"Đã tính lại điểm cho lead #{lead.id}: {score} điểm ({grade})",
+    }
+
+
+def recalculate_all_leads_scores(db: Session) -> Dict[str, Any]:
+    leads = db.query(Lead).all()
+    count = 0
+    for lead in leads:
+        calculate_lead_score(lead, db=db, commit=False)
+        count += 1
+    db.commit()
+    return {
+        "success": True,
+        "total_recalculated": count,
+        "message": f"Đã tính lại điểm cho {count} khách hàng tiềm năng",
+    }
+
+
+# ============================================================================
+# PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
+# ============================================================================
+
+def list_allocation_rules(active_only: bool = False, db: Session = None) -> List[LeadAllocationRule]:
+    query = db.query(LeadAllocationRule)
+    if active_only:
+        query = query.filter(LeadAllocationRule.is_active == True)
+    return query.order_by(LeadAllocationRule.priority.asc(), LeadAllocationRule.id.asc()).all()
+
+
+def get_allocation_rule_by_id(rule_id: int, db: Session) -> Optional[LeadAllocationRule]:
+    return db.query(LeadAllocationRule).filter(LeadAllocationRule.id == rule_id).first()
+
+
+def create_allocation_rule(payload: LeadAllocationRuleCreate, db: Session) -> LeadAllocationRule:
+    valid_types = ["REGION", "INDUSTRY", "SOURCE", "ANY"]
+    c_type = payload.criterion_type.strip().upper()
+    if c_type not in valid_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Loại tiêu chí '{payload.criterion_type}' không hợp lệ. Các loại hợp lệ: {', '.join(valid_types)}",
+        )
+    valid_methods = ["ROUND_ROBIN", "SPECIFIC_USER", "REGION", "INDUSTRY"]
+    m_type = payload.allocation_method.strip().upper()
+    if m_type not in valid_methods:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Phương thức phân bổ '{payload.allocation_method}' không hợp lệ",
+        )
+    if not payload.assignee_user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Danh sách nhân viên nhận lead không được để trống",
+        )
+    rule = LeadAllocationRule(
+        name=payload.name.strip(),
+        description=payload.description,
+        priority=payload.priority,
+        criterion_type=c_type,
+        criterion_value=payload.criterion_value.strip() if payload.criterion_value else None,
+        allocation_method=m_type,
+        assignee_user_ids=json.dumps(payload.assignee_user_ids),
+        last_assigned_index=-1,
+        is_active=payload.is_active,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def update_allocation_rule(rule_id: int, payload: LeadAllocationRuleUpdate, db: Session) -> LeadAllocationRule:
+    rule = get_allocation_rule_by_id(rule_id, db=db)
+    if not rule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy quy tắc phân bổ ID {rule_id}",
+        )
+    if payload.name is not None:
+        rule.name = payload.name.strip()
+    if payload.description is not None:
+        rule.description = payload.description
+    if payload.priority is not None:
+        rule.priority = payload.priority
+    if payload.criterion_type is not None:
+        rule.criterion_type = payload.criterion_type.strip().upper()
+    if payload.criterion_value is not None:
+        rule.criterion_value = payload.criterion_value.strip()
+    if payload.allocation_method is not None:
+        rule.allocation_method = payload.allocation_method.strip().upper()
+    if payload.assignee_user_ids is not None:
+        rule.assignee_user_ids = json.dumps(payload.assignee_user_ids)
+    if payload.is_active is not None:
+        rule.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def delete_allocation_rule(rule_id: int, db: Session) -> bool:
+    rule = get_allocation_rule_by_id(rule_id, db=db)
+    if not rule:
+        return False
+    db.delete(rule)
+    db.commit()
+    return True
+
+
+def matches_allocation_criterion(lead: Lead, rule: LeadAllocationRule) -> bool:
+    c_type = rule.criterion_type
+    val = rule.criterion_value or ""
+
+    if c_type == "ANY":
+        return True
+
+    allowed_values = [v.strip().lower() for v in val.split(",") if v.strip()]
+
+    if c_type == "REGION":
+        lead_city = (lead.city or "").lower().strip()
+        lead_company = (lead.company or "").lower().strip()
+        lead_interest = (lead.interest or "").lower().strip()
+        return any(
+            v in lead_city or v in lead_company or v in lead_interest
+            for v in allowed_values
+        )
+    elif c_type == "INDUSTRY":
+        lead_ind = (lead.industry or "").lower().strip()
+        return any(v in lead_ind or lead_ind in v for v in allowed_values)
+    elif c_type == "SOURCE":
+        lead_src = (lead.source or "").lower().strip()
+        return any(v in lead_src for v in allowed_values)
+
+    return False
+
+
+def allocate_single_lead(lead: Lead, db: Session, commit: bool = True) -> LeadAllocationLog:
+    rules = list_allocation_rules(active_only=True, db=db)
+
+    for rule in rules:
+        if matches_allocation_criterion(lead, rule):
+            try:
+                assignee_ids = json.loads(rule.assignee_user_ids)
+            except Exception:
+                assignee_ids = []
+
+            if not assignee_ids:
+                continue
+
+            if rule.allocation_method in ("ROUND_ROBIN", "REGION", "INDUSTRY"):
+                next_index = (rule.last_assigned_index + 1) % len(assignee_ids)
+                rule.last_assigned_index = next_index
+                assigned_user_id = assignee_ids[next_index]
+            else:
+                assigned_user_id = assignee_ids[0]
+
+            lead.owner_id = assigned_user_id
+            lead.allocation_status = "ASSIGNED"
+            lead.allocated_at = datetime.now(timezone.utc)
+            lead.allocation_rule_id = rule.id
+            lead.allocation_method = rule.allocation_method
+            lead.allocation_note = f"Phân bổ tự động theo quy tắc #{rule.id} ({rule.name})"
+
+            log = LeadAllocationLog(
+                lead_id=lead.id,
+                rule_id=rule.id,
+                rule_name=rule.name,
+                allocation_method=rule.allocation_method,
+                assigned_to=assigned_user_id,
+                status="SUCCESS",
+                note=lead.allocation_note,
+            )
+            db.add(log)
+            if commit:
+                db.commit()
+                db.refresh(lead)
+            return log
+
+    lead.owner_id = None
+    lead.allocation_status = "QUEUED"
+    lead.allocated_at = None
+    lead.allocation_rule_id = None
+    lead.allocation_method = None
+    lead.allocation_note = "Không khớp quy tắc nào - Đang trong hàng chờ phân bổ thủ công"
+
+    log = LeadAllocationLog(
+        lead_id=lead.id,
+        rule_id=None,
+        rule_name=None,
+        allocation_method="UNASSIGNED",
+        assigned_to=None,
+        status="QUEUED",
+        note=lead.allocation_note,
+    )
+    db.add(log)
+    if commit:
+        db.commit()
+        db.refresh(lead)
+    return log
+
+
+def manual_assign_lead(lead_id: int, owner_id: int, note: Optional[str], current_user: dict, db: Session) -> Lead:
+    lead = get_lead_by_id(lead_id, db=db)
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+
+    assigner_name = current_user.get("full_name") or current_user.get("username") or "Manager"
+    allocation_note = note or f"Phân bổ thủ công bởi {assigner_name}"
+
+    lead.owner_id = owner_id
+    lead.allocation_status = "ASSIGNED"
+    lead.allocated_at = datetime.now(timezone.utc)
+    lead.allocation_method = "MANUAL"
+    lead.allocation_note = allocation_note
+
+    log = LeadAllocationLog(
+        lead_id=lead.id,
+        rule_id=None,
+        rule_name="Thủ công",
+        allocation_method="MANUAL",
+        assigned_to=owner_id,
+        status="MANUAL",
+        note=allocation_note,
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(lead)
+    return lead
+
+
+def list_allocation_queue(skip: int = 0, limit: int = 50, db: Session = None) -> Tuple[int, List[Lead]]:
+    query = db.query(Lead).filter(
+        (Lead.allocation_status.in_(["QUEUED", "UNASSIGNED"])) | (Lead.owner_id.is_(None))
+    )
+    total = query.count()
+    items = query.order_by(Lead.id.desc()).offset(skip).limit(limit).all()
+    return total, items
+
+
+def run_batch_lead_allocation(db: Session) -> Dict[str, Any]:
+    unassigned_leads = db.query(Lead).filter(
+        (Lead.allocation_status.in_(["QUEUED", "UNASSIGNED"])) | (Lead.owner_id.is_(None))
+    ).all()
+
+    assigned_count = 0
+    queued_count = 0
+
+    for lead in unassigned_leads:
+        log = allocate_single_lead(lead, db=db, commit=False)
+        if log.status == "SUCCESS":
+            assigned_count += 1
+        else:
+            queued_count += 1
+
+    db.commit()
+    return {
+        "success": True,
+        "total_processed": len(unassigned_leads),
+        "assigned_count": assigned_count,
+        "queued_count": queued_count,
+        "message": f"Đã xử lý {len(unassigned_leads)} lead trong hàng chờ: {assigned_count} phân bổ thành công, {queued_count} giữ trong hàng chờ.",
+    }
+
+
+def list_allocation_logs(lead_id: Optional[int] = None, skip: int = 0, limit: int = 50, db: Session = None) -> Tuple[int, List[LeadAllocationLog]]:
+    query = db.query(LeadAllocationLog)
+    if lead_id is not None:
+        query = query.filter(LeadAllocationLog.lead_id == lead_id)
+    total = query.count()
+    items = query.order_by(LeadAllocationLog.id.desc()).offset(skip).limit(limit).all()
+    return total, items
+
+
+# ============================================================================
+# S4-02: LEAD CRUD & MANUAL CREATION (BẮT BUỘC CÓ NGUỒN)
+# ============================================================================
 
 def normalize_phone(phone: Optional[str]) -> str:
     """Chuẩn hóa số điện thoại: chỉ giữ lại chữ số, chuyển +84 thành 0."""
@@ -174,233 +844,326 @@ def _is_valid_phone_format(phone: str) -> bool:
     return len(norm) in (10, 11)
 
 
-def _enrich_lead_display(lead: dict) -> dict:
-    """Bổ sung owner_name, campaign_name, customer_name cho hiển thị."""
-    enriched = dict(lead)
-    owner = auth_service.get_user_by_id(enriched.get("owner_id"))
-    enriched["owner_name"] = owner.get("full_name") if owner else None
-
-    # Tên khách hàng nếu có
-    if enriched.get("customer_id"):
-        cust = customer_service.get_customer_by_id(enriched["customer_id"])
-        enriched["customer_name"] = cust.get("name") if cust else None
+def _enrich_lead_model(lead: Lead) -> Lead:
+    """Gắn các thông tin phụ trợ cho hiển thị (owner_name, campaign_name, customer_name)."""
+    if hasattr(lead, "owner_id") and lead.owner_id:
+        owner = auth_service.get_user_by_id(lead.owner_id)
+        setattr(lead, "owner_name", owner.get("full_name") if owner else None)
     else:
-        enriched["customer_name"] = None
+        setattr(lead, "owner_name", None)
 
-    # Tên chiến dịch nếu có
-    from app.services import campaign_service
-    if enriched.get("campaign_id"):
-        camp = campaign_service.get_campaign_by_id(enriched["campaign_id"])
-        enriched["campaign_name"] = camp.get("name") if camp else None
+    if hasattr(lead, "campaign_id") and lead.campaign_id:
+        from app.services import campaign_service
+        camp = campaign_service.get_campaign_by_id(lead.campaign_id)
+        setattr(lead, "campaign_name", camp.get("name") if camp else None)
     else:
-        enriched["campaign_name"] = None
+        setattr(lead, "campaign_name", None)
 
-    return enriched
+    if hasattr(lead, "customer_id") and lead.customer_id:
+        cust = customer_service.get_customer_by_id(lead.customer_id)
+        setattr(lead, "customer_name", cust.get("name") if cust else None)
+    else:
+        setattr(lead, "customer_name", None)
+
+    # Đảm bảo name và full_name, company và company_name luôn đồng bộ
+    if not lead.name and lead.full_name:
+        lead.name = lead.full_name
+    elif not lead.full_name and lead.name:
+        lead.full_name = lead.name
+
+    if not lead.company_name and lead.company:
+        lead.company_name = lead.company
+    elif not lead.company and lead.company_name:
+        lead.company = lead.company_name
+
+    return lead
 
 
-# ==============================================================================
-# S4-02: Lead CRUD & Manual Creation
-# ==============================================================================
-
-def create_lead(data: dict, current_user: dict) -> dict:
+def create_crm_lead(payload: Any, current_user: dict, db: Optional[Session] = None) -> Lead:
     """
     AC S4-02: Nhập tay một lead từ sự kiện hoặc danh thiếp.
     MỌI LEAD NHẬP VÀO ĐỀU BẮT BUỘC CÓ NGUỒN (source).
     """
+    data = payload if isinstance(payload, dict) else payload.model_dump()
+
     source = data.get("source")
     if not source or not str(source).strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Mọi lead nhập vào đều bắt buộc có nguồn (source)",
+            detail="Mọi lead nhập vào đều bắt buộc có nguồn",
         )
 
-    name = data.get("name")
-    if not name or not str(name).strip():
+    full_name = data.get("full_name") or data.get("name")
+    if not full_name or not str(full_name).strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Họ và tên lead là bắt buộc",
         )
 
-    new_id = (max((l["id"] for l in FAKE_LEADS), default=0) + 1) if FAKE_LEADS else 1
-    new_lead = {
-        "id": new_id,
-        "name": str(name).strip(),
-        "company_name": data.get("company_name", "").strip() if data.get("company_name") else None,
-        "title": data.get("title", "").strip() if data.get("title") else None,
-        "email": normalize_email(data.get("email")) or None,
-        "phone": data.get("phone", "").strip() if data.get("phone") else None,
-        "address": data.get("address", "").strip() if data.get("address") else None,
-        "source": str(source).strip(),
-        "campaign_id": data.get("campaign_id"),
-        "customer_id": data.get("customer_id"),
-        "status": data.get("status", "NEW"),
-        "notes": data.get("notes"),
-        "merged_into_id": None,
-        "owner_id": data.get("owner_id") or current_user.get("id", 1),
-        "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": None,
-    }
+    company = data.get("company") or data.get("company_name")
 
-    FAKE_LEADS.append(new_lead)
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
 
-    # Lưu vào DB nếu có
     try:
-        db: Session = SessionLocal()
-        try:
-            lead_model = LeadModel(
-                id=new_lead["id"],
-                name=new_lead["name"],
-                company_name=new_lead["company_name"],
-                title=new_lead["title"],
-                email=new_lead["email"],
-                phone=new_lead["phone"],
-                address=new_lead["address"],
-                source=new_lead["source"],
-                campaign_id=new_lead["campaign_id"],
-                customer_id=new_lead["customer_id"],
-                status=new_lead["status"],
-                notes=new_lead["notes"],
-                merged_into_id=None,
-                owner_id=new_lead["owner_id"],
-                team_id=new_lead["team_id"],
-            )
-            db.add(lead_model)
+        new_lead = Lead(
+            full_name=str(full_name).strip(),
+            name=str(full_name).strip(),
+            email=normalize_email(data.get("email")) or None,
+            phone=str(data.get("phone")).strip() if data.get("phone") else None,
+            company=str(company).strip() if company else None,
+            company_name=str(company).strip() if company else None,
+            title=data.get("title"),
+            address=data.get("address"),
+            industry=data.get("industry"),
+            company_size=data.get("company_size"),
+            budget=data.get("budget"),
+            job_title=data.get("job_title") or data.get("title"),
+            city=data.get("city"),
+            interest=data.get("interest"),
+            notes=data.get("notes"),
+            source=str(source).strip(),
+            campaign_id=data.get("campaign_id"),
+            customer_id=data.get("customer_id"),
+            status=data.get("status") or "NEW",
+            owner_id=data.get("owner_id"),
+            team_id=data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
+        )
+        db.add(new_lead)
+        db.commit()
+        db.refresh(new_lead)
+
+        # Tính điểm tự động S4-05
+        calculate_lead_score(new_lead, db=db, commit=True)
+
+        # Phân bổ S4-06
+        if new_lead.owner_id is None:
+            allocate_single_lead(new_lead, db=db, commit=True)
+        else:
+            new_lead.allocation_status = "ASSIGNED"
+            new_lead.allocated_at = datetime.now(timezone.utc)
+            new_lead.allocation_method = "SPECIFIC_USER"
+            new_lead.allocation_note = f"Gán trực tiếp cho nhân viên ID {new_lead.owner_id}"
             db.commit()
-        finally:
+            db.refresh(new_lead)
+
+        return _enrich_lead_model(new_lead)
+    finally:
+        if should_close:
             db.close()
-    except Exception:
-        pass
-
-    return _enrich_lead_display(new_lead)
 
 
-def get_lead_by_id(lead_id: int) -> Optional[dict]:
-    for l in FAKE_LEADS:
-        if l["id"] == lead_id:
-            return _enrich_lead_display(l)
-    return None
+def create_lead(data: dict, current_user: dict) -> dict:
+    """Tương thích ngược cho các gọi hàm dạng create_lead."""
+    db = SessionLocal()
+    try:
+        lead_obj = create_crm_lead(data, current_user, db=db)
+        return lead_to_dict(lead_obj)
+    finally:
+        db.close()
+
+
+def get_lead_by_id(lead_id: int, db: Optional[Session] = None) -> Optional[Lead]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        lead = db.query(Lead).filter(Lead.id == lead_id).first()
+        if lead:
+            _enrich_lead_model(lead)
+        return lead
+    finally:
+        if should_close:
+            db.close()
+
+
+def update_crm_lead(lead_id: int, payload: Any, db: Session, current_user: Optional[dict] = None) -> Lead:
+    lead = get_lead_by_id(lead_id, db=db)
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+
+    data = payload if isinstance(payload, dict) else payload.model_dump(exclude_unset=True)
+
+    if "source" in data and data["source"] is not None:
+        if not str(data["source"]).strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Nguồn lead không được để trống",
+            )
+        lead.source = str(data["source"]).strip()
+
+    name_val = data.get("name") or data.get("full_name")
+    if name_val is not None:
+        if not str(name_val).strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Họ và tên lead không được để trống",
+            )
+        lead.name = str(name_val).strip()
+        lead.full_name = str(name_val).strip()
+
+    comp_val = data.get("company") or data.get("company_name")
+    if comp_val is not None:
+        lead.company = str(comp_val).strip()
+        lead.company_name = str(comp_val).strip()
+
+    for key, value in data.items():
+        if key not in ("id", "source", "name", "full_name", "company", "company_name") and hasattr(lead, key):
+            if value is not None:
+                setattr(lead, key, value)
+
+    lead.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(lead)
+
+    calculate_lead_score(lead, db=db, commit=True)
+    return _enrich_lead_model(lead)
+
+
+def update_lead(lead_id: int, data: dict, current_user: dict) -> dict:
+    db = SessionLocal()
+    try:
+        updated = update_crm_lead(lead_id, data, db=db, current_user=current_user)
+        return lead_to_dict(updated)
+    finally:
+        db.close()
+
+
+def delete_lead(lead_id: int, db: Optional[Session] = None) -> bool:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        lead = db.query(Lead).filter(Lead.id == lead_id).first()
+        if not lead:
+            return False
+        db.delete(lead)
+        db.commit()
+        return True
+    finally:
+        if should_close:
+            db.close()
 
 
 def list_leads(
     status_filter: Optional[str] = None,
     source_filter: Optional[str] = None,
+    grade_filter: Optional[str] = None,
     campaign_id: Optional[int] = None,
+    min_score: Optional[int] = None,
     search: Optional[str] = None,
+    sort_by: Optional[str] = None,
     include_merged: bool = False,
-) -> List[dict]:
-    results = list(FAKE_LEADS)
-
-    if not include_merged:
-        results = [l for l in results if l.get("status") != "MERGED"]
-
-    if status_filter:
-        s_val = status_filter.upper().strip()
-        results = [l for l in results if l.get("status") == s_val]
-
-    if source_filter:
-        src = source_filter.lower().strip()
-        results = [l for l in results if src in (l.get("source") or "").lower()]
-
-    if campaign_id is not None:
-        results = [l for l in results if l.get("campaign_id") == campaign_id]
-
-    if search:
-        q = search.lower().strip()
-        results = [
-            l for l in results
-            if q in (l.get("name") or "").lower()
-            or q in (l.get("email") or "").lower()
-            or q in (l.get("phone") or "").lower()
-            or q in (l.get("company_name") or "").lower()
-        ]
-
-    results.sort(key=lambda x: x["id"], reverse=True)
-    return [_enrich_lead_display(l) for l in results]
-
-
-def update_lead(lead_id: int, data: dict, current_user: dict) -> dict:
-    lead = None
-    for l in FAKE_LEADS:
-        if l["id"] == lead_id:
-            lead = l
-            break
-
-    if not lead:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy lead ID {lead_id}",
-        )
-
-    if "source" in data:
-        source_val = data["source"]
-        if source_val is not None and not str(source_val).strip():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Nguồn lead không được để trống",
-            )
-        lead["source"] = str(source_val).strip()
-
-    if "name" in data and data["name"] is not None:
-        if not str(data["name"]).strip():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Họ và tên lead không được để trống",
-            )
-        lead["name"] = str(data["name"]).strip()
-
-    for k, v in data.items():
-        if k not in ("id", "source", "name") and v is not None:
-            lead[k] = v
-
-    lead["updated_at"] = datetime.now(timezone.utc)
-
-    # Đồng bộ DB
-    try:
-        db: Session = SessionLocal()
-        try:
-            m = db.query(LeadModel).filter(LeadModel.id == lead_id).first()
-            if m:
-                for k, v in lead.items():
-                    if hasattr(m, k) and k != "id":
-                        setattr(m, k, v)
-                db.commit()
-        finally:
-            db.close()
-    except Exception:
-        pass
-
-    return _enrich_lead_display(lead)
-
-
-def delete_lead(lead_id: int) -> bool:
-    global FAKE_LEADS
-    initial_len = len(FAKE_LEADS)
-    FAKE_LEADS = [l for l in FAKE_LEADS if l["id"] != lead_id]
+    skip: int = 0,
+    limit: int = 100,
+    db: Optional[Session] = None,
+) -> Tuple[int, List[Lead]]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
 
     try:
-        db: Session = SessionLocal()
-        try:
-            m = db.query(LeadModel).filter(LeadModel.id == lead_id).first()
-            if m:
-                db.delete(m)
-                db.commit()
-        finally:
+        query = db.query(Lead)
+
+        if not include_merged:
+            query = query.filter(Lead.status != "MERGED")
+
+        if status_filter:
+            query = query.filter(Lead.status == status_filter.strip().upper())
+        if source_filter:
+            query = query.filter(Lead.source.ilike(f"%{source_filter.strip()}%"))
+        if grade_filter:
+            query = query.filter(Lead.grade == grade_filter.strip().upper())
+        if campaign_id is not None:
+            query = query.filter(Lead.campaign_id == campaign_id)
+        if min_score is not None:
+            query = query.filter(Lead.score >= min_score)
+
+        if search:
+            term = f"%{search.strip()}%"
+            query = query.filter(
+                (Lead.full_name.ilike(term))
+                | (Lead.email.ilike(term))
+                | (Lead.phone.ilike(term))
+                | (Lead.company.ilike(term))
+            )
+
+        total = query.count()
+        if sort_by == "score_desc":
+            query = query.order_by(Lead.score.desc(), Lead.id.desc())
+        else:
+            query = query.order_by(Lead.id.desc())
+
+        items = query.offset(skip).limit(limit).all()
+        for it in items:
+            _enrich_lead_model(it)
+        return total, items
+    finally:
+        if should_close:
             db.close()
-    except Exception:
-        pass
-
-    return len(FAKE_LEADS) < initial_len
 
 
-# ==============================================================================
-# S4-02: Excel Template, Preview & Batch Import
-# ==============================================================================
+def lead_to_dict(lead: Lead) -> dict:
+    """Chuyển đổi instance Lead sang dictionary an toàn."""
+    _enrich_lead_model(lead)
+    return {
+        "id": lead.id,
+        "name": lead.full_name or lead.name,
+        "full_name": lead.full_name or lead.name,
+        "company_name": lead.company or lead.company_name,
+        "company": lead.company or lead.company_name,
+        "title": lead.title or lead.job_title,
+        "job_title": lead.job_title or lead.title,
+        "email": lead.email,
+        "phone": lead.phone,
+        "address": lead.address,
+        "interest": lead.interest,
+        "industry": lead.industry,
+        "company_size": lead.company_size,
+        "budget": lead.budget,
+        "city": lead.city,
+        "source": lead.source,
+        "campaign_id": lead.campaign_id,
+        "customer_id": lead.customer_id,
+        "status": lead.status,
+        "notes": lead.notes,
+        "form_key": getattr(lead, "form_key", None),
+        "ip_address": getattr(lead, "ip_address", None),
+        "merged_into_id": lead.merged_into_id,
+        "owner_id": lead.owner_id,
+        "team_id": getattr(lead, "team_id", None),
+        "owner_name": getattr(lead, "owner_name", None),
+        "campaign_name": getattr(lead, "campaign_name", None),
+        "customer_name": getattr(lead, "customer_name", None),
+        "score": lead.score or 0,
+        "grade": lead.grade or "COLD",
+        "score_details": getattr(lead, "score_details", None),
+        "last_scored_at": getattr(lead, "last_scored_at", None),
+        "allocation_status": lead.allocation_status or "UNASSIGNED",
+        "allocated_at": getattr(lead, "allocated_at", None),
+        "allocation_rule_id": getattr(lead, "allocation_rule_id", None),
+        "allocation_method": getattr(lead, "allocation_method", None),
+        "allocation_note": getattr(lead, "allocation_note", None),
+        "created_at": lead.created_at,
+        "updated_at": lead.updated_at,
+    }
+
+
+# ============================================================================
+# S4-02: EXCEL TEMPLATE, PREVIEW & BATCH IMPORT
+# ============================================================================
 
 def generate_lead_import_template() -> bytes:
-    """
-    AC S4-02: Tải tệp mẫu Excel chuẩn hóa cho việc nhập lead hàng loạt.
-    """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Lead_Template"
@@ -428,7 +1191,6 @@ def generate_lead_import_template() -> bytes:
         cell.fill = header_fill
         cell.alignment = center_align
 
-    # 2 dòng dữ liệu mẫu
     sample_rows = [
         [
             "Trần Quốc Bảo",
@@ -457,7 +1219,6 @@ def generate_lead_import_template() -> bytes:
     for row in sample_rows:
         ws.append(row)
 
-    # Điều chỉnh độ rộng cột
     column_widths = [22, 26, 16, 26, 32, 22, 28, 38, 18]
     for i, width in enumerate(column_widths, start=1):
         col_letter = openpyxl.utils.get_column_letter(i)
@@ -469,10 +1230,6 @@ def generate_lead_import_template() -> bytes:
 
 
 def preview_import_leads_excel(file_bytes: bytes, current_user: dict) -> dict:
-    """
-    AC S4-02: Xem trước và báo lỗi theo từng dòng.
-    Kiểm tra bắt buộc có nguồn, kiểm tra định dạng email/SĐT, kiểm tra trùng lặp.
-    """
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     except Exception as e:
@@ -509,23 +1266,18 @@ def preview_import_leads_excel(file_bytes: bytes, current_user: dict) -> dict:
         existing_customer_id = None
         campaign_id = None
 
-        # 1. Bắt buộc: Họ và tên
         if not raw_name:
             errors.append("Họ và tên lead là bắt buộc (cột 1)")
 
-        # 2. Bắt buộc: Nguồn lead (AC S4-02)
         if not raw_source:
             errors.append("Nguồn lead là bắt buộc (cột 2)")
 
-        # 3. Kiểm tra định dạng Email nếu có
         if raw_email and not _is_valid_email_format(raw_email):
             errors.append("Email không đúng định dạng")
 
-        # 4. Kiểm tra định dạng SĐT nếu có
         if raw_phone and not _is_valid_phone_format(raw_phone):
             errors.append("Số điện thoại không hợp lệ (phải gồm 10-11 chữ số)")
 
-        # 5. Map Campaign Code nếu có
         if raw_camp_code:
             camp = campaign_service.get_campaign_by_code(raw_camp_code)
             if camp:
@@ -533,7 +1285,6 @@ def preview_import_leads_excel(file_bytes: bytes, current_user: dict) -> dict:
             else:
                 errors.append(f"Không tìm thấy chiến dịch với mã '{raw_camp_code}'")
 
-        # 6. Kiểm tra trùng lặp (với Lead hiện có & Customer hiện có)
         dup_check = check_lead_duplicates(
             email=raw_email,
             phone=raw_phone,
@@ -590,189 +1341,193 @@ def commit_import_leads(
     duplicate_handling: str,
     current_user: dict,
 ) -> dict:
-    """
-    AC S4-02: Nhập hàng loạt vào hệ thống theo lựa chọn xử lý trùng (SKIP, UPDATE, IMPORT_ANYWAY).
-    """
     inserted = 0
     updated = 0
     skipped = 0
     failed = 0
     result_leads = []
 
-    for r in rows:
-        if not r.get("is_valid", True):
-            failed += 1
-            continue
-
-        is_dup = r.get("is_duplicate", False)
-
-        if is_dup:
-            if duplicate_handling == "SKIP":
-                skipped += 1
-                continue
-            elif duplicate_handling == "UPDATE" and r.get("existing_lead_id"):
-                up_id = r["existing_lead_id"]
-                update_payload = {
-                    "name": r.get("name"),
-                    "source": r.get("source"),
-                    "phone": r.get("phone"),
-                    "email": r.get("email"),
-                    "company_name": r.get("company_name"),
-                    "title": r.get("title"),
-                    "address": r.get("address"),
-                    "notes": r.get("notes"),
-                    "campaign_id": r.get("campaign_id"),
-                }
-                up_res = update_lead(up_id, update_payload, current_user)
-                updated += 1
-                result_leads.append(up_res)
+    db = SessionLocal()
+    try:
+        for r in rows:
+            if not r.get("is_valid", True):
+                failed += 1
                 continue
 
-        # Thêm mới
-        lead_payload = {
-            "name": r.get("name"),
-            "source": r.get("source"),
-            "phone": r.get("phone"),
-            "email": r.get("email"),
-            "company_name": r.get("company_name"),
-            "title": r.get("title"),
-            "address": r.get("address"),
-            "notes": r.get("notes"),
-            "campaign_id": r.get("campaign_id"),
-            "customer_id": r.get("existing_customer_id"),
-            "status": "NEW",
+            is_dup = r.get("is_duplicate", False)
+
+            if is_dup:
+                if duplicate_handling == "SKIP":
+                    skipped += 1
+                    continue
+                elif duplicate_handling == "UPDATE" and r.get("existing_lead_id"):
+                    up_id = r["existing_lead_id"]
+                    update_payload = {
+                        "name": r.get("name"),
+                        "source": r.get("source"),
+                        "phone": r.get("phone"),
+                        "email": r.get("email"),
+                        "company": r.get("company_name"),
+                        "company_name": r.get("company_name"),
+                        "title": r.get("title"),
+                        "address": r.get("address"),
+                        "notes": r.get("notes"),
+                        "campaign_id": r.get("campaign_id"),
+                    }
+                    up_lead = update_crm_lead(up_id, update_payload, db=db, current_user=current_user)
+                    updated += 1
+                    result_leads.append(lead_to_dict(up_lead))
+                    continue
+
+            lead_payload = {
+                "name": r.get("name"),
+                "full_name": r.get("name"),
+                "source": r.get("source"),
+                "phone": r.get("phone"),
+                "email": r.get("email"),
+                "company": r.get("company_name"),
+                "company_name": r.get("company_name"),
+                "title": r.get("title"),
+                "address": r.get("address"),
+                "notes": r.get("notes"),
+                "campaign_id": r.get("campaign_id"),
+                "customer_id": r.get("existing_customer_id"),
+                "status": "NEW",
+            }
+            new_lead_obj = create_crm_lead(lead_payload, current_user, db=db)
+            inserted += 1
+            result_leads.append(lead_to_dict(new_lead_obj))
+
+        return {
+            "total_rows": len(rows),
+            "inserted_count": inserted,
+            "updated_count": updated,
+            "skipped_count": skipped,
+            "failed_count": failed,
+            "leads": result_leads,
         }
-        new_lead = create_lead(lead_payload, current_user)
-        inserted += 1
-        result_leads.append(new_lead)
-
-    return {
-        "total_rows": len(rows),
-        "inserted_count": inserted,
-        "updated_count": updated,
-        "skipped_count": skipped,
-        "failed_count": failed,
-        "leads": result_leads,
-    }
+    finally:
+        db.close()
 
 
-# ==============================================================================
-# S4-04: Duplicate Detection, Attach to Customer & Merge Leads
-# ==============================================================================
+# ============================================================================
+# S4-04: DUPLICATE DETECTION, ATTACH TO CUSTOMER & MERGE LEADS
+# ============================================================================
 
 def check_lead_duplicates(
     email: Optional[str] = None,
     phone: Optional[str] = None,
     company_name: Optional[str] = None,
     exclude_lead_id: Optional[int] = None,
+    db: Optional[Session] = None,
 ) -> dict:
-    """
-    AC S4-04: Phát hiện trùng theo email, số điện thoại và tên công ty.
-    Đồng thời tìm kiếm trùng lặp với Khách hàng (Customer) đã có.
-    """
-    matching_leads: List[dict] = []
-    matching_customers: List[dict] = []
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
 
-    norm_target_email = normalize_email(email)
-    norm_target_phone = normalize_phone(phone)
-    norm_target_company = normalize_company(company_name)
+    try:
+        matching_leads: List[dict] = []
+        matching_customers: List[dict] = []
 
-    # 1. So sánh với danh sách Leads
-    for l in FAKE_LEADS:
-        if l.get("status") == "MERGED":
-            continue
-        if exclude_lead_id and l["id"] == exclude_lead_id:
-            continue
+        norm_target_email = normalize_email(email)
+        norm_target_phone = normalize_phone(phone)
+        norm_target_company = normalize_company(company_name)
 
-        reasons = []
-        score = 0.0
+        # 1. So khớp với Lead trong DB
+        query = db.query(Lead).filter(Lead.status != "MERGED")
+        if exclude_lead_id:
+            query = query.filter(Lead.id != exclude_lead_id)
+        all_leads = query.all()
 
-        # Match email
-        l_email = normalize_email(l.get("email"))
-        if norm_target_email and l_email and norm_target_email == l_email:
-            reasons.append(f"Trùng email: {l.get('email')}")
-            score = max(score, 1.0)
+        for l in all_leads:
+            reasons = []
+            score = 0.0
 
-        # Match phone
-        l_phone = normalize_phone(l.get("phone"))
-        if norm_target_phone and l_phone and norm_target_phone == l_phone:
-            reasons.append(f"Trùng số điện thoại: {l.get('phone')}")
-            score = max(score, 0.95)
+            l_email = normalize_email(l.email)
+            if norm_target_email and l_email and norm_target_email == l_email:
+                reasons.append(f"Trùng email: {l.email}")
+                score = max(score, 1.0)
 
-        # Match company
-        l_comp = normalize_company(l.get("company_name"))
-        if norm_target_company and l_comp:
-            if norm_target_company == l_comp:
-                reasons.append(f"Trùng tên công ty: {l.get('company_name')}")
-                score = max(score, 0.9)
-            elif norm_target_company in l_comp or l_comp in norm_target_company:
-                reasons.append(f"Tên công ty tương tự: {l.get('company_name')}")
-                score = max(score, 0.75)
+            l_phone = normalize_phone(l.phone)
+            if norm_target_phone and l_phone and norm_target_phone == l_phone:
+                reasons.append(f"Trùng số điện thoại: {l.phone}")
+                score = max(score, 0.95)
 
-        if reasons:
-            matching_leads.append({
-                "confidence_score": score,
-                "match_reasons": reasons,
-                "lead": _enrich_lead_display(l),
-            })
+            l_comp = normalize_company(l.company or l.company_name)
+            if norm_target_company and l_comp:
+                if norm_target_company == l_comp:
+                    reasons.append(f"Trùng tên công ty: {l.company or l.company_name}")
+                    score = max(score, 0.9)
+                elif norm_target_company in l_comp or l_comp in norm_target_company:
+                    reasons.append(f"Tên công ty tương tự: {l.company or l.company_name}")
+                    score = max(score, 0.75)
 
-    # 2. So sánh với Khách hàng đã có trong hệ thống (S4-04)
-    customers = customer_service.FAKE_CUSTOMERS
-    for c in customers:
-        reasons = []
-        score = 0.0
+            if reasons:
+                matching_leads.append({
+                    "confidence_score": score,
+                    "match_reasons": reasons,
+                    "lead": lead_to_dict(l),
+                })
 
-        c_email = normalize_email(c.get("email"))
-        if norm_target_email and c_email and norm_target_email == c_email:
-            reasons.append(f"Trùng email với Khách hàng #{c['id']} ({c.get('name')})")
-            score = max(score, 1.0)
+        # 2. So khớp với Khách hàng (Customer) đã có trong hệ thống (S4-04)
+        customers = customer_service.FAKE_CUSTOMERS
+        for c in customers:
+            reasons = []
+            score = 0.0
 
-        c_phone = normalize_phone(c.get("phone"))
-        if norm_target_phone and c_phone and norm_target_phone == c_phone:
-            reasons.append(f"Trùng số điện thoại với Khách hàng #{c['id']} ({c.get('name')})")
-            score = max(score, 0.95)
+            c_email = normalize_email(c.get("email"))
+            if norm_target_email and c_email and norm_target_email == c_email:
+                reasons.append(f"Trùng email với Khách hàng #{c['id']} ({c.get('name')})")
+                score = max(score, 1.0)
 
-        c_name = normalize_company(c.get("name") or c.get("company"))
-        if norm_target_company and c_name:
-            if norm_target_company == c_name:
-                reasons.append(f"Trùng tên công ty với Khách hàng #{c['id']} ({c.get('name')})")
-                score = max(score, 0.9)
-            elif norm_target_company in c_name or c_name in norm_target_company:
-                reasons.append(f"Tên công ty tương tự Khách hàng #{c['id']} ({c.get('name')})")
-                score = max(score, 0.75)
+            c_phone = normalize_phone(c.get("phone"))
+            if norm_target_phone and c_phone and norm_target_phone == c_phone:
+                reasons.append(f"Trùng số điện thoại với Khách hàng #{c['id']} ({c.get('name')})")
+                score = max(score, 0.95)
 
-        if reasons:
-            matching_customers.append({
-                "confidence_score": score,
-                "match_reasons": reasons,
-                "customer": customer_service._enrich_customer_names(c),
-            })
+            c_name = normalize_company(c.get("name") or c.get("company"))
+            if norm_target_company and c_name:
+                if norm_target_company == c_name:
+                    reasons.append(f"Trùng tên công ty với Khách hàng #{c['id']} ({c.get('name')})")
+                    score = max(score, 0.9)
+                elif norm_target_company in c_name or c_name in norm_target_company:
+                    reasons.append(f"Tên công ty tương tự Khách hàng #{c['id']} ({c.get('name')})")
+                    score = max(score, 0.75)
 
-    matching_leads.sort(key=lambda x: x["confidence_score"], reverse=True)
-    matching_customers.sort(key=lambda x: x["confidence_score"], reverse=True)
+            if reasons:
+                matching_customers.append({
+                    "confidence_score": score,
+                    "match_reasons": reasons,
+                    "customer": customer_service._enrich_customer_names(c),
+                })
 
-    has_dups = bool(matching_leads or matching_customers)
-    return {
-        "has_duplicates": has_dups,
-        "matching_leads": matching_leads,
-        "matching_customers": matching_customers,
-    }
+        matching_leads.sort(key=lambda x: x["confidence_score"], reverse=True)
+        matching_customers.sort(key=lambda x: x["confidence_score"], reverse=True)
+
+        return {
+            "has_duplicates": bool(matching_leads or matching_customers),
+            "matching_leads": matching_leads,
+            "matching_customers": matching_customers,
+        }
+    finally:
+        if should_close:
+            db.close()
 
 
-def find_lead_duplicates(lead_id: int) -> dict:
-    """AC S4-04: Tra cứu trùng lặp cho một Lead cụ thể."""
-    lead = get_lead_by_id(lead_id)
+def find_lead_duplicates(lead_id: int, db: Optional[Session] = None) -> dict:
+    lead = get_lead_by_id(lead_id, db=db)
     if not lead:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy lead ID {lead_id}",
         )
-
     return check_lead_duplicates(
-        email=lead.get("email"),
-        phone=lead.get("phone"),
-        company_name=lead.get("company_name"),
+        email=lead.email,
+        phone=lead.phone,
+        company_name=lead.company or lead.company_name,
         exclude_lead_id=lead_id,
+        db=db,
     )
 
 
@@ -781,113 +1536,106 @@ def attach_lead_to_customer(
     customer_id: int,
     create_contact: bool = True,
     current_user: Optional[dict] = None,
+    db: Optional[Session] = None,
 ) -> dict:
-    """
-    AC S4-04: Lead trùng với khách hàng đã có được gợi ý gắn thẳng vào khách hàng đó.
-    Tự động tạo Contact mới thuộc Customer nếu create_contact=True.
-    """
-    lead = None
-    for l in FAKE_LEADS:
-        if l["id"] == lead_id:
-            lead = l
-            break
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
 
-    if not lead:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy lead ID {lead_id}",
-        )
-
-    cust = customer_service.get_customer_by_id(customer_id)
-    if not cust:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy khách hàng ID {customer_id}",
-        )
-
-    lead["customer_id"] = customer_id
-    lead["status"] = "CONVERTED"
-    lead["updated_at"] = datetime.now(timezone.utc)
-
-    # Nếu tùy chọn tạo người liên hệ
-    created_contact = None
-    if create_contact:
-        from app.services import contact_service
-        contact_payload = {
-            "customer_id": customer_id,
-            "name": lead["name"],
-            "phone": lead.get("phone"),
-            "email": lead.get("email"),
-            "position": lead.get("title") or "Người liên hệ từ Lead",
-            "decision_role": "INFLUENCER",
-            "is_primary": False,
-            "notes": f"Được chuyển đổi từ Lead #{lead_id} (Nguồn: {lead.get('source')})",
-        }
-        created_contact = contact_service.create_contact(contact_payload, current_user or {"full_name": "Admin"})
-
-    # Đồng bộ DB
     try:
-        db: Session = SessionLocal()
-        try:
-            m = db.query(LeadModel).filter(LeadModel.id == lead_id).first()
-            if m:
-                m.customer_id = customer_id
-                m.status = "CONVERTED"
-                db.commit()
-        finally:
+        lead = db.query(Lead).filter(Lead.id == lead_id).first()
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy lead ID {lead_id}",
+            )
+
+        cust = customer_service.get_customer_by_id(customer_id)
+        if not cust:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy khách hàng ID {customer_id}",
+            )
+
+        lead.customer_id = customer_id
+        lead.status = "CONVERTED"
+        lead.updated_at = datetime.now(timezone.utc)
+
+        created_contact = None
+        if create_contact:
+            from app.services import contact_service
+            contact_payload = {
+                "customer_id": customer_id,
+                "name": lead.full_name or lead.name,
+                "phone": lead.phone,
+                "email": lead.email,
+                "position": lead.title or lead.job_title or "Người liên hệ từ Lead",
+                "decision_role": "INFLUENCER",
+                "is_primary": False,
+                "notes": f"Được chuyển đổi từ Lead #{lead_id} (Nguồn: {lead.source})",
+            }
+            created_contact = contact_service.create_contact(contact_payload, current_user or {"full_name": "Admin"})
+
+        db.commit()
+        db.refresh(lead)
+
+        res_dict = lead_to_dict(lead)
+        res_dict["created_contact"] = created_contact
+        return res_dict
+    finally:
+        if should_close:
             db.close()
-    except Exception:
-        pass
-
-    enriched = _enrich_lead_display(lead)
-    enriched["created_contact"] = created_contact
-    return enriched
 
 
-def preview_merge_leads(primary_id: int, secondary_id: int) -> dict:
-    """
-    AC S4-04: API xem trước so sánh hai lead và số lượng hoạt động sẽ chuyển.
-    """
-    primary = get_lead_by_id(primary_id)
-    secondary = get_lead_by_id(secondary_id)
+def preview_merge_leads(primary_id: int, secondary_id: int, db: Optional[Session] = None) -> dict:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
 
-    if not primary:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy lead chính ID {primary_id}",
-        )
-    if not secondary:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy lead phụ ID {secondary_id}",
-        )
+    try:
+        primary = get_lead_by_id(primary_id, db=db)
+        secondary = get_lead_by_id(secondary_id, db=db)
 
-    if primary_id == secondary_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Không thể gộp một lead với chính nó",
-        )
+        if not primary:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy lead chính ID {primary_id}",
+            )
+        if not secondary:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy lead phụ ID {secondary_id}",
+            )
+        if primary_id == secondary_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể gộp một lead với chính nó",
+            )
 
-    # Đếm số activities gắn với secondary_lead
-    acts_count = len([a for a in FAKE_ACTIVITIES if a.get("lead_id") == secondary_id])
+        acts_count = len([a for a in FAKE_ACTIVITIES if a.get("lead_id") == secondary_id])
 
-    comparison_fields = [
-        {"field": "name", "label": "Họ và tên", "primary": primary.get("name"), "secondary": secondary.get("name")},
-        {"field": "company_name", "label": "Công ty", "primary": primary.get("company_name"), "secondary": secondary.get("company_name")},
-        {"field": "title", "label": "Chức danh", "primary": primary.get("title"), "secondary": secondary.get("title")},
-        {"field": "email", "label": "Email", "primary": primary.get("email"), "secondary": secondary.get("email")},
-        {"field": "phone", "label": "Số điện thoại", "primary": primary.get("phone"), "secondary": secondary.get("phone")},
-        {"field": "source", "label": "Nguồn lead", "primary": primary.get("source"), "secondary": secondary.get("source")},
-        {"field": "address", "label": "Địa chỉ", "primary": primary.get("address"), "secondary": secondary.get("address")},
-        {"field": "notes", "label": "Ghi chú", "primary": primary.get("notes"), "secondary": secondary.get("notes")},
-    ]
+        comparison_fields = [
+            {"field": "name", "label": "Họ và tên", "primary": primary.full_name or primary.name, "secondary": secondary.full_name or secondary.name},
+            {"field": "company_name", "label": "Công ty", "primary": primary.company or primary.company_name, "secondary": secondary.company or secondary.company_name},
+            {"field": "title", "label": "Chức danh", "primary": primary.title or primary.job_title, "secondary": secondary.title or secondary.job_title},
+            {"field": "email", "label": "Email", "primary": primary.email, "secondary": secondary.email},
+            {"field": "phone", "label": "Số điện thoại", "primary": primary.phone, "secondary": secondary.phone},
+            {"field": "source", "label": "Nguồn lead", "primary": primary.source, "secondary": secondary.source},
+            {"field": "address", "label": "Địa chỉ", "primary": primary.address, "secondary": secondary.address},
+            {"field": "notes", "label": "Ghi chú", "primary": primary.notes, "secondary": secondary.notes},
+        ]
 
-    return {
-        "primary": primary,
-        "secondary": secondary,
-        "comparison_fields": comparison_fields,
-        "activities_to_transfer": acts_count,
-    }
+        return {
+            "primary": lead_to_dict(primary),
+            "secondary": lead_to_dict(secondary),
+            "comparison_fields": comparison_fields,
+            "activities_to_transfer": acts_count,
+        }
+    finally:
+        if should_close:
+            db.close()
 
 
 def merge_leads(
@@ -895,114 +1643,161 @@ def merge_leads(
     secondary_id: int,
     chosen_fields: Optional[dict] = None,
     current_user: Optional[dict] = None,
+    db: Optional[Session] = None,
 ) -> dict:
-    """
-    AC S4-04: Gộp giữ nguyên lịch sử của cả hai bản ghi.
-    - Chuyển giao toàn bộ hoạt động (Activities) sang Primary Lead.
-    - Lưu snapshot của Secondary Lead vào LeadMergeHistory.
-    - Đổi status Secondary Lead = MERGED để ẩn khỏi danh sách gọi, tránh trùng lặp cuộc gọi.
-    """
-    primary = None
-    secondary = None
-    for l in FAKE_LEADS:
-        if l["id"] == primary_id:
-            primary = l
-        if l["id"] == secondary_id:
-            secondary = l
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
 
-    if not primary:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy lead chính ID {primary_id}",
-        )
-    if not secondary:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy lead phụ ID {secondary_id}",
-        )
-    if primary_id == secondary_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Không thể gộp một lead với chính nó",
-        )
-
-    # 1. Chụp snapshot bản ghi secondary trước khi gộp
-    snapshot_data = copy.deepcopy(secondary)
-    # Convert datetime sang str để serialize JSON an toàn
-    for k, v in snapshot_data.items():
-        if isinstance(v, datetime):
-            snapshot_data[k] = v.isoformat()
-
-    user_name = current_user.get("full_name") or current_user.get("email") if current_user else "Admin"
-
-    merge_history_item = {
-        "id": len(FAKE_LEAD_MERGE_HISTORIES) + 1,
-        "primary_lead_id": primary_id,
-        "secondary_lead_id": secondary_id,
-        "secondary_lead_name": secondary.get("name"),
-        "secondary_snapshot": json.dumps(snapshot_data, ensure_ascii=False),
-        "merged_by": user_name,
-        "merged_at": datetime.now(timezone.utc),
-    }
-    FAKE_LEAD_MERGE_HISTORIES.append(merge_history_item)
-
-    # 2. Áp dụng chosen_fields vào primary nếu có
-    if chosen_fields:
-        for f, val in chosen_fields.items():
-            if val is not None and f not in ("id", "created_at"):
-                primary[f] = val
-    else:
-        # Tự động điền các trường còn thiếu của primary từ secondary
-        for k in ("company_name", "title", "email", "phone", "address", "notes", "campaign_id"):
-            if not primary.get(k) and secondary.get(k):
-                primary[k] = secondary.get(k)
-
-    # Nối thêm ghi chú gộp vào primary notes
-    merge_note = f"\n[Gộp lead từ #{secondary_id} ({secondary.get('name')}) vào lúc {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}]"
-    primary["notes"] = (primary.get("notes") or "") + merge_note
-    primary["updated_at"] = datetime.now(timezone.utc)
-
-    # 3. Chuyển toàn bộ hoạt động (Activities) sang primary_id
-    for a in FAKE_ACTIVITIES:
-        if a.get("lead_id") == secondary_id:
-            a["lead_id"] = primary_id
-
-    # 4. Đánh dấu secondary là MERGED
-    secondary["status"] = "MERGED"
-    secondary["merged_into_id"] = primary_id
-    secondary["updated_at"] = datetime.now(timezone.utc)
-
-    # 5. Lưu vào Database
     try:
-        db: Session = SessionLocal()
-        try:
-            # Lưu history
-            m_hist = LeadMergeHistoryModel(
-                primary_lead_id=primary_id,
-                secondary_lead_id=secondary_id,
-                secondary_lead_name=merge_history_item["secondary_lead_name"],
-                secondary_snapshot=merge_history_item["secondary_snapshot"],
-                merged_by=user_name,
+        primary = db.query(Lead).filter(Lead.id == primary_id).first()
+        secondary = db.query(Lead).filter(Lead.id == secondary_id).first()
+
+        if not primary:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy lead chính ID {primary_id}",
             )
-            db.add(m_hist)
+        if not secondary:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy lead phụ ID {secondary_id}",
+            )
+        if primary_id == secondary_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể gộp một lead với chính nó",
+            )
 
-            # Cập nhật primary
-            m_prim = db.query(LeadModel).filter(LeadModel.id == primary_id).first()
-            if m_prim:
-                for k, v in primary.items():
-                    if hasattr(m_prim, k) and k != "id":
-                        setattr(m_prim, k, v)
+        # 1. Snapshot của secondary
+        snapshot_dict = lead_to_dict(secondary)
+        for k, v in snapshot_dict.items():
+            if isinstance(v, datetime):
+                snapshot_dict[k] = v.isoformat()
 
-            # Cập nhật secondary
-            m_sec = db.query(LeadModel).filter(LeadModel.id == secondary_id).first()
-            if m_sec:
-                m_sec.status = "MERGED"
-                m_sec.merged_into_id = primary_id
+        user_name = current_user.get("full_name") or current_user.get("email") if current_user else "Admin"
 
-            db.commit()
-        finally:
+        m_hist = LeadMergeHistory(
+            primary_lead_id=primary_id,
+            secondary_lead_id=secondary_id,
+            secondary_lead_name=secondary.full_name or secondary.name,
+            secondary_snapshot=json.dumps(snapshot_dict, ensure_ascii=False),
+            merged_by=user_name,
+        )
+        db.add(m_hist)
+
+        # 2. Áp dụng chosen_fields vào primary
+        if chosen_fields:
+            for f, val in chosen_fields.items():
+                if val is not None and f not in ("id", "created_at"):
+                    if f in ("name", "full_name"):
+                        primary.name = val
+                        primary.full_name = val
+                    elif f in ("company", "company_name"):
+                        primary.company = val
+                        primary.company_name = val
+                    elif hasattr(primary, f):
+                        setattr(primary, f, val)
+        else:
+            if not primary.company and secondary.company:
+                primary.company = secondary.company
+                primary.company_name = secondary.company
+            if not primary.title and secondary.title:
+                primary.title = secondary.title
+            if not primary.email and secondary.email:
+                primary.email = secondary.email
+            if not primary.phone and secondary.phone:
+                primary.phone = secondary.phone
+            if not primary.address and secondary.address:
+                primary.address = secondary.address
+            if not primary.campaign_id and secondary.campaign_id:
+                primary.campaign_id = secondary.campaign_id
+
+        merge_note = f"\n[Gộp từ Lead #{secondary_id} ({secondary.full_name or secondary.name}) vào lúc {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}]"
+        primary.notes = (primary.notes or "") + merge_note
+        primary.updated_at = datetime.now(timezone.utc)
+
+        # 3. Chuyển giao toàn bộ hoạt động (Activities) sang primary
+        for a in FAKE_ACTIVITIES:
+            if a.get("lead_id") == secondary_id:
+                a["lead_id"] = primary_id
+
+        # 4. Đánh dấu secondary là MERGED
+        secondary.status = "MERGED"
+        secondary.merged_into_id = primary_id
+        secondary.updated_at = datetime.now(timezone.utc)
+
+        db.commit()
+        db.refresh(primary)
+
+        return lead_to_dict(primary)
+    finally:
+        if should_close:
             db.close()
-    except Exception:
-        pass
 
-    return _enrich_lead_display(primary)
+
+def reset_fake_leads() -> None:
+    """Hàm khởi tạo dữ liệu mẫu cho kiểm thử."""
+    db = SessionLocal()
+    try:
+        db.query(LeadMergeHistory).delete()
+        db.query(Lead).delete()
+
+        sample_leads = [
+            Lead(
+                id=1,
+                full_name="Trần Văn Hùng",
+                name="Trần Văn Hùng",
+                company="Công ty TNHH SmartTech",
+                company_name="Công ty TNHH SmartTech",
+                title="Trưởng phòng CNTT",
+                email="hung.tran@smarttech.vn",
+                phone="0912345678",
+                address="Cầu Giấy, Hà Nội",
+                source="Hội thảo",
+                campaign_id=1,
+                status="NEW",
+                notes="Gặp mặt tại hội thảo chuyển đổi số",
+                owner_id=1,
+                team_id=1,
+            ),
+            Lead(
+                id=2,
+                full_name="Nguyễn Thị Mai",
+                name="Nguyễn Thị Mai",
+                company="Tập đoàn Đại Nam",
+                company_name="Tập đoàn Đại Nam",
+                title="Giám đốc Marketing",
+                email="mai.nguyen@dainam.com",
+                phone="0987654321",
+                address="Quận 1, TP. Hồ Chí Minh",
+                source="Sự kiện",
+                campaign_id=1,
+                status="CONTACTED",
+                notes="Nhận danh thiếp tại Tech Expo",
+                owner_id=2,
+                team_id=1,
+            ),
+            Lead(
+                id=3,
+                full_name="Lê Hoàng Long",
+                name="Lê Hoàng Long",
+                company="Công ty Cổ phần VinaLogistics",
+                company_name="Công ty Cổ phần VinaLogistics",
+                title="Phó Giám đốc Điều hành",
+                email="long.le@vinalogistics.vn",
+                phone="0903456789",
+                address="Hải Phòng",
+                source="Danh thiếp",
+                status="QUALIFIED",
+                notes="Trao đổi danh thiếp tại gala doanh nhân",
+                owner_id=3,
+                team_id=1,
+            ),
+        ]
+        for l in sample_leads:
+            db.add(l)
+        db.commit()
+    finally:
+        db.close()

@@ -169,6 +169,9 @@ def update_my_profile(
         target_phone = None
         has_phone_update = True
 
+    old_full_name = current_user.get("full_name")
+    old_phone = current_user.get("phone")
+
     # 4. Lưu vào Database làm nguồn dữ liệu chính với Transaction & Rollback
     user_id = current_user["id"]
     try:
@@ -212,6 +215,34 @@ def update_my_profile(
     current_user["full_name"] = db_user.full_name
     current_user["phone"] = db_user.phone
     current_user["email_signature"] = db_user.email_signature
+
+    # Ghi nhật ký hệ thống khi đổi tên hoặc thông tin quan trọng
+    try:
+        from app.services.audit_log_service import log_change
+        if old_full_name and old_full_name != current_user["full_name"]:
+            log_change(
+                user_id=current_user["id"],
+                user_name=current_user.get("full_name"),
+                entity_type="USER",
+                entity_id=str(current_user["id"]),
+                action="UPDATE_PROFILE",
+                field_name="full_name",
+                old_value=old_full_name,
+                new_value=current_user["full_name"],
+            )
+        if old_phone != current_user.get("phone") and profile_in.phone is not None:
+            log_change(
+                user_id=current_user["id"],
+                user_name=current_user.get("full_name"),
+                entity_type="USER",
+                entity_id=str(current_user["id"]),
+                action="UPDATE_PROFILE",
+                field_name="phone",
+                old_value=old_phone,
+                new_value=current_user.get("phone"),
+            )
+    except Exception:
+        pass
 
     return {
         "id": db_user.id,
@@ -529,10 +560,11 @@ def put_user_endpoint(
 ):
     prev_user = get_user_by_id(user_id)
     old_role = prev_user.get("role")
+    old_name = prev_user.get("full_name")
     res = update_user(user_id, user_in)
-    if user_in.role and old_role != res["role"]:
-        try:
-            from app.services.audit_log_service import log_change
+    try:
+        from app.services.audit_log_service import log_change
+        if user_in.role and old_role != res["role"]:
             log_change(
                 user_id=admin_user["id"],
                 user_name=admin_user.get("full_name", "Admin"),
@@ -543,8 +575,19 @@ def put_user_endpoint(
                 old_value=old_role,
                 new_value=res["role"],
             )
-        except Exception:
-            pass
+        if user_in.full_name and old_name != res["full_name"]:
+            log_change(
+                user_id=admin_user["id"],
+                user_name=admin_user.get("full_name", "Admin"),
+                entity_type="USER",
+                entity_id=str(user_id),
+                action="UPDATE_USER",
+                field_name="full_name",
+                old_value=old_name,
+                new_value=res["full_name"],
+            )
+    except Exception:
+        pass
     return res
 
 
@@ -561,10 +604,11 @@ def patch_user_endpoint(
 ):
     prev_user = get_user_by_id(user_id)
     old_role = prev_user.get("role")
+    old_name = prev_user.get("full_name")
     res = update_user(user_id, user_in)
-    if user_in.role and old_role != res["role"]:
-        try:
-            from app.services.audit_log_service import log_change
+    try:
+        from app.services.audit_log_service import log_change
+        if user_in.role and old_role != res["role"]:
             log_change(
                 user_id=admin_user["id"],
                 user_name=admin_user.get("full_name", "Admin"),
@@ -575,8 +619,19 @@ def patch_user_endpoint(
                 old_value=old_role,
                 new_value=res["role"],
             )
-        except Exception:
-            pass
+        if user_in.full_name and old_name != res["full_name"]:
+            log_change(
+                user_id=admin_user["id"],
+                user_name=admin_user.get("full_name", "Admin"),
+                entity_type="USER",
+                entity_id=str(user_id),
+                action="UPDATE_USER",
+                field_name="full_name",
+                old_value=old_name,
+                new_value=res["full_name"],
+            )
+    except Exception:
+        pass
     return res
 
 

@@ -99,9 +99,9 @@ def test_manager_cannot_delete_customer_returns_403():
     assert res.status_code == 403
 
 
-def test_user_cannot_create_customer_returns_403():
+def test_user_cannot_delete_customer_returns_403():
     headers = get_auth_headers("user1@gmail.com")
-    res = client.post("/customers", json={"name": "Khách Test", "phone": "0912345678"}, headers=headers)
+    res = client.delete("/customers/1", headers=headers)
     assert res.status_code == 403
 
 

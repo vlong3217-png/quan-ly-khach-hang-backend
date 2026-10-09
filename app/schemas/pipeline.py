@@ -54,3 +54,45 @@ class StageTransitionCheckResponse(BaseModel):
     can_transition: bool
     missing_fields: List[str] = []
     message: str
+
+
+# ============================================================================
+# CẤU HÌNH ĐIỀU KIỆN RỜI GIAI ĐOẠN (STAGE EXIT RULES - S5-04)
+# ============================================================================
+
+class StageRuleCreate(BaseModel):
+    rule_name: str = Field(..., min_length=1, max_length=150, description="Tên điều kiện bắt buộc")
+    field_name: str = Field(..., min_length=1, max_length=100, description="Tên trường dữ liệu cần kiểm tra")
+    description: Optional[str] = Field(None, max_length=500)
+    is_mandatory: bool = Field(default=True, description="Điều kiện bắt buộc")
+
+
+class StageRuleResponse(BaseModel):
+    id: int
+    stage_id: int
+    rule_name: str
+    field_name: str
+    description: Optional[str] = None
+    is_mandatory: bool = True
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OpportunityStageTransitionRequest(BaseModel):
+    target_stage: str = Field(..., description="Mã hoặc ID của giai đoạn đích")
+    override: Optional[bool] = Field(default=False, description="Cờ ghi đè điều kiện (chỉ dành cho Trưởng nhóm trở lên)")
+    override_reason: Optional[str] = Field(None, description="Lý do ghi đè bắt buộc nếu override=True")
+    opportunity_data: Optional[dict] = Field(default=None, description="Dữ liệu cập nhật bổ sung cho cơ hội nếu có")
+
+
+class OpportunityStageTransitionResponse(BaseModel):
+    success: bool
+    opportunity_id: int
+    previous_stage: str
+    current_stage: str
+    overridden: bool = False
+    override_reason: Optional[str] = None
+    override_by: Optional[int] = None
+    message: str
+
