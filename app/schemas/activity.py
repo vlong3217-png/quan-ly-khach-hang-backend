@@ -8,6 +8,8 @@ class ActivityCreate(BaseModel):
     type: str = "CALL"
     description: Optional[str] = ""
     customer_id: Optional[int] = None
+    lead_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
     team_id: Optional[int] = None
 
 
@@ -16,6 +18,8 @@ class ActivityUpdate(BaseModel):
     type: Optional[str] = None
     description: Optional[str] = None
     customer_id: Optional[int] = None
+    lead_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
 
 
 class ActivityResponse(BaseModel):
@@ -24,6 +28,8 @@ class ActivityResponse(BaseModel):
     type: str
     description: Optional[str] = ""
     customer_id: Optional[int] = None
+    lead_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
     owner_id: int
     team_id: Optional[int] = None
 
