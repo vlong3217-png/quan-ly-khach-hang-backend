@@ -53,8 +53,10 @@ FAKE_OPPORTUNITY_PRODUCTS = copy.deepcopy(INITIAL_OPPORTUNITY_PRODUCTS)
 
 def reset_fake_opportunities() -> None:
     global FAKE_OPPORTUNITIES, FAKE_OPPORTUNITY_PRODUCTS
-    FAKE_OPPORTUNITIES = copy.deepcopy(INITIAL_OPPORTUNITIES)
-    FAKE_OPPORTUNITY_PRODUCTS = copy.deepcopy(INITIAL_OPPORTUNITY_PRODUCTS)
+    FAKE_OPPORTUNITIES.clear()
+    FAKE_OPPORTUNITIES.extend(copy.deepcopy(INITIAL_OPPORTUNITIES))
+    FAKE_OPPORTUNITY_PRODUCTS.clear()
+    FAKE_OPPORTUNITY_PRODUCTS.extend(copy.deepcopy(INITIAL_OPPORTUNITY_PRODUCTS))
 
 
 def recalculate_opportunity_value(opportunity_id: int) -> Optional[dict]:
