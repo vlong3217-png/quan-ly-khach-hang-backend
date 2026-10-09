@@ -7,6 +7,7 @@ from app.models.quote import Quote
 from app.models.audit_log import AuditLog
 from app.models.product import Product
 from app.models.contact import Contact, ContactCompanyHistory
+from app.models.lead import Lead
 
 __all__ = [
     "Base",
@@ -20,6 +21,7 @@ __all__ = [
     "Product",
     "Contact",
     "ContactCompanyHistory",
+    "Lead",
 ]
 
 
