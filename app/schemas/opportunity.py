@@ -1,11 +1,10 @@
-"""Opportunity Schemas."""
-from typing import Optional, List
-from pydantic import BaseModel
+from typing import Optional, List, Any
+from pydantic import BaseModel, ConfigDict
 
 
 class OpportunityCreate(BaseModel):
     title: str
-    value: float
+    value: float = 0.0
     stage: str = "PROSPECTING"
     customer_id: Optional[int] = None
     team_id: Optional[int] = None
@@ -16,6 +15,10 @@ class OpportunityUpdate(BaseModel):
     value: Optional[float] = None
     stage: Optional[str] = None
     customer_id: Optional[int] = None
+    override: Optional[bool] = False
+    override_reason: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
 
 
 class OpportunityProductCreate(BaseModel):
@@ -65,6 +68,11 @@ class OpportunityResponse(BaseModel):
     arr: Optional[float] = 0.0
     has_products: Optional[bool] = False
     products: Optional[List[OpportunityProductResponse]] = []
+    stage_overridden: Optional[bool] = False
+    override_reason: Optional[str] = None
+    override_by: Optional[int] = None
+
+    model_config = ConfigDict(extra="allow")
 
 
 class OpportunityListResponse(BaseModel):
