@@ -134,10 +134,18 @@ class LeadResponse(BaseModel):
     score_details: Optional[str] = None
     last_scored_at: Optional[datetime] = None
 
+    # S4-06 Lead Allocation fields
+    allocation_status: str = "UNASSIGNED"
+    allocated_at: Optional[datetime] = None
+    allocation_rule_id: Optional[int] = None
+    allocation_method: Optional[str] = None
+    allocation_note: Optional[str] = None
+
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
 
 
 class LeadListResponse(BaseModel):
@@ -204,4 +212,75 @@ class LeadRecalculateResponse(BaseModel):
     matched_rules_count: int
     score_details: Optional[str] = None
     message: str
+
+
+# ============================================================================
+# CẤU HÌNH QUY TẮC PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
+# ============================================================================
+
+class LeadAllocationRuleCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=255, description="Tên quy tắc phân bổ")
+    description: Optional[str] = None
+    priority: int = Field(1, ge=1, description="Thứ tự ưu tiên (1 = cao nhất)")
+    criterion_type: str = Field("ANY", description="Tiêu chí khớp: REGION, INDUSTRY, SOURCE, ANY")
+    criterion_value: Optional[str] = Field(None, max_length=255, description="Giá trị tiêu chí (VD: Hà Nội, Hải Phòng hoặc Công nghệ thông tin)")
+    allocation_method: str = Field("ROUND_ROBIN", description="Phương thức: ROUND_ROBIN, SPECIFIC_USER, REGION, INDUSTRY")
+    assignee_user_ids: List[int] = Field(..., min_length=1, description="Danh sách User ID nhân viên nhận lead")
+    is_active: Optional[bool] = Field(True, description="Trạng thái kích hoạt")
+
+
+class LeadAllocationRuleUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=255)
+    description: Optional[str] = None
+    priority: Optional[int] = Field(None, ge=1)
+    criterion_type: Optional[str] = None
+    criterion_value: Optional[str] = None
+    allocation_method: Optional[str] = None
+    assignee_user_ids: Optional[List[int]] = None
+    is_active: Optional[bool] = None
+
+
+class LeadAllocationRuleResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    priority: int
+    criterion_type: str
+    criterion_value: Optional[str] = None
+    allocation_method: str
+    assignee_user_ids: List[int]
+    last_assigned_index: int
+    is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class ManualAssignRequest(BaseModel):
+    owner_id: int = Field(..., description="ID nhân viên phụ trách được gán")
+    note: Optional[str] = Field(None, max_length=500, description="Ghi chú phân bổ của trưởng nhóm")
+
+
+class LeadAllocationLogResponse(BaseModel):
+    id: int
+    lead_id: int
+    rule_id: Optional[int] = None
+    rule_name: Optional[str] = None
+    allocation_method: str
+    assigned_to: Optional[int] = None
+    status: str
+    note: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class BatchAllocationRunResponse(BaseModel):
+    success: bool
+    total_processed: int
+    assigned_count: int
+    queued_count: int
+    message: str
+
 
