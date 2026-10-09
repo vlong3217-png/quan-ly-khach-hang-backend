@@ -1,11 +1,16 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_roles
 from app.schemas.lead import (
+    BatchAllocationRunResponse,
+    LeadAllocationLogResponse,
+    LeadAllocationRuleCreate,
+    LeadAllocationRuleResponse,
+    LeadAllocationRuleUpdate,
     LeadCreate,
     LeadFormCreate,
     LeadFormEmbedCodeResponse,
@@ -19,29 +24,40 @@ from app.schemas.lead import (
     LeadScoringSettingResponse,
     LeadScoringSettingUpdate,
     LeadUpdate,
+    ManualAssignRequest,
     WebToLeadSubmitRequest,
     WebToLeadSubmitResponse,
 )
 from app.services.lead_service import (
+    create_allocation_rule,
     create_crm_lead,
     create_lead_form,
     create_scoring_rule,
+    delete_allocation_rule,
     delete_scoring_rule,
+    get_allocation_rule_by_id,
     get_lead_by_id,
     get_lead_form_by_key,
     get_lead_form_embed_code,
     get_or_create_scoring_settings,
     get_scoring_rule_by_id,
+    list_allocation_logs,
+    list_allocation_queue,
+    list_allocation_rules,
     list_lead_forms,
     list_leads,
     list_scoring_rules,
+    manual_assign_lead,
     process_web_to_lead_submission,
     recalculate_all_leads_scores,
     recalculate_single_lead_score,
+    run_batch_lead_allocation,
+    update_allocation_rule,
     update_crm_lead,
     update_scoring_rule,
     update_scoring_settings,
 )
+
 
 
 router = APIRouter(
@@ -463,6 +479,214 @@ def update_crm_lead_endpoint(
     return update_crm_lead(lead_id=lead_id, payload=payload, db=db)
 
 
+
+
+# ============================================================================
+# 4. API CẤU HÌNH VÀ PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
+# ============================================================================
+
+@router.get(
+    "/leads/allocation-rules",
+    response_model=List[LeadAllocationRuleResponse],
+    summary="Xem danh sách quy tắc phân bổ lead tự động (S4-06)",
+)
+def list_allocation_rules_endpoint(
+    active_only: bool = Query(False, description="Chỉ lấy các quy tắc đang kích hoạt"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-06: Danh sách quy tắc phân bổ sắp xếp theo thứ tự ưu tiên (priority).
+    """
+    rules = list_allocation_rules(active_only=active_only, db=db)
+    result = []
+    for r in rules:
+        try:
+            assignee_ids = json.loads(r.assignee_user_ids)
+        except Exception:
+            assignee_ids = []
+        result.append(
+            LeadAllocationRuleResponse(
+                id=r.id,
+                name=r.name,
+                description=r.description,
+                priority=r.priority,
+                criterion_type=r.criterion_type,
+                criterion_value=r.criterion_value,
+                allocation_method=r.allocation_method,
+                assignee_user_ids=assignee_ids,
+                last_assigned_index=r.last_assigned_index,
+                is_active=r.is_active,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+            )
+        )
+    return result
+
+
+@router.post(
+    "/leads/allocation-rules",
+    response_model=LeadAllocationRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Tạo quy tắc phân bổ lead tự động mới (S4-06)",
+)
+def create_allocation_rule_endpoint(
+    payload: LeadAllocationRuleCreate,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-06: Giám đốc kinh doanh cấu hình quy tắc phân bổ lead tự động:
+    - Tiêu chí: theo khu vực (REGION), ngành nghề (INDUSTRY), nguồn (SOURCE) hoặc tất cả (ANY).
+    - Phương thức: xoay vòng (ROUND_ROBIN), nhân viên cố định (SPECIFIC_USER), theo khu vực (REGION), ngành nghề (INDUSTRY).
+    - Có thứ tự ưu tiên (priority).
+    """
+    r = create_allocation_rule(payload=payload, db=db)
+    return LeadAllocationRuleResponse(
+        id=r.id,
+        name=r.name,
+        description=r.description,
+        priority=r.priority,
+        criterion_type=r.criterion_type,
+        criterion_value=r.criterion_value,
+        allocation_method=r.allocation_method,
+        assignee_user_ids=payload.assignee_user_ids,
+        last_assigned_index=r.last_assigned_index,
+        is_active=r.is_active,
+        created_at=r.created_at,
+        updated_at=r.updated_at,
+    )
+
+
+@router.put(
+    "/leads/allocation-rules/{rule_id}",
+    response_model=LeadAllocationRuleResponse,
+    summary="Chỉnh sửa quy tắc phân bổ lead (S4-06)",
+)
+def update_allocation_rule_endpoint(
+    rule_id: int,
+    payload: LeadAllocationRuleUpdate,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    r = update_allocation_rule(rule_id=rule_id, payload=payload, db=db)
+    try:
+        assignee_ids = json.loads(r.assignee_user_ids)
+    except Exception:
+        assignee_ids = []
+    return LeadAllocationRuleResponse(
+        id=r.id,
+        name=r.name,
+        description=r.description,
+        priority=r.priority,
+        criterion_type=r.criterion_type,
+        criterion_value=r.criterion_value,
+        allocation_method=r.allocation_method,
+        assignee_user_ids=assignee_ids,
+        last_assigned_index=r.last_assigned_index,
+        is_active=r.is_active,
+        created_at=r.created_at,
+        updated_at=r.updated_at,
+    )
+
+
+@router.delete(
+    "/leads/allocation-rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Xóa quy tắc phân bổ lead (S4-06)",
+)
+def delete_allocation_rule_endpoint(
+    rule_id: int,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    success = delete_allocation_rule(rule_id=rule_id, db=db)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy quy tắc phân bổ với ID {rule_id}",
+        )
+    return None
+
+
+@router.get(
+    "/leads/allocation-queue",
+    response_model=LeadListResponse,
+    summary="Xem hàng chờ phân bổ lead (S4-06)",
+)
+def get_allocation_queue_endpoint(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-06: Lead không khớp quy tắc vào hàng chờ để trưởng nhóm phân tay.
+    """
+    total, items = list_allocation_queue(skip=skip, limit=limit, db=db)
+    return {
+        "total": total,
+        "items": items,
+    }
+
+
+@router.post(
+    "/leads/{lead_id}/manual-assign",
+    response_model=LeadResponse,
+    summary="Trưởng nhóm phân bổ thủ công lead từ hàng chờ (S4-06)",
+)
+def manual_assign_lead_endpoint(
+    lead_id: int,
+    payload: ManualAssignRequest,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-06: Trưởng nhóm phân bổ lead thủ công kèm ghi chú và người phụ trách.
+    """
+    return manual_assign_lead(
+        lead_id=lead_id,
+        owner_id=payload.owner_id,
+        note=payload.note,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.post(
+    "/leads/allocation/run-background",
+    response_model=BatchAllocationRunResponse,
+    summary="Chạy nền quy trình phân bổ tự động cho hàng chờ (S4-06)",
+)
+def run_background_allocation_endpoint(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-06: Phân bổ chạy nền và hoàn tất trong vòng 5 phút.
+    Kích hoạt quét toàn bộ hàng chờ để khớp quy tắc phân bổ tự động.
+    """
+    result = run_batch_lead_allocation(db=db)
+    return result
+
+
+@router.get(
+    "/leads/allocation-logs",
+    response_model=List[LeadAllocationLogResponse],
+    summary="Xem lịch sử / nhật ký phân bổ lead (S4-06)",
+)
+def list_allocation_logs_endpoint(
+    lead_id: Optional[int] = Query(None, description="Lọc theo lead ID"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    total, items = list_allocation_logs(lead_id=lead_id, skip=skip, limit=limit, db=db)
+    return items
+
+
 @router.get(
     "/leads/{lead_id}",
     response_model=LeadResponse,
@@ -480,4 +704,6 @@ def get_lead_detail_endpoint(
             detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
         )
     return lead
+
+
 
