@@ -10,8 +10,40 @@ class UserResponse(BaseModel):
     username: Optional[str] = None
     full_name: str
     role: str
+    team_id: Optional[int] = None
+    phone: Optional[str] = None
+    email_signature: Optional[str] = None
+    avatar_url: Optional[str] = None
     is_active: bool
     status: Optional[str] = "ACTIVE"
+
+
+class UserProfileResponse(BaseModel):
+    id: int
+    email: EmailStr
+    username: Optional[str] = None
+    full_name: str
+    role: str
+    team_id: Optional[int] = None
+    phone: Optional[str] = None
+    email_signature: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_active: bool
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, description="Họ và tên người dùng")
+    phone: Optional[str] = Field(None, description="Số điện thoại Việt Nam (10 số)")
+    email_signature: Optional[str] = Field(None, description="Chữ ký email khi gửi báo giá")
+
+    # Bổ sung các trường cấm người dùng tự sửa để kiểm tra từ chối
+    email: Optional[str] = Field(None, description="Không được phép tự sửa")
+    role: Optional[str] = Field(None, description="Không được phép tự sửa")
+    team_id: Optional[Any] = Field(None, description="Không được phép tự sửa")
+
+
+class UserTargetUpdate(BaseModel):
+    monthly_quota: float = Field(..., ge=0, description="Chỉ tiêu doanh số hàng tháng (VNĐ)")
 
 
 class UserCreate(BaseModel):
@@ -63,3 +95,76 @@ class UserStatusResponse(BaseModel):
     status: str
     message: str
     handover: Optional[DataHandoverResponse] = None
+
+
+class UserRoleUpdate(BaseModel):
+    role: str = Field(..., description="Vai trò mới: ADMIN, MANAGER, USER")
+
+
+class UserTeamUpdate(BaseModel):
+    team_id: Optional[int] = Field(..., description="ID nhóm kinh doanh")
+
+
+class UserAssignmentUpdate(BaseModel):
+    role: Optional[str] = Field(default=None, description="Vai trò mới")
+    team_id: Optional[int] = Field(default=None, description="ID nhóm mới")
+
+
+class RoleInfo(BaseModel):
+    user_id: int
+    email: str
+    full_name: str
+    role: str
+
+
+class TeamInfo(BaseModel):
+    user_id: int
+    email: str
+    full_name: str
+    team_id: Optional[int]
+    team_name: Optional[str]
+
+
+class UserDetailResponse(BaseModel):
+    id: int
+    email: str
+    username: Optional[str] = None
+    full_name: str
+    role: str
+    team_id: Optional[int] = None
+    is_active: bool
+
+
+class UserImportRow(BaseModel):
+    row_number: int
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = "USER"
+    team_id: Optional[int] = None
+    is_valid: bool = True
+    errors: List[str] = []
+
+
+class UserImportPreviewResponse(BaseModel):
+    total_rows: int
+    valid_rows_count: int
+    invalid_rows_count: int
+    rows: List[UserImportRow]
+
+
+class UserImportResultItem(BaseModel):
+    row_number: int
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    status: str  # "SUCCESS" or "SKIPPED"
+    error_message: Optional[str] = None
+
+
+class UserImportSummaryResponse(BaseModel):
+    total_rows: int
+    imported_count: int
+    skipped_count: int
+    details: List[UserImportResultItem]
+
+
