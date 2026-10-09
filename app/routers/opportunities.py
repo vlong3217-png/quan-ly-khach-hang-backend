@@ -21,6 +21,11 @@ from app.schemas.opportunity import (
     OpportunityResponse,
     OpportunityUpdate,
 )
+from app.schemas.pipeline import (
+    OpportunityStageTransitionRequest,
+    OpportunityStageTransitionResponse,
+)
+from app.services import pipeline_service
 from app.services.opportunity_service import (
     add_product_to_opportunity,
     create_opportunity_record,
@@ -108,8 +113,73 @@ def update_opportunity(
             detail="Không có quyền chỉnh sửa dữ liệu cơ hội này",
         )
 
-    updated = update_opportunity_record(opportunity_id, payload.model_dump(exclude_unset=True))
+    payload_dict = payload.model_dump(exclude_unset=True)
+
+    # AC S5-04: Kiểm tra điều kiện bắt buộc khi cơ hội rời một giai đoạn
+    if payload.stage is not None and payload.stage != opp.get("stage"):
+        transition_result = pipeline_service.validate_and_execute_stage_transition(
+            opportunity=opp,
+            target_stage_identifier=payload.stage,
+            current_user=current_user,
+            override=bool(payload.override),
+            override_reason=payload.override_reason,
+            extra_opportunity_data=payload_dict,
+        )
+        payload_dict["stage"] = transition_result["current_stage"]
+        payload_dict["stage_overridden"] = transition_result["overridden"]
+        payload_dict["override_reason"] = transition_result["override_reason"]
+        payload_dict["override_by"] = transition_result["override_by"]
+
+    updated = update_opportunity_record(opportunity_id, payload_dict)
     return updated
+
+
+@router.post("/{opportunity_id}/transition-stage", response_model=OpportunityStageTransitionResponse)
+def transition_opportunity_stage(
+    opportunity_id: int,
+    payload: OpportunityStageTransitionRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S5-04: Chuyển giai đoạn cơ hội bán hàng với kiểm tra điều kiện rời giai đoạn (Exit criteria).
+    - Không cho chuyển giai đoạn nếu chưa đủ điều kiện.
+    - Thông báo rõ điều kiện còn thiếu.
+    - Trưởng nhóm trở lên (MANAGER, ADMIN) có thể ghi đè kèm lý do bắt buộc.
+    """
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền thay đổi giai đoạn cơ hội này",
+        )
+
+    result = pipeline_service.validate_and_execute_stage_transition(
+        opportunity=opp,
+        target_stage_identifier=payload.target_stage,
+        current_user=current_user,
+        override=bool(payload.override),
+        override_reason=payload.override_reason,
+        extra_opportunity_data=payload.opportunity_data,
+    )
+
+    # Đồng bộ vào dữ liệu lưu trữ
+    sync_data = {
+        "stage": result["current_stage"],
+        "stage_overridden": result["overridden"],
+        "override_reason": result["override_reason"],
+        "override_by": result["override_by"],
+    }
+    if payload.opportunity_data:
+        sync_data.update(payload.opportunity_data)
+    update_opportunity_record(opportunity_id, sync_data)
+    result["opportunity_id"] = opportunity_id
+    return result
 
 
 @router.delete(
