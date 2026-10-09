@@ -3,6 +3,7 @@ Activity service with data scope filtering (MY/MY_TEAM/TEAM/ALL).
 """
 
 import copy
+from datetime import datetime
 from typing import Optional
 from app.core.dependencies import DataScope
 
@@ -99,6 +100,8 @@ def create_activity_record(data: dict, current_user: dict) -> dict:
         "customer_id": data.get("customer_id"),
         "owner_id": current_user["id"],
         "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
+        "opportunity_id": data.get("opportunity_id"),
+        "created_at": datetime.utcnow().isoformat(),
     }
     FAKE_ACTIVITIES.append(new_act)
     return new_act
