@@ -1,13 +1,20 @@
 """Models package."""
 from app.models.user import Base, User
 from app.models.customer import Customer, CustomerMergeHistory
-from app.models.opportunity import Opportunity
+from app.models.opportunity import Opportunity, OpportunityProduct
 from app.models.activity import Activity
 from app.models.quote import Quote
 from app.models.audit_log import AuditLog
 from app.models.product import Product
 from app.models.contact import Contact, ContactCompanyHistory
-from app.models.lead import Lead, LeadSourceConfig
+from app.models.lead import (
+    Lead,
+    LeadSourceConfig,
+    LeadScoringRule,
+    LeadScoringSetting,
+    LeadAllocationRule,
+    LeadAllocationLog,
+)
 
 __all__ = [
     "Base",
@@ -15,7 +22,9 @@ __all__ = [
     "Customer",
     "CustomerMergeHistory",
     "Opportunity",
+    "OpportunityProduct",
     "Activity",
+
     "Quote",
     "AuditLog",
     "Product",
@@ -23,7 +32,12 @@ __all__ = [
     "ContactCompanyHistory",
     "Lead",
     "LeadSourceConfig",
+    "LeadScoringRule",
+    "LeadScoringSetting",
+    "LeadAllocationRule",
+    "LeadAllocationLog",
 ]
+
 
 
 
