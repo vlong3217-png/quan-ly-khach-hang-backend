@@ -15,14 +15,21 @@ from app.core.dependencies import (
 from app.schemas.opportunity import (
     OpportunityCreate,
     OpportunityListResponse,
+    OpportunityProductCreate,
+    OpportunityProductResponse,
+    OpportunityProductUpdate,
     OpportunityResponse,
     OpportunityUpdate,
 )
 from app.services.opportunity_service import (
+    add_product_to_opportunity,
     create_opportunity_record,
+    delete_opportunity_product,
     delete_opportunity_record,
     get_opportunities_by_scope,
     get_raw_opportunity_by_id,
+    list_opportunity_products,
+    update_opportunity_product,
     update_opportunity_record,
 )
 
@@ -117,3 +124,94 @@ def delete_opportunity(opportunity_id: int):
             detail="Không tìm thấy cơ hội bán hàng để xóa",
         )
     return {"message": f"Đã xóa cơ hội bán hàng ID {opportunity_id}"}
+
+
+# ============================================================================
+# SẢN PHẨM / DỊCH VỤ TRONG CƠ HỘI (S5-03)
+# ============================================================================
+
+@router.get("/{opportunity_id}/products", response_model=list[OpportunityProductResponse])
+def get_opportunity_products(
+    opportunity_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập cơ hội này",
+        )
+    return list_opportunity_products(opportunity_id)
+
+
+@router.post("/{opportunity_id}/products", response_model=OpportunityProductResponse, status_code=status.HTTP_201_CREATED)
+def add_product(
+    opportunity_id: int,
+    payload: OpportunityProductCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền thêm sản phẩm vào cơ hội này",
+        )
+    return add_product_to_opportunity(opportunity_id, payload.model_dump(), current_user)
+
+
+@router.put("/{opportunity_id}/products/{item_id}", response_model=OpportunityProductResponse)
+def update_product(
+    opportunity_id: int,
+    item_id: int,
+    payload: OpportunityProductUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền cập nhật sản phẩm trong cơ hội này",
+        )
+    return update_opportunity_product(opportunity_id, item_id, payload.model_dump(exclude_unset=True))
+
+
+@router.delete("/{opportunity_id}/products/{item_id}")
+def delete_product(
+    opportunity_id: int,
+    item_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền xóa sản phẩm khỏi cơ hội này",
+        )
+    success = delete_opportunity_product(opportunity_id, item_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy dòng sản phẩm ID {item_id}",
+        )
+    return {"message": f"Đã xóa sản phẩm ID {item_id} khỏi cơ hội"}
+
