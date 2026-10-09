@@ -328,3 +328,38 @@ def test_quote_discount_flow_writes_full_audit_logs():
     fields_logged = {l["field_name"] for l in quote_logs}
     assert "amount" in fields_logged or "unit_price" in fields_logged
 
+
+def test_user_rename_automatically_writes_audit_log():
+    """Khi đổi họ tên người dùng, hệ thống tự động ghi nhận vào Nhật ký hệ thống."""
+    admin_headers = get_auth_headers("admin@gmail.com")
+
+    # 1. Admin đổi tên user 3 qua PUT /users/3
+    res_update = client.put("/users/3", json={"full_name": "Nguyễn Văn Sơn"}, headers=admin_headers)
+    assert res_update.status_code == 200
+    assert res_update.json()["full_name"] == "Nguyễn Văn Sơn"
+
+    # Kiểm tra log ghi nhận loại đối tượng USER
+    log_res = client.get("/audit-logs?entity_type=USER", headers=admin_headers)
+    assert log_res.status_code == 200
+    items = log_res.json()["items"]
+    assert len(items) >= 1
+    rename_log = items[0]
+    assert rename_log["entity_id"] == "3"
+    assert rename_log["field_name"] == "full_name"
+    assert rename_log["new_value"] == "Nguyễn Văn Sơn"
+    assert rename_log["action"] == "UPDATE_USER"
+
+    # 2. Người dùng tự đổi tên hồ sơ qua PUT /users/me
+    user_headers = get_auth_headers("user1@gmail.com")
+    res_me = client.put("/users/me", json={"full_name": "User 1 Mới"}, headers=user_headers)
+    assert res_me.status_code == 200
+    assert res_me.json()["full_name"] == "User 1 Mới"
+
+    log_res_me = client.get("/audit-logs?entity_type=USER", headers=admin_headers)
+    assert log_res_me.status_code == 200
+    latest_me_log = log_res_me.json()["items"][0]
+    assert latest_me_log["entity_id"] == "3" or latest_me_log["entity_id"] is not None
+    assert latest_me_log["new_value"] == "User 1 Mới"
+    assert latest_me_log["action"] == "UPDATE_PROFILE"
+
+

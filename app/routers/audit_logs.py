@@ -21,7 +21,7 @@ router = APIRouter(
 )
 def list_audit_logs_endpoint(
     user_id: Optional[int] = Query(None, description="Lọc theo ID người thực hiện"),
-    entity_type: Optional[str] = Query(None, description="Lọc theo loại đối tượng: ROLE, DISCOUNT, TARGET, DATA_OWNERSHIP"),
+    entity_type: Optional[str] = Query(None, description="Lọc theo loại đối tượng: USER, ROLE, DISCOUNT, TARGET, DATA_OWNERSHIP"),
     from_date: Optional[datetime] = Query(None, description="Thời điểm bắt đầu (ISO format)"),
     to_date: Optional[datetime] = Query(None, description="Thời điểm kết thúc (ISO format)"),
     skip: int = Query(0, ge=0, description="Vị trí bắt đầu"),

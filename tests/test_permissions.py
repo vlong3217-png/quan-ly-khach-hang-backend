@@ -205,15 +205,14 @@ def test_delete_customer_role_restriction():
 
 
 def test_create_customer_role_restriction():
-    """ADMIN and MANAGER can create customer; USER receives 403."""
+    """ADMIN, MANAGER, and USER can create customer per S3-01."""
     user_headers = get_auth_headers("user1@gmail.com")
     res_usr = client.post(
         "/customers",
-        json={"name": "Kh??ch m???i t??? User", "phone": "0123456789"},
+        json={"name": "Khách mới từ User", "phone": "0123456789"},
         headers=user_headers,
     )
-    assert res_usr.status_code == 403
-    assert "Yêu cầu role: ADMIN, MANAGER" in res_usr.json()["detail"]
+    assert res_usr.status_code == 201
 
     mgr_headers = get_auth_headers("manager@gmail.com")
     res_mgr = client.post(
