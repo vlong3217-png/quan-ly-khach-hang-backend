@@ -46,6 +46,8 @@ app.add_middleware(
 
 
 
+from fastapi.encoders import jsonable_encoder
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     if request.url.path == "/auth/login":
@@ -55,7 +57,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": exc.errors()},
+        content={"detail": jsonable_encoder(exc.errors())},
     )
 
 
@@ -106,5 +108,11 @@ app.include_router(pipeline_stages_router)
 
 from app.routers.win_loss import router as win_loss_router
 app.include_router(win_loss_router)
+
+from app.routers.leads import router as leads_router
+app.include_router(leads_router)
+
+from app.routers.campaigns import router as campaigns_router
+app.include_router(campaigns_router)
 
 
