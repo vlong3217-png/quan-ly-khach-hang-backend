@@ -9,6 +9,7 @@ class ActivityCreate(BaseModel):
     description: Optional[str] = ""
     customer_id: Optional[int] = None
     team_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
 
 
 class ActivityUpdate(BaseModel):
@@ -16,6 +17,7 @@ class ActivityUpdate(BaseModel):
     type: Optional[str] = None
     description: Optional[str] = None
     customer_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
 
 
 class ActivityResponse(BaseModel):
@@ -26,6 +28,8 @@ class ActivityResponse(BaseModel):
     customer_id: Optional[int] = None
     owner_id: int
     team_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
+    created_at: Optional[str] = None
 
 
 class ActivityListResponse(BaseModel):

@@ -15,6 +15,7 @@ class PipelineStageBase(BaseModel):
     is_won_stage: bool = Field(default=False, description="Đánh dấu giai đoạn Chốt thắng (Won)")
     is_lost_stage: bool = Field(default=False, description="Đánh dấu giai đoạn Đóng thất bại (Lost)")
     description: Optional[str] = Field(None, max_length=500)
+    stagnant_days: Optional[int] = Field(None, ge=1, le=365, description="Số ngày không hoạt động để gắn cờ đình trệ (S5-07)")
 
 
 class PipelineStageCreate(PipelineStageBase):
@@ -27,6 +28,7 @@ class PipelineStageUpdate(BaseModel):
     order_index: Optional[int] = None
     required_exit_fields: Optional[List[str]] = None
     description: Optional[str] = None
+    stagnant_days: Optional[int] = Field(None, ge=1, le=365)
 
 
 class PipelineStageResponse(BaseModel):
@@ -39,6 +41,7 @@ class PipelineStageResponse(BaseModel):
     is_won_stage: bool
     is_lost_stage: bool
     description: Optional[str] = None
+    stagnant_days: Optional[int] = None
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
