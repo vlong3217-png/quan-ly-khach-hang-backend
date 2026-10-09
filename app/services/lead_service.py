@@ -11,16 +11,27 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.lead import Lead, LeadSourceConfig, LeadScoringRule, LeadScoringSetting
+from app.models.lead import (
+    Lead,
+    LeadSourceConfig,
+    LeadScoringRule,
+    LeadScoringSetting,
+    LeadAllocationRule,
+    LeadAllocationLog,
+)
 from app.schemas.lead import (
+    LeadAllocationRuleCreate,
+    LeadAllocationRuleUpdate,
     LeadCreate,
     LeadFormCreate,
     LeadFormUpdate,
     LeadScoringRuleCreate,
     LeadScoringRuleUpdate,
     LeadUpdate,
+    ManualAssignRequest,
     WebToLeadSubmitRequest,
 )
+
 
 
 # Bộ nhớ tạm để rate-limit theo địa chỉ IP: ip -> list các timestamp submit gần nhất
@@ -325,6 +336,8 @@ def process_web_to_lead_submission(
 
         # S4-05: Tự động tính điểm ngay khi tiếp nhận lead
         calculate_lead_score(new_lead, db=db, commit=True)
+        # S4-06: Tự động phân bổ lead theo quy tắc
+        allocate_single_lead(new_lead, db=db, commit=True)
 
         return {
             "success": True,
@@ -334,6 +347,8 @@ def process_web_to_lead_submission(
             "source": new_lead.source,
             "score": new_lead.score,
             "grade": new_lead.grade,
+            "owner_id": new_lead.owner_id,
+            "allocation_status": new_lead.allocation_status,
         }
     finally:
         if should_close:
@@ -615,7 +630,20 @@ def create_crm_lead(payload: LeadCreate, current_user: dict, db: Session) -> Lea
     db.refresh(new_lead)
     # Tự động tính điểm ngay khi tạo
     calculate_lead_score(new_lead, db=db, commit=True)
+
+    # S4-06: Tự động phân bổ nếu chưa gán người phụ trách
+    if new_lead.owner_id is None:
+        allocate_single_lead(new_lead, db=db, commit=True)
+    else:
+        new_lead.allocation_status = "ASSIGNED"
+        new_lead.allocated_at = datetime.utcnow()
+        new_lead.allocation_method = "SPECIFIC_USER"
+        new_lead.allocation_note = f"Gán trực tiếp cho nhân viên ID {new_lead.owner_id}"
+        db.commit()
+        db.refresh(new_lead)
+
     return new_lead
+
 
 
 def update_crm_lead(lead_id: int, payload: LeadUpdate, db: Session) -> Lead:
@@ -705,4 +733,313 @@ def get_lead_by_id(lead_id: int, db: Optional[Session] = None) -> Optional[Lead]
     finally:
         if should_close:
             db.close()
+
+
+# ============================================================================
+# CẤU HÌNH VÀ PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
+# ============================================================================
+
+def list_allocation_rules(active_only: bool = False, db: Session = None) -> List[LeadAllocationRule]:
+    """
+    AC S4-06: Danh sách quy tắc phân bổ, sắp xếp theo thứ tự ưu tiên (priority tăng dần: 1 > 2 > 3).
+    """
+    query = db.query(LeadAllocationRule)
+    if active_only:
+        query = query.filter(LeadAllocationRule.is_active == True)
+    return query.order_by(LeadAllocationRule.priority.asc(), LeadAllocationRule.id.asc()).all()
+
+
+def get_allocation_rule_by_id(rule_id: int, db: Session) -> Optional[LeadAllocationRule]:
+    return db.query(LeadAllocationRule).filter(LeadAllocationRule.id == rule_id).first()
+
+
+def create_allocation_rule(payload: LeadAllocationRuleCreate, db: Session) -> LeadAllocationRule:
+    """
+    AC S4-06: Khai báo quy tắc phân bổ theo khu vực, ngành nghề hoặc xoay vòng.
+    """
+    valid_criterion_types = ["REGION", "INDUSTRY", "SOURCE", "ANY"]
+    c_type = payload.criterion_type.strip().upper()
+    if c_type not in valid_criterion_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Loại tiêu chí '{payload.criterion_type}' không hợp lệ. Hỗ trợ: {', '.join(valid_criterion_types)}",
+        )
+
+    valid_methods = ["ROUND_ROBIN", "SPECIFIC_USER", "REGION", "INDUSTRY"]
+    m_type = payload.allocation_method.strip().upper()
+    if m_type not in valid_methods:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Phương thức phân bổ '{payload.allocation_method}' không hợp lệ. Hỗ trợ: {', '.join(valid_methods)}",
+        )
+
+    if not payload.assignee_user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Quy tắc phân bổ phải có ít nhất một nhân viên nhận lead",
+        )
+
+    new_rule = LeadAllocationRule(
+        name=payload.name.strip(),
+        description=payload.description.strip() if payload.description else None,
+        priority=payload.priority,
+        criterion_type=c_type,
+        criterion_value=payload.criterion_value.strip() if payload.criterion_value else None,
+        allocation_method=m_type,
+        assignee_user_ids=json.dumps(payload.assignee_user_ids),
+        last_assigned_index=-1,
+        is_active=payload.is_active if payload.is_active is not None else True,
+    )
+    db.add(new_rule)
+    db.commit()
+    db.refresh(new_rule)
+    return new_rule
+
+
+def update_allocation_rule(rule_id: int, payload: LeadAllocationRuleUpdate, db: Session) -> LeadAllocationRule:
+    rule = get_allocation_rule_by_id(rule_id, db=db)
+    if not rule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy quy tắc phân bổ với ID {rule_id}",
+        )
+
+    if payload.name is not None:
+        rule.name = payload.name.strip()
+    if payload.description is not None:
+        rule.description = payload.description.strip()
+    if payload.priority is not None:
+        rule.priority = payload.priority
+    if payload.criterion_type is not None:
+        c_type = payload.criterion_type.strip().upper()
+        valid_criterion_types = ["REGION", "INDUSTRY", "SOURCE", "ANY"]
+        if c_type not in valid_criterion_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Loại tiêu chí '{payload.criterion_type}' không hợp lệ",
+            )
+        rule.criterion_type = c_type
+    if payload.criterion_value is not None:
+        rule.criterion_value = payload.criterion_value.strip()
+    if payload.allocation_method is not None:
+        m_type = payload.allocation_method.strip().upper()
+        valid_methods = ["ROUND_ROBIN", "SPECIFIC_USER", "REGION", "INDUSTRY"]
+        if m_type not in valid_methods:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Phương thức phân bổ '{payload.allocation_method}' không hợp lệ",
+            )
+        rule.allocation_method = m_type
+    if payload.assignee_user_ids is not None:
+        if not payload.assignee_user_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Danh sách nhân viên nhận lead không được để trống",
+            )
+        rule.assignee_user_ids = json.dumps(payload.assignee_user_ids)
+    if payload.is_active is not None:
+        rule.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def delete_allocation_rule(rule_id: int, db: Session) -> bool:
+    rule = get_allocation_rule_by_id(rule_id, db=db)
+    if not rule:
+        return False
+    db.delete(rule)
+    db.commit()
+    return True
+
+
+def matches_allocation_criterion(lead: Lead, rule: LeadAllocationRule) -> bool:
+    """Kiểm tra lead có khớp với điều kiện lọc của quy tắc phân bổ hay không."""
+    c_type = rule.criterion_type
+    val = rule.criterion_value or ""
+
+    if c_type == "ANY":
+        return True
+
+    allowed_values = [v.strip().lower() for v in val.split(",") if v.strip()]
+
+    if c_type == "REGION":
+        lead_city = (lead.city or "").lower().strip()
+        lead_company = (lead.company or "").lower().strip()
+        lead_interest = (lead.interest or "").lower().strip()
+        return any(
+            v in lead_city or v in lead_company or v in lead_interest
+            for v in allowed_values
+        )
+    elif c_type == "INDUSTRY":
+        lead_ind = (lead.industry or "").lower().strip()
+        return any(v in lead_ind or lead_ind in v for v in allowed_values)
+    elif c_type == "SOURCE":
+        lead_src = (lead.source or "").lower().strip()
+        return any(v in lead_src for v in allowed_values)
+
+    return False
+
+
+def allocate_single_lead(lead: Lead, db: Session, commit: bool = True) -> LeadAllocationLog:
+    """
+    AC S4-06:
+    - Phân bổ theo khu vực, ngành nghề hoặc xoay vòng.
+    - Nhiều quy tắc có thứ tự ưu tiên (ưu tiên nhỏ hơn chạy trước: priority 1 > 2 > 3).
+    - Lead không khớp quy tắc nào sẽ vào hàng chờ (QUEUED) để trưởng nhóm phân tay.
+    - Ghi nhận lịch sử phân bổ LeadAllocationLog.
+    """
+    rules = list_allocation_rules(active_only=True, db=db)
+
+    for rule in rules:
+        if matches_allocation_criterion(lead, rule):
+            try:
+                assignee_ids = json.loads(rule.assignee_user_ids)
+            except Exception:
+                assignee_ids = []
+
+            if not assignee_ids:
+                continue
+
+            # Phân bổ theo xoay vòng (Round Robin) hoặc gán cố định
+            if rule.allocation_method in ("ROUND_ROBIN", "REGION", "INDUSTRY"):
+                next_index = (rule.last_assigned_index + 1) % len(assignee_ids)
+                rule.last_assigned_index = next_index
+                assigned_user_id = assignee_ids[next_index]
+            else:
+                # SPECIFIC_USER: Gán cố định cho nhân viên đầu tiên trong danh sách
+                assigned_user_id = assignee_ids[0]
+
+            lead.owner_id = assigned_user_id
+            lead.allocation_status = "ASSIGNED"
+            lead.allocated_at = datetime.utcnow()
+            lead.allocation_rule_id = rule.id
+            lead.allocation_method = rule.allocation_method
+            lead.allocation_note = f"Phân bổ tự động theo quy tắc #{rule.id} ({rule.name})"
+
+            log = LeadAllocationLog(
+                lead_id=lead.id,
+                rule_id=rule.id,
+                rule_name=rule.name,
+                allocation_method=rule.allocation_method,
+                assigned_to=assigned_user_id,
+                status="SUCCESS",
+                note=lead.allocation_note,
+            )
+            db.add(log)
+            if commit:
+                db.commit()
+                db.refresh(lead)
+            return log
+
+    # Lead không khớp bất kỳ quy tắc nào -> Vào hàng chờ phân tay (AC S4-06)
+    lead.owner_id = None
+    lead.allocation_status = "QUEUED"
+    lead.allocated_at = None
+    lead.allocation_rule_id = None
+    lead.allocation_method = None
+    lead.allocation_note = "Không khớp quy tắc nào - Đang trong hàng chờ phân bổ thủ công"
+
+    log = LeadAllocationLog(
+        lead_id=lead.id,
+        rule_id=None,
+        rule_name=None,
+        allocation_method="UNASSIGNED",
+        assigned_to=None,
+        status="QUEUED",
+        note=lead.allocation_note,
+    )
+    db.add(log)
+    if commit:
+        db.commit()
+        db.refresh(lead)
+    return log
+
+
+def manual_assign_lead(lead_id: int, owner_id: int, note: Optional[str], current_user: dict, db: Session) -> Lead:
+    """
+    AC S4-06: Trưởng nhóm hoặc quản trị viên phân bổ thủ công lead từ hàng chờ.
+    """
+    lead = get_lead_by_id(lead_id, db=db)
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+
+    assigner_name = current_user.get("full_name") or current_user.get("username") or "Manager"
+    allocation_note = note or f"Phân bổ thủ công bởi {assigner_name}"
+
+    lead.owner_id = owner_id
+    lead.allocation_status = "ASSIGNED"
+    lead.allocated_at = datetime.utcnow()
+    lead.allocation_method = "MANUAL"
+    lead.allocation_note = allocation_note
+
+    log = LeadAllocationLog(
+        lead_id=lead.id,
+        rule_id=None,
+        rule_name="Thủ công",
+        allocation_method="MANUAL",
+        assigned_to=owner_id,
+        status="MANUAL",
+        note=allocation_note,
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(lead)
+    return lead
+
+
+def list_allocation_queue(skip: int = 0, limit: int = 50, db: Session = None) -> Tuple[int, List[Lead]]:
+    """
+    AC S4-06: Lấy danh sách hàng chờ phân bổ (những lead chưa được gán hoặc ở trạng thái QUEUED).
+    """
+    query = db.query(Lead).filter(
+        (Lead.allocation_status.in_(["QUEUED", "UNASSIGNED"])) | (Lead.owner_id.is_(None))
+    )
+    total = query.count()
+    items = query.order_by(Lead.id.desc()).offset(skip).limit(limit).all()
+    return total, items
+
+
+def run_batch_lead_allocation(db: Session) -> Dict[str, Any]:
+    """
+    AC S4-06: Chạy quy trình phân bổ chạy nền cho toàn bộ lead đang trong hàng chờ.
+    Hoàn tất nhanh chóng chỉ trong vài giây (< 5 phút).
+    """
+    unassigned_leads = db.query(Lead).filter(
+        (Lead.allocation_status.in_(["QUEUED", "UNASSIGNED"])) | (Lead.owner_id.is_(None))
+    ).all()
+
+    assigned_count = 0
+    queued_count = 0
+
+    for lead in unassigned_leads:
+        log = allocate_single_lead(lead, db=db, commit=False)
+        if log.status == "SUCCESS":
+            assigned_count += 1
+        else:
+            queued_count += 1
+
+    db.commit()
+    return {
+        "success": True,
+        "total_processed": len(unassigned_leads),
+        "assigned_count": assigned_count,
+        "queued_count": queued_count,
+        "message": f"Đã xử lý {len(unassigned_leads)} lead trong hàng chờ: {assigned_count} phân bổ thành công, {queued_count} giữ trong hàng chờ.",
+    }
+
+
+def list_allocation_logs(lead_id: Optional[int] = None, skip: int = 0, limit: int = 50, db: Session = None) -> Tuple[int, List[LeadAllocationLog]]:
+    """Truy vấn nhật ký phân bổ lead."""
+    query = db.query(LeadAllocationLog)
+    if lead_id is not None:
+        query = query.filter(LeadAllocationLog.lead_id == lead_id)
+    total = query.count()
+    items = query.order_by(LeadAllocationLog.id.desc()).offset(skip).limit(limit).all()
+    return total, items
+
 
