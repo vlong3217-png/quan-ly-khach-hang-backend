@@ -11,6 +11,8 @@ from app.schemas.lead import (
     LeadAllocationRuleCreate,
     LeadAllocationRuleResponse,
     LeadAllocationRuleUpdate,
+    LeadConvertRequest,
+    LeadConvertResponse,
     LeadCreate,
     LeadFormCreate,
     LeadFormEmbedCodeResponse,
@@ -29,6 +31,7 @@ from app.schemas.lead import (
     WebToLeadSubmitResponse,
 )
 from app.services.lead_service import (
+    convert_lead,
     create_allocation_rule,
     create_crm_lead,
     create_lead_form,
@@ -704,6 +707,49 @@ def get_lead_detail_endpoint(
             detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
         )
     return lead
+
+
+# ============================================================================
+# 5. API CHUYỂN ĐỔI LEAD SANG KHÁCH HÀNG & CƠ HỘI (LEAD CONVERSION - S4-08)
+# ============================================================================
+
+@router.post(
+    "/leads/{lead_id}/convert",
+    response_model=LeadConvertResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Chuyển đổi khách hàng tiềm năng thành Khách hàng và Cơ hội (S4-08)",
+)
+@router.post(
+    "/api/v1/leads/{lead_id}/convert",
+    response_model=LeadConvertResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Chuyển đổi khách hàng tiềm năng thành Khách hàng và Cơ hội (S4-08)",
+)
+def convert_lead_endpoint(
+    lead_id: int,
+    payload: Optional[LeadConvertRequest] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-08:
+    - Chạy trong 1 database transaction:
+      + Tạo Khách hàng (Customer) doanh nghiệp/cá nhân từ dữ liệu của Lead.
+      + Tạo Người liên hệ (Contact) gắn với Customer vừa tạo.
+      + Tạo Cơ hội (Opportunity) gắn với Customer và Contact đó.
+    - Kế thừa toàn bộ thông tin từ Lead, không bắt người dùng nhập lại các thông tin đã có sẵn.
+    - Cập nhật trạng thái Lead sang 'CONVERTED'.
+    - Chặn chức năng chỉnh sửa đối với Lead đã chuyển đổi.
+    - Di chuyển/liên kết toàn bộ lịch sử hoạt động (Activity/Interaction) của Lead sang Customer/Opportunity mới.
+    - Validate quyền hạn và dữ liệu chặt chẽ.
+    """
+    return convert_lead(
+        lead_id=lead_id,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+    )
+
 
 
 

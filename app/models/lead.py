@@ -63,6 +63,11 @@ class Lead(Base):
     allocation_method = Column(String(50), nullable=True)  # ROUND_ROBIN, SPECIFIC_USER, REGION, INDUSTRY, MANUAL
     allocation_note = Column(String(500), nullable=True)
 
+    # Lead Conversion (S4-08)
+    converted_customer_id = Column(Integer, nullable=True)
+    converted_opportunity_id = Column(Integer, nullable=True)
+    converted_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
