@@ -4,25 +4,45 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, require_roles
 from app.schemas.lead import (
+    LeadCreate,
     LeadFormCreate,
     LeadFormEmbedCodeResponse,
     LeadFormResponse,
     LeadListResponse,
+    LeadRecalculateResponse,
     LeadResponse,
+    LeadScoringRuleCreate,
+    LeadScoringRuleResponse,
+    LeadScoringRuleUpdate,
+    LeadScoringSettingResponse,
+    LeadScoringSettingUpdate,
+    LeadUpdate,
     WebToLeadSubmitRequest,
     WebToLeadSubmitResponse,
 )
 from app.services.lead_service import (
+    create_crm_lead,
     create_lead_form,
+    create_scoring_rule,
+    delete_scoring_rule,
+    get_lead_by_id,
     get_lead_form_by_key,
     get_lead_form_embed_code,
-    get_lead_by_id,
+    get_or_create_scoring_settings,
+    get_scoring_rule_by_id,
     list_lead_forms,
     list_leads,
+    list_scoring_rules,
     process_web_to_lead_submission,
+    recalculate_all_leads_scores,
+    recalculate_single_lead_score,
+    update_crm_lead,
+    update_scoring_rule,
+    update_scoring_settings,
 )
+
 
 router = APIRouter(
     tags=["Web-to-Lead & Quản lý Lead (S4-01)"],
@@ -244,8 +264,133 @@ def get_lead_form_embed_code_endpoint(
 
 
 # ============================================================================
-# 3. API XEM DANH SÁCH LEAD THU THẬP ĐƯỢC (CRM LEADS)
+# 3. API QUẢN LÝ VÀ CHẤM ĐIỂM LEAD (LEAD MANAGEMENT & SCORING - S4-05)
 # ============================================================================
+
+@router.get(
+    "/leads/scoring-settings",
+    response_model=LeadScoringSettingResponse,
+    summary="Xem cấu hình ngưỡng phân loại Nóng, Ấm, Lạnh (S4-05)",
+)
+def get_scoring_settings_endpoint(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """AC S4-05: Xem ngưỡng điểm Nóng (HOT), Ấm (WARM), Lạnh (COLD)."""
+    return get_or_create_scoring_settings(db=db)
+
+
+@router.put(
+    "/leads/scoring-settings",
+    response_model=LeadScoringSettingResponse,
+    summary="Cập nhật cấu hình ngưỡng phân loại Nóng, Ấm, Lạnh (S4-05)",
+)
+def update_scoring_settings_endpoint(
+    payload: LeadScoringSettingUpdate,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-05: Giám đốc kinh doanh / Trưởng nhóm cấu hình ngưỡng phân loại Nóng, Ấm, Lạnh.
+    """
+    return update_scoring_settings(
+        hot_threshold=payload.hot_threshold,
+        warm_threshold=payload.warm_threshold,
+        db=db,
+    )
+
+
+@router.get(
+    "/leads/scoring-rules",
+    response_model=List[LeadScoringRuleResponse],
+    summary="Xem danh sách các tiêu chí chấm điểm lead (S4-05)",
+)
+def list_scoring_rules_endpoint(
+    active_only: bool = Query(False, description="Chỉ lấy các tiêu chí đang kích hoạt"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """AC S4-05: Khai báo tiêu chí và số điểm."""
+    return list_scoring_rules(active_only=active_only, db=db)
+
+
+@router.post(
+    "/leads/scoring-rules",
+    response_model=LeadScoringRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Khai báo tiêu chí chấm điểm mới (S4-05)",
+)
+def create_scoring_rule_endpoint(
+    payload: LeadScoringRuleCreate,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-05: Giám đốc kinh doanh khai báo tiêu chí và số điểm.
+    Hỗ trợ các trường: industry, company_size, source, budget, job_title, phone, email, interest, city.
+    Toán tử: EQUALS, NOT_EQUALS, CONTAINS, NOT_EMPTY, IS_EMPTY, GREATER_THAN, LESS_THAN, IN.
+    """
+    return create_scoring_rule(payload=payload, db=db)
+
+
+@router.put(
+    "/leads/scoring-rules/{rule_id}",
+    response_model=LeadScoringRuleResponse,
+    summary="Chỉnh sửa tiêu chí chấm điểm (S4-05)",
+)
+def update_scoring_rule_endpoint(
+    rule_id: int,
+    payload: LeadScoringRuleUpdate,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    return update_scoring_rule(rule_id=rule_id, payload=payload, db=db)
+
+
+@router.delete(
+    "/leads/scoring-rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Xóa tiêu chí chấm điểm (S4-05)",
+)
+def delete_scoring_rule_endpoint(
+    rule_id: int,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    success = delete_scoring_rule(rule_id=rule_id, db=db)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy tiêu chí chấm điểm với ID {rule_id}",
+        )
+    return None
+
+
+@router.post(
+    "/leads/recalculate-all-scores",
+    summary="Tính lại điểm số cho toàn bộ khách hàng tiềm năng (S4-05)",
+)
+def recalculate_all_scores_endpoint(
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """AC S4-05: Tự động tính lại điểm cho toàn bộ lead khi quy tắc hoặc ngưỡng thay đổi."""
+    return recalculate_all_leads_scores(db=db)
+
+
+@router.post(
+    "/leads/{lead_id}/recalculate-score",
+    response_model=LeadRecalculateResponse,
+    summary="Tính lại điểm và phân loại Nóng/Ấm/Lạnh cho một lead (S4-05)",
+)
+def recalculate_single_score_endpoint(
+    lead_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """AC S4-05: Tự động tính lại điểm khi thông tin lead thay đổi."""
+    return recalculate_single_lead_score(lead_id=lead_id, db=db)
+
 
 @router.get(
     "/leads",
@@ -255,20 +400,27 @@ def get_lead_form_embed_code_endpoint(
 def list_leads_endpoint(
     status: Optional[str] = Query(None, description="Lọc theo trạng thái: NEW, IN_PROGRESS, QUALIFIED, DISQUALIFIED"),
     source: Optional[str] = Query(None, description="Lọc theo nguồn: Website Form, Google Ads, Hội thảo..."),
+    grade: Optional[str] = Query(None, description="Lọc theo phân loại: HOT, WARM, COLD (S4-05)"),
+    min_score: Optional[int] = Query(None, description="Lọc theo điểm tối thiểu (S4-05)"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo họ tên, email, SĐT, công ty"),
+    sort_by: Optional[str] = Query(None, description="Sắp xếp: score_desc (ưu tiên lead tiềm năng nhất), score_asc"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    AC S4-01: Gửi thành công tạo lead ở trạng thái 'Mới' (NEW) và gắn đúng nguồn của biểu mẫu.
-    Nhân viên Marketing và Sales có thể xem danh sách lead thu thập được.
+    AC S4-01 & S4-05:
+    - Điểm chỉ dùng để ưu tiên, không tự động loại lead.
+    - Nhân viên có thể lọc và sắp xếp theo điểm (score_desc) để gọi những lead có khả năng nhất trước.
     """
     total, items = list_leads(
         status_filter=status,
         source_filter=source,
+        grade_filter=grade,
+        min_score=min_score,
         search=search,
+        sort_by=sort_by,
         skip=skip,
         limit=limit,
         db=db,
@@ -277,6 +429,38 @@ def list_leads_endpoint(
         "total": total,
         "items": items,
     }
+
+
+@router.post(
+    "/leads",
+    response_model=LeadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Tạo mới khách hàng tiềm năng nội bộ từ CRM (S4-05)",
+)
+def create_crm_lead_endpoint(
+    payload: LeadCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Tạo lead nội bộ và tự động tính điểm theo tiêu chí (S4-05)."""
+    return create_crm_lead(payload=payload, current_user=current_user, db=db)
+
+
+@router.put(
+    "/leads/{lead_id}",
+    response_model=LeadResponse,
+    summary="Cập nhật thông tin khách hàng tiềm năng (S4-05)",
+)
+def update_crm_lead_endpoint(
+    lead_id: int,
+    payload: LeadUpdate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-05: Tự động tính lại điểm khi thông tin lead thay đổi.
+    """
+    return update_crm_lead(lead_id=lead_id, payload=payload, db=db)
 
 
 @router.get(
@@ -296,3 +480,4 @@ def get_lead_detail_endpoint(
             detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
         )
     return lead
+

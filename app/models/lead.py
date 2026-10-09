@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, Float
 from sqlalchemy.sql import func
 from app.models.user import Base
 
@@ -44,5 +44,48 @@ class Lead(Base):
     form_key = Column(String(64), nullable=True, index=True)  # Mã biểu mẫu nếu tạo từ web-to-lead
     ip_address = Column(String(64), nullable=True)
     owner_id = Column(Integer, nullable=True)  # Phân bổ cho nhân viên nào (nếu có)
+
+    # Lead Scoring (S4-05)
+    score = Column(Integer, default=0, nullable=False, index=True)
+    grade = Column(String(20), default="COLD", nullable=False, index=True)  # HOT, WARM, COLD
+    industry = Column(String(100), nullable=True, index=True)
+    company_size = Column(String(100), nullable=True)
+    budget = Column(Float, nullable=True)
+    job_title = Column(String(100), nullable=True)
+    city = Column(String(100), nullable=True, index=True)
+    score_details = Column(Text, nullable=True)  # JSON lưu danh sách rule đã áp dụng
+    last_scored_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class LeadScoringRule(Base):
+    """
+    Quy tắc chấm điểm Lead theo tiêu chí khai báo được (S4-05).
+    """
+    __tablename__ = "lead_scoring_rules"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    field_name = Column(String(50), nullable=False)  # industry, company_size, source, budget, job_title, phone, email, interest, city
+    operator = Column(String(30), nullable=False, default="EQUALS")  # EQUALS, NOT_EQUALS, CONTAINS, NOT_EMPTY, IS_EMPTY, GREATER_THAN, LESS_THAN, IN
+    target_value = Column(String(255), nullable=True)
+    points = Column(Integer, nullable=False, default=10)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class LeadScoringSetting(Base):
+    """
+    Cấu hình ngưỡng phân loại Nóng, Ấm, Lạnh (S4-05).
+    """
+    __tablename__ = "lead_scoring_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    hot_threshold = Column(Integer, default=50, nullable=False)   # Điểm >= 50: Nóng (HOT)
+    warm_threshold = Column(Integer, default=20, nullable=False)  # Điểm >= 20 và < 50: Ấm (WARM), < 20: Lạnh (COLD)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+

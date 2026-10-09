@@ -7,7 +7,7 @@ from app.models.quote import Quote
 from app.models.audit_log import AuditLog
 from app.models.product import Product
 from app.models.contact import Contact, ContactCompanyHistory
-from app.models.lead import Lead, LeadSourceConfig
+from app.models.lead import Lead, LeadSourceConfig, LeadScoringRule, LeadScoringSetting
 
 __all__ = [
     "Base",
@@ -23,7 +23,10 @@ __all__ = [
     "ContactCompanyHistory",
     "Lead",
     "LeadSourceConfig",
+    "LeadScoringRule",
+    "LeadScoringSetting",
 ]
+
 
 
 

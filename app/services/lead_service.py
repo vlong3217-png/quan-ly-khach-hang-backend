@@ -6,16 +6,22 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+import json
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.lead import Lead, LeadSourceConfig
+from app.models.lead import Lead, LeadSourceConfig, LeadScoringRule, LeadScoringSetting
 from app.schemas.lead import (
+    LeadCreate,
     LeadFormCreate,
     LeadFormUpdate,
+    LeadScoringRuleCreate,
+    LeadScoringRuleUpdate,
+    LeadUpdate,
     WebToLeadSubmitRequest,
 )
+
 
 # Bộ nhớ tạm để rate-limit theo địa chỉ IP: ip -> list các timestamp submit gần nhất
 _ip_submission_timestamps: Dict[str, List[float]] = defaultdict(list)
@@ -317,12 +323,17 @@ def process_web_to_lead_submission(
         db.commit()
         db.refresh(new_lead)
 
+        # S4-05: Tự động tính điểm ngay khi tiếp nhận lead
+        calculate_lead_score(new_lead, db=db, commit=True)
+
         return {
             "success": True,
             "message": "Gửi thông tin thành công! Chúng tôi sẽ liên hệ trong thời gian sớm nhất.",
             "lead_id": new_lead.id,
             "status": new_lead.status,
             "source": new_lead.source,
+            "score": new_lead.score,
+            "grade": new_lead.grade,
         }
     finally:
         if should_close:
@@ -330,18 +341,317 @@ def process_web_to_lead_submission(
 
 
 # ============================================================================
-# QUẢN LÝ DANH SÁCH LEAD (LEAD MANAGEMENT)
+# CẤU HÌNH VÀ TÍNH ĐIỂM LEAD (LEAD SCORING - S4-05)
 # ============================================================================
+
+def get_or_create_scoring_settings(db: Session) -> LeadScoringSetting:
+    """Lấy hoặc khởi tạo cấu hình ngưỡng phân loại Nóng, Ấm, Lạnh."""
+    setting = db.query(LeadScoringSetting).first()
+    if not setting:
+        setting = LeadScoringSetting(hot_threshold=50, warm_threshold=20)
+        db.add(setting)
+        db.commit()
+        db.refresh(setting)
+    return setting
+
+
+def update_scoring_settings(hot_threshold: int, warm_threshold: int, db: Session) -> LeadScoringSetting:
+    """Cập nhật ngưỡng điểm phân loại Nóng, Ấm, Lạnh."""
+    if warm_threshold >= hot_threshold:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ngưỡng điểm Ấm (WARM) phải nhỏ hơn ngưỡng điểm Nóng (HOT)",
+        )
+    setting = get_or_create_scoring_settings(db)
+    setting.hot_threshold = hot_threshold
+    setting.warm_threshold = warm_threshold
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+
+def list_scoring_rules(active_only: bool = False, db: Session = None) -> List[LeadScoringRule]:
+    """Lấy danh sách các tiêu chí chấm điểm."""
+    query = db.query(LeadScoringRule)
+    if active_only:
+        query = query.filter(LeadScoringRule.is_active == True)
+    return query.order_by(LeadScoringRule.id.asc()).all()
+
+
+def get_scoring_rule_by_id(rule_id: int, db: Session) -> Optional[LeadScoringRule]:
+    return db.query(LeadScoringRule).filter(LeadScoringRule.id == rule_id).first()
+
+
+def create_scoring_rule(payload: LeadScoringRuleCreate, db: Session) -> LeadScoringRule:
+    """Khai báo tiêu chí và số điểm (S4-05 AC)."""
+    valid_fields = [
+        "industry", "company_size", "source", "budget",
+        "job_title", "phone", "email", "interest", "city", "company"
+    ]
+    clean_field = payload.field_name.strip().lower()
+    if clean_field not in valid_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Trường '{payload.field_name}' không hợp lệ. Các trường hỗ trợ: {', '.join(valid_fields)}",
+        )
+
+    valid_operators = [
+        "EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_EMPTY",
+        "IS_EMPTY", "GREATER_THAN", "LESS_THAN", "IN"
+    ]
+    clean_op = payload.operator.strip().upper()
+    if clean_op not in valid_operators:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Toán tử '{payload.operator}' không hợp lệ. Các toán tử hỗ trợ: {', '.join(valid_operators)}",
+        )
+
+    new_rule = LeadScoringRule(
+        name=payload.name.strip(),
+        description=payload.description.strip() if payload.description else None,
+        field_name=clean_field,
+        operator=clean_op,
+        target_value=payload.target_value.strip() if payload.target_value else None,
+        points=payload.points,
+        is_active=payload.is_active if payload.is_active is not None else True,
+    )
+    db.add(new_rule)
+    db.commit()
+    db.refresh(new_rule)
+    return new_rule
+
+
+def update_scoring_rule(rule_id: int, payload: LeadScoringRuleUpdate, db: Session) -> LeadScoringRule:
+    rule = get_scoring_rule_by_id(rule_id, db=db)
+    if not rule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy tiêu chí chấm điểm với ID {rule_id}",
+        )
+    if payload.name is not None:
+        rule.name = payload.name.strip()
+    if payload.description is not None:
+        rule.description = payload.description.strip()
+    if payload.field_name is not None:
+        valid_fields = [
+            "industry", "company_size", "source", "budget",
+            "job_title", "phone", "email", "interest", "city", "company"
+        ]
+        clean_field = payload.field_name.strip().lower()
+        if clean_field not in valid_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Trường '{payload.field_name}' không hợp lệ",
+            )
+        rule.field_name = clean_field
+    if payload.operator is not None:
+        valid_operators = [
+            "EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_EMPTY",
+            "IS_EMPTY", "GREATER_THAN", "LESS_THAN", "IN"
+        ]
+        clean_op = payload.operator.strip().upper()
+        if clean_op not in valid_operators:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Toán tử '{payload.operator}' không hợp lệ",
+            )
+        rule.operator = clean_op
+    if payload.target_value is not None:
+        rule.target_value = payload.target_value.strip()
+    if payload.points is not None:
+        rule.points = payload.points
+    if payload.is_active is not None:
+        rule.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def delete_scoring_rule(rule_id: int, db: Session) -> bool:
+    rule = get_scoring_rule_by_id(rule_id, db=db)
+    if not rule:
+        return False
+    db.delete(rule)
+    db.commit()
+    return True
+
+
+def evaluate_rule_match(lead: Lead, rule: LeadScoringRule) -> bool:
+    """Kiểm tra một rule chấm điểm có khớp với thông tin của lead hay không."""
+    val = getattr(lead, rule.field_name, None)
+    op = rule.operator
+    target = rule.target_value or ""
+
+    if op == "NOT_EMPTY":
+        return val is not None and str(val).strip() != ""
+    if op == "IS_EMPTY":
+        return val is None or str(val).strip() == ""
+
+    if val is None:
+        return False
+
+    s_val = str(val).strip()
+    s_target = target.strip()
+
+    if op == "EQUALS":
+        return s_val.lower() == s_target.lower()
+    elif op == "NOT_EQUALS":
+        return s_val.lower() != s_target.lower()
+    elif op == "CONTAINS":
+        return s_target.lower() in s_val.lower()
+    elif op == "IN":
+        allowed = [x.strip().lower() for x in s_target.split(",") if x.strip()]
+        return s_val.lower() in allowed
+    elif op in ("GREATER_THAN", "LESS_THAN"):
+        try:
+            num_val = float(val)
+            num_target = float(target)
+            return num_val >= num_target if op == "GREATER_THAN" else num_val <= num_target
+        except (ValueError, TypeError):
+            return False
+    return False
+
+
+def calculate_lead_score(lead: Lead, db: Session, commit: bool = True) -> Tuple[int, str, List[dict]]:
+    """
+    AC S4-05:
+    - Tính điểm dựa trên các tiêu chí khai báo đang active.
+    - Phân loại Nóng (HOT), Ấm (WARM), Lạnh (COLD) theo ngưỡng cấu hình.
+    - Điểm chỉ dùng để ưu tiên, không tự động loại lead (giữ nguyên status).
+    """
+    settings = get_or_create_scoring_settings(db)
+    rules = list_scoring_rules(active_only=True, db=db)
+
+    total_score = 0
+    matched_details = []
+
+    for rule in rules:
+        if evaluate_rule_match(lead, rule):
+            total_score += rule.points
+            matched_details.append({
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "field_name": rule.field_name,
+                "points": rule.points,
+            })
+
+    if total_score >= settings.hot_threshold:
+        grade = "HOT"
+    elif total_score >= settings.warm_threshold:
+        grade = "WARM"
+    else:
+        grade = "COLD"
+
+    lead.score = total_score
+    lead.grade = grade
+    lead.score_details = json.dumps(matched_details, ensure_ascii=False)
+    lead.last_scored_at = datetime.utcnow()
+
+    if commit:
+        db.commit()
+        db.refresh(lead)
+
+    return total_score, grade, matched_details
+
+
+def recalculate_single_lead_score(lead_id: int, db: Session) -> Dict[str, Any]:
+    """Tính lại điểm cho một lead cụ thể."""
+    lead = get_lead_by_id(lead_id, db=db)
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+    score, grade, details = calculate_lead_score(lead, db=db, commit=True)
+    return {
+        "lead_id": lead.id,
+        "score": score,
+        "grade": grade,
+        "matched_rules_count": len(details),
+        "score_details": lead.score_details,
+        "message": f"Đã tính lại điểm cho lead #{lead.id}: {score} điểm ({grade})",
+    }
+
+
+def recalculate_all_leads_scores(db: Session) -> Dict[str, Any]:
+    """Tính lại điểm cho tất cả lead trong hệ thống."""
+    leads = db.query(Lead).all()
+    count = 0
+    for lead in leads:
+        calculate_lead_score(lead, db=db, commit=False)
+        count += 1
+    db.commit()
+    return {
+        "success": True,
+        "total_recalculated": count,
+        "message": f"Đã tính lại điểm cho {count} khách hàng tiềm năng",
+    }
+
+
+# ============================================================================
+# QUẢN LÝ DANH SÁCH LEAD (CRM LEADS)
+# ============================================================================
+
+def create_crm_lead(payload: LeadCreate, current_user: dict, db: Session) -> Lead:
+    """Tạo mới Lead từ giao diện CRM và tự động tính điểm."""
+    new_lead = Lead(
+        full_name=payload.full_name.strip(),
+        email=payload.email.strip().lower(),
+        phone=payload.phone.strip() if payload.phone else None,
+        company=payload.company.strip() if payload.company else None,
+        industry=payload.industry.strip() if payload.industry else None,
+        company_size=payload.company_size.strip() if payload.company_size else None,
+        budget=payload.budget,
+        job_title=payload.job_title.strip() if payload.job_title else None,
+        city=payload.city.strip() if payload.city else None,
+        interest=payload.interest.strip() if payload.interest else None,
+        source=payload.source.strip() if payload.source else "Manual Entry",
+        status=payload.status.strip() if payload.status else "NEW",
+        owner_id=payload.owner_id,
+    )
+    db.add(new_lead)
+    db.commit()
+    db.refresh(new_lead)
+    # Tự động tính điểm ngay khi tạo
+    calculate_lead_score(new_lead, db=db, commit=True)
+    return new_lead
+
+
+def update_crm_lead(lead_id: int, payload: LeadUpdate, db: Session) -> Lead:
+    """Cập nhật thông tin lead và tự động tính lại điểm khi thông tin thay đổi (S4-05 AC)."""
+    lead = get_lead_by_id(lead_id, db=db)
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+
+    update_data = payload.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        if hasattr(lead, key) and value is not None:
+            setattr(lead, key, value)
+
+    db.commit()
+    db.refresh(lead)
+
+    # Tự động tính lại điểm sau khi thông tin thay đổi
+    calculate_lead_score(lead, db=db, commit=True)
+    return lead
+
 
 def list_leads(
     status_filter: Optional[str] = None,
     source_filter: Optional[str] = None,
+    grade_filter: Optional[str] = None,
+    min_score: Optional[int] = None,
     search: Optional[str] = None,
+    sort_by: Optional[str] = None,
     skip: int = 0,
     limit: int = 20,
     db: Optional[Session] = None,
 ) -> Tuple[int, List[Lead]]:
-    """Truy vấn danh sách lead kèm bộ lọc và tìm kiếm."""
+    """Truy vấn danh sách lead kèm bộ lọc và tìm kiếm, hỗ trợ ưu tiên theo điểm."""
     should_close = False
     if db is None:
         db = SessionLocal()
@@ -353,17 +663,30 @@ def list_leads(
             query = query.filter(Lead.status == status_filter.strip().upper())
         if source_filter:
             query = query.filter(Lead.source.ilike(f"%{source_filter.strip()}%"))
+        if grade_filter:
+            query = query.filter(Lead.grade == grade_filter.strip().upper())
+        if min_score is not None:
+            query = query.filter(Lead.score >= min_score)
         if search:
             term = f"%{search.strip()}%"
             query = query.filter(
                 (Lead.full_name.ilike(term)) |
                 (Lead.email.ilike(term)) |
                 (Lead.phone.ilike(term)) |
-                (Lead.company.ilike(term))
+                (Lead.company.ilike(term)) |
+                (Lead.industry.ilike(term))
             )
 
         total = query.count()
-        items = query.order_by(Lead.id.desc()).offset(skip).limit(limit).all()
+
+        if sort_by == "score_desc":
+            query = query.order_by(Lead.score.desc(), Lead.id.desc())
+        elif sort_by == "score_asc":
+            query = query.order_by(Lead.score.asc(), Lead.id.desc())
+        else:
+            query = query.order_by(Lead.id.desc())
+
+        items = query.offset(skip).limit(limit).all()
         return total, items
     finally:
         if should_close:
@@ -382,3 +705,4 @@ def get_lead_by_id(lead_id: int, db: Optional[Session] = None) -> Optional[Lead]
     finally:
         if should_close:
             db.close()
+
