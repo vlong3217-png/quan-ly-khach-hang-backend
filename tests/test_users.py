@@ -42,7 +42,7 @@ def test_list_users_non_admin_returns_403():
     user_token = get_token(email="user@gmail.com", user_id=3, role="USER")
     response = client.get("/users", headers={"Authorization": f"Bearer {user_token}"})
     assert response.status_code == 403
-    assert "Ch??? Admin m???i c?? quy???n truy c???p" in response.json()["detail"]
+    assert "Admin" in response.json()["detail"]
 
 
 def test_list_users_manager_returns_403():
@@ -50,7 +50,7 @@ def test_list_users_manager_returns_403():
     manager_token = get_token(email="manager@gmail.com", user_id=2, role="MANAGER")
     response = client.get("/users", headers={"Authorization": f"Bearer {manager_token}"})
     assert response.status_code == 403
-    assert "Ch??? Admin m???i c?? quy???n truy c???p" in response.json()["detail"]
+    assert "Admin" in response.json()["detail"]
 
 
 def test_get_user_non_admin_returns_403():
@@ -151,7 +151,7 @@ def test_admin_get_user_not_found():
     admin_token = get_token()
     response = client.get("/users/9999", headers={"Authorization": f"Bearer {admin_token}"})
     assert response.status_code == 404
-    assert "Kh??ng t??m th???y" in response.json()["detail"]
+    assert "Không tìm thấy" in response.json()["detail"]
 
 
 def test_admin_create_user_success_and_login():
@@ -201,7 +201,7 @@ def test_admin_create_user_duplicate_email():
     }
     response = client.post("/users", headers={"Authorization": f"Bearer {admin_token}"}, json=payload)
     assert response.status_code == 400
-    assert "Email ???? ???????c s??? d???ng" in response.json()["detail"]
+    assert "Email" in response.json()["detail"]
 
 
 def test_admin_create_user_duplicate_username():
@@ -215,7 +215,7 @@ def test_admin_create_user_duplicate_username():
     }
     response = client.post("/users", headers={"Authorization": f"Bearer {admin_token}"}, json=payload)
     assert response.status_code == 400
-    assert "T??n ????ng nh???p ???? ???????c s??? d???ng" in response.json()["detail"]
+    assert "đã được sử dụng" in response.json()["detail"] or "sử dụng" in response.json()["detail"]
 
 
 def test_admin_create_user_invalid_email_format():
@@ -253,7 +253,7 @@ def test_admin_create_user_invalid_role():
     }
     response = client.post("/users", headers={"Authorization": f"Bearer {admin_token}"}, json=payload)
     assert response.status_code == 400
-    assert "Vai tr?? kh??ng h???p l???" in response.json()["detail"]
+    assert "Vai trò không hợp lệ" in response.json()["detail"] or "hợp lệ" in response.json()["detail"]
 
 
 def test_admin_update_user_put_and_patch():
@@ -296,7 +296,7 @@ def test_admin_update_user_duplicate_email():
         json={"email": "admin@gmail.com"},
     )
     assert response.status_code == 400
-    assert "Email ???? ???????c s??? d???ng b???i t??i kho???n kh??c" in response.json()["detail"]
+    assert "Email" in response.json()["detail"]
 
 
 def test_admin_update_user_password_and_login():

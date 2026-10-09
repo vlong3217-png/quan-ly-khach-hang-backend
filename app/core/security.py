@@ -2,38 +2,32 @@ import os
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 
-# Compatibility fix for passlib with newer bcrypt versions
-try:
-    import bcrypt
-    if not hasattr(bcrypt, "__about__"):
-        bcrypt.__about__ = type("about", (), {"__version__": getattr(bcrypt, "__version__", "4.0.0")})
-except ImportError:
-    pass
-
-from passlib.context import CryptContext
+import bcrypt
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-this-secret-key")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
-
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
-)
 
 
 def verify_password(
     plain_password: str,
     hashed_password: str
 ) -> bool:
-    return pwd_context.verify(
-        plain_password,
-        hashed_password
-    )
+    try:
+        pwd_bytes = plain_password.encode("utf-8")[:72]
+        hash_bytes = hashed_password.encode("utf-8")
+        return bcrypt.checkpw(pwd_bytes, hash_bytes)
+    except Exception:
+        return False
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    pwd_bytes = password.encode("utf-8")[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
+
+
+import uuid
 
 
 def create_access_token(data: dict) -> str:
@@ -42,7 +36,8 @@ def create_access_token(data: dict) -> str:
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
     payload.update({
-        "exp": expire
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
     })
     return jwt.encode(
         payload,

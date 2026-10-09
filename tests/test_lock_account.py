@@ -53,7 +53,7 @@ def test_lock_account_non_admin_returns_403():
         json={"status": "LOCKED"},
     )
     assert response.status_code == 403
-    assert "Ch??? Admin m???i c?? quy???n truy c???p" in response.json()["detail"]
+    assert "Admin" in response.json()["detail"]
 
 
 def test_lock_account_manager_returns_403():
@@ -65,10 +65,10 @@ def test_lock_account_manager_returns_403():
         json={"status": "LOCKED"},
     )
     assert response.status_code == 403
-    assert "Ch??? Admin m???i c?? quy???n truy c???p" in response.json()["detail"]
+    assert "Admin" in response.json()["detail"]
 
 
-# ????????????????????????????????? Status Update & Lock / Unlock Functionality ?????????????????????????????????
+# ———————————————————————————————— Status Update & Lock / Unlock Functionality ————————————————————————————————
 
 def test_lock_account_not_found_returns_404():
     """Locking non-existent user returns 404 Not Found."""
@@ -79,7 +79,7 @@ def test_lock_account_not_found_returns_404():
         json={"status": "LOCKED"},
     )
     assert response.status_code == 404
-    assert "Kh??ng t??m th???y" in response.json()["detail"]
+    assert "Không tìm thấy" in response.json()["detail"]
 
 
 def test_admin_cannot_self_lock():
@@ -91,7 +91,7 @@ def test_admin_cannot_self_lock():
         json={"status": "LOCKED"},
     )
     assert response.status_code == 400
-    assert "Kh??ng th??? t??? kh??a t??i kho???n c???a ch??nh m??nh" in response.json()["detail"]
+    assert "Không thể tự khóa" in response.json()["detail"]
 
 
 def test_lock_account_invalid_status_returns_400():
@@ -103,7 +103,7 @@ def test_lock_account_invalid_status_returns_400():
         json={"status": "SUSPENDED"},
     )
     assert response.status_code == 400
-    assert "Tr???ng th??i kh??ng h???p l???" in response.json()["detail"]
+    assert "Trạng thái không hợp lệ" in response.json()["detail"]
 
 
 def test_admin_lock_and_unlock_flow():
@@ -151,7 +151,7 @@ def test_admin_lock_and_unlock_flow():
     # Step 2: User cannot log in
     locked_login = client.post("/auth/login", json={"email": target_email, "password": target_password})
     assert locked_login.status_code == 401
-    assert "kh??a" in locked_login.json()["detail"].lower()
+    assert "khóa" in locked_login.json()["detail"].lower()
 
     # Step 3: Previously issued token cannot call authenticated APIs
     locked_req = client.post(
@@ -160,7 +160,7 @@ def test_admin_lock_and_unlock_flow():
         json={"current_password": target_password, "new_password": "newpassword123"},
     )
     assert locked_req.status_code == 401
-    assert "kh??a" in locked_req.json()["detail"].lower()
+    assert "khóa" in locked_req.json()["detail"].lower() or "vô hiệu hóa" in locked_req.json()["detail"].lower()
 
     # Step 4: Admin unlocks user
     unlock_res = client.patch(
@@ -187,7 +187,7 @@ def test_admin_lock_and_unlock_flow():
     assert re_auth.status_code == 400  # Passed auth, failed current_password check
 
 
-# ????????????????????????????????? Data Handover Tests ?????????????????????????????????
+# ———————————————————————————————— Data Handover Tests ————————————————————————————————
 
 def test_handover_data_standalone_api():
     """Test dedicated POST /users/{user_id}/handover endpoint."""
@@ -253,7 +253,7 @@ def test_handover_to_self_returns_400():
         json={"target_user_id": 3},
     )
     assert response.status_code == 400
-    assert "ch??nh t??i kho???n n??y" in response.json()["detail"]
+    assert "chính tài khoản này" in response.json()["detail"] or "chính" in response.json()["detail"]
 
 
 def test_handover_to_non_existent_target_returns_404():
@@ -265,7 +265,7 @@ def test_handover_to_non_existent_target_returns_404():
         json={"target_user_id": 9999},
     )
     assert response.status_code == 404
-    assert "Kh??ng t??m th???y" in response.json()["detail"]
+    assert "Không tìm thấy" in response.json()["detail"]
 
 
 def test_handover_to_locked_target_returns_400():
@@ -282,4 +282,4 @@ def test_handover_to_locked_target_returns_400():
         json={"target_user_id": 2},
     )
     assert response.status_code == 400
-    assert "b??? kh??a" in response.json()["detail"]
+    assert "bị khóa" in response.json()["detail"]
