@@ -110,5 +110,8 @@ app.include_router(win_loss_router)
 from app.routers.leads import router as leads_router
 app.include_router(leads_router)
 
+from app.routers.sales_forecast import router as sales_forecast_router
+app.include_router(sales_forecast_router)
+
 
 

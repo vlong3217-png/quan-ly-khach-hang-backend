@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional, List, Any
 from pydantic import BaseModel, ConfigDict
 
@@ -8,6 +9,7 @@ class OpportunityCreate(BaseModel):
     stage: str = "PROSPECTING"
     customer_id: Optional[int] = None
     team_id: Optional[int] = None
+    expected_close_date: Optional[date] = None
 
 
 class OpportunityUpdate(BaseModel):
@@ -71,6 +73,7 @@ class OpportunityResponse(BaseModel):
     stage_overridden: Optional[bool] = False
     override_reason: Optional[str] = None
     override_by: Optional[int] = None
+    expected_close_date: Optional[date] = None
 
     model_config = ConfigDict(extra="allow")
 
