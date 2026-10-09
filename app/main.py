@@ -107,4 +107,8 @@ app.include_router(pipeline_stages_router)
 from app.routers.win_loss import router as win_loss_router
 app.include_router(win_loss_router)
 
+from app.routers.leads import router as leads_router
+app.include_router(leads_router)
+
+
 
