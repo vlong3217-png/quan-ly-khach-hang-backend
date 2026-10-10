@@ -13,6 +13,8 @@ from app.core.dependencies import (
     resolve_scope,
 )
 from app.schemas.opportunity import (
+    KanbanBoardResponse,
+    KanbanColumnResponse,
     OpportunityCreate,
     OpportunityListResponse,
     OpportunityProductCreate,
@@ -21,6 +23,7 @@ from app.schemas.opportunity import (
     OpportunityReassignRequest,
     OpportunityReassignResponse,
     OpportunityResponse,
+    OpportunityStageMoveRequest,
     OpportunityUpdate,
 )
 from app.schemas.pipeline import (
@@ -33,9 +36,11 @@ from app.services.opportunity_service import (
     create_opportunity_record,
     delete_opportunity_product,
     delete_opportunity_record,
+    get_kanban_board_data,
     get_opportunities_by_scope,
     get_raw_opportunity_by_id,
     list_opportunity_products,
+    move_opportunity_kanban_stage,
     reassign_opportunities,
     update_opportunity_product,
     update_opportunity_record,
@@ -47,19 +52,48 @@ router = APIRouter(
 )
 
 
+@router.get("/kanban", response_model=KanbanBoardResponse)
+def get_pipeline_kanban(
+    scope: Optional[str] = Query(None, description="Data scope: MY, MY_TEAM, TEAM, ALL"),
+    owner_id: Optional[int] = Query(None, description="Lọc theo người sở hữu"),
+    team_id: Optional[int] = Query(None, description="Lọc theo nhóm"),
+    from_date: Optional[str] = Query(None, description="Từ ngày dự kiến chốt (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Đến ngày dự kiến chốt (YYYY-MM-DD)"),
+    search: Optional[str] = Query(None, description="Tìm kiếm theo tiêu đề hoặc giai đoạn"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S5-02: Bảng pipeline dạng Kanban:
+    - Mỗi cột là một giai đoạn, hiển thị số cơ hội và tổng giá trị của cột.
+    - Thẻ cơ hội hiển thị tên khách, giá trị, ngày dự kiến chốt và cảnh báo nếu đình trệ.
+    - Lọc theo người sở hữu, nhóm, khoảng ngày chốt; nhân viên mặc định chỉ thấy cơ hội của mình.
+    """
+    effective_scope = resolve_scope(current_user, scope)
+    return get_kanban_board_data(
+        current_user=current_user,
+        scope=effective_scope,
+        owner_id=owner_id,
+        team_id=team_id,
+        expected_close_date_from=from_date,
+        expected_close_date_to=to_date,
+        search=search,
+    )
+
+
 @router.get("", response_model=OpportunityListResponse)
 def list_opportunities(
     scope: Optional[str] = Query(
         None,
         description="Data scope filter: MY, MY_TEAM, TEAM, or ALL. Defaults based on role.",
     ),
+    customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
     current_user: dict = Depends(get_current_user),
 ):
     effective_scope = resolve_scope(current_user, scope)
     search_query = search or q
-    opportunities = get_opportunities_by_scope(current_user, effective_scope, search=search_query)
+    opportunities = get_opportunities_by_scope(current_user, effective_scope, search=search_query, customer_id=customer_id)
     return {
         "scope": effective_scope.value,
         "total": len(opportunities),
@@ -154,6 +188,38 @@ def update_opportunity(
         payload_dict["override_by"] = transition_result["override_by"]
 
     updated = update_opportunity_record(opportunity_id, payload_dict)
+    return updated
+
+
+@router.patch("/{opportunity_id}/stage", response_model=OpportunityResponse)
+def move_opportunity_stage(
+    opportunity_id: int,
+    payload: OpportunityStageMoveRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S5-02: Kéo thả để chuyển giai đoạn trên bảng Kanban.
+    """
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền cập nhật giai đoạn cơ hội này",
+        )
+
+    updated = move_opportunity_kanban_stage(
+        opportunity_id=opportunity_id,
+        new_stage_identifier=payload.new_stage,
+        current_user=current_user,
+        probability=payload.probability,
+        probability_notes=payload.probability_notes,
+    )
     return updated
 
 
