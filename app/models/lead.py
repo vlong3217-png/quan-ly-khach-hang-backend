@@ -28,24 +28,30 @@ class LeadSourceConfig(Base):
 
 class Lead(Base):
     """
-    Bảng quản lý khách hàng tiềm năng (Lead) - Hợp nhất S4-01, S4-05, S4-06, S4-07, S4-08.
+    Bảng quản lý khách hàng tiềm năng (Lead) - Hỗ trợ đầy đủ S4-01 đến S4-09.
     """
     __tablename__ = "leads"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     full_name = Column(String(255), nullable=True)
-    name = Column(String(255), nullable=True)
-    title = Column(String(255), nullable=True)
+    name = Column(String(255), nullable=True)  # Tương thích S4-02
     email = Column(String(255), nullable=True, index=True)
     phone = Column(String(50), nullable=True, index=True)
     company = Column(String(255), nullable=True)
+    company_name = Column(String(255), nullable=True)  # Tương thích S4-02
+    title = Column(String(255), nullable=True)
+    address = Column(String(500), nullable=True)
     interest = Column(Text, nullable=True)  # Nhu cầu quan tâm
-    source = Column(String(100), nullable=True, default="Website Form", index=True)
-    status = Column(String(50), nullable=False, default="UNASSIGNED", index=True)
-    form_key = Column(String(64), nullable=True, index=True)  # Mã biểu mẫu nếu tạo từ web-to-lead
+    source = Column(String(100), nullable=False, default="Website Form", index=True)  # Bắt buộc có nguồn (S4-02)
+    status = Column(String(50), nullable=False, default="NEW", index=True)  # NEW, CONTACTED, QUALIFIED, CONVERTED, MERGED, UNASSIGNED...
+    campaign_id = Column(Integer, nullable=True, index=True)  # S4-03: Liên kết chiến dịch
+    customer_id = Column(Integer, nullable=True, index=True)  # S4-04: Liên kết khách hàng
+    merged_into_id = Column(Integer, nullable=True)  # S4-04: ID lead chính khi gộp
+    form_key = Column(String(64), nullable=True, index=True)  # S4-01: Mã biểu mẫu nếu tạo từ web-to-lead
     ip_address = Column(String(64), nullable=True)
     owner_id = Column(Integer, nullable=True)  # Phân bổ cho nhân viên nào
     assigned_to = Column(Integer, nullable=True)  # S4-07 alias / assigned user ID
+    team_id = Column(Integer, nullable=True)
 
     # Task S4-07 requirements: Phản hồi lead & SLA
     rejection_reason = Column(String(500), nullable=True)
@@ -185,6 +191,21 @@ class LeadAllocationLog(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class LeadMergeHistory(Base):
+    """
+    Lịch sử gộp Lead (S4-04).
+    """
+    __tablename__ = "lead_merge_history"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    primary_lead_id = Column(Integer, nullable=False, index=True)
+    secondary_lead_id = Column(Integer, nullable=False, index=True)
+    secondary_lead_name = Column(String(255), nullable=True)
+    secondary_snapshot = Column(Text, nullable=True)  # JSON snapshot trước khi gộp
+    merged_by = Column(String(100), nullable=True)
+    merged_at = Column(DateTime, server_default=func.now())
+
+
 class LeadSavedFilter(Base):
     """
     Bộ lọc khách hàng tiềm năng đã lưu (S4-09).
@@ -198,4 +219,3 @@ class LeadSavedFilter(Base):
     filter_criteria = Column(Text, nullable=False)  # JSON string lưu tiêu chí lọc
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-

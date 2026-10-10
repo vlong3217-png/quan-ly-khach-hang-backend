@@ -14,9 +14,9 @@ from app.models.lead import (
     LeadScoringSetting,
     LeadAllocationRule,
     LeadAllocationLog,
+    LeadMergeHistory,
     LeadSavedFilter,
 )
-
 __all__ = [
     "Base",
     "User",
@@ -25,7 +25,6 @@ __all__ = [
     "Opportunity",
     "OpportunityProduct",
     "Activity",
-
     "Quote",
     "AuditLog",
     "Product",
@@ -37,9 +36,6 @@ __all__ = [
     "LeadScoringSetting",
     "LeadAllocationRule",
     "LeadAllocationLog",
+    "LeadMergeHistory",
     "LeadSavedFilter",
 ]
-
-
-
-
