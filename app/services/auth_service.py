@@ -91,34 +91,6 @@ def get_initial_users():
             "hashed_password": _DEFAULT_HASHED_PASSWORD,
             "team_id": 1,
         },
-        {
-            "id": 4,
-            "email": "user2@gmail.com",
-            "username": "user2",
-            "full_name": "User 2 Team B",
-            "phone": "0901234567",
-            "email_signature": "Trân trọng,\nUser 2",
-            "avatar_url": None,
-            "role": "USER",
-            "is_active": True,
-            "status": "ACTIVE",
-            "hashed_password": _DEFAULT_HASHED_PASSWORD,
-            "team_id": 2,
-        },
-        {
-            "id": 5,
-            "email": "disabled@gmail.com",
-            "username": "disabled",
-            "full_name": "Disabled User",
-            "phone": "0911223344",
-            "email_signature": "",
-            "avatar_url": None,
-            "role": "USER",
-            "is_active": False,
-            "status": "LOCKED",
-            "hashed_password": _DEFAULT_HASHED_PASSWORD,
-            "team_id": 1,
-        },
     ]
 
 
@@ -161,6 +133,10 @@ def reset_fake_users_db():
 
     try:
         db = SessionLocal()
+        initial_ids = {u["id"] for u in initial}
+        # Xóa các user không còn nằm trong danh sách mẫu khỏi MySQL
+        db.query(UserModel).filter(~UserModel.id.in_(initial_ids)).delete(synchronize_session=False)
+
         for u in initial:
             db_u = db.query(UserModel).filter(UserModel.id == u["id"]).first()
             if db_u:
