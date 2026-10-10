@@ -16,7 +16,7 @@ import re
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import openpyxl
@@ -40,6 +40,7 @@ from app.models.lead import (
     LeadAllocationRule,
     LeadAllocationLog,
     LeadMergeHistory,
+    LeadSavedFilter,
 )
 from app.models.customer import Customer
 from app.schemas.lead import (
@@ -553,6 +554,8 @@ def recalculate_all_leads_scores(db: Session) -> Dict[str, Any]:
 
 # ============================================================================
 # PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
+# ============================================================================
+# CẤU HÌNH VÀ PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
 # ============================================================================
 # ============================================================================
 
@@ -1086,11 +1089,17 @@ def list_leads(
     grade_filter: Optional[str] = None,
     campaign_id: Optional[int] = None,
     min_score: Optional[int] = None,
+    owner_id: Optional[int] = None,
+    assigned_to: Optional[int] = None,
+    is_overdue_sla: Optional[bool] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
     search: Optional[str] = None,
     sort_by: Optional[str] = None,
     include_merged: bool = False,
     skip: int = 0,
     limit: int = 100,
+    current_user: Optional[dict] = None,
     db: Optional[Session] = None,
 ) -> Tuple[int, List[Lead]]:
     should_close = False
@@ -1099,34 +1108,104 @@ def list_leads(
         should_close = True
 
     try:
+        # Cập nhật vi phạm SLA theo thời gian thực trước khi truy vấn (S4-07)
+        now = datetime.now(timezone.utc)
+        pending_leads = db.query(Lead).filter(
+            Lead.status.in_(["UNASSIGNED", "ASSIGNED", "NEW"]),
+            Lead.is_overdue_sla == False,
+            Lead.sla_deadline.isnot(None),
+        ).all()
+        for pl in pending_leads:
+            deadline = pl.sla_deadline
+            if deadline.tzinfo is None and now.tzinfo is not None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            elif deadline.tzinfo is not None and now.tzinfo is None:
+                deadline = deadline.replace(tzinfo=None)
+            if now > deadline:
+                pl.is_overdue_sla = True
+        db.commit()
+
         query = db.query(Lead)
 
+        # 1. Scope RBAC
+        if current_user:
+            role = current_user.get("role", "USER")
+            uid = current_user.get("id")
+            if role == "USER":
+                query = query.filter(
+                    (Lead.owner_id == uid) |
+                    (Lead.assigned_to == uid) |
+                    (Lead.owner_id.is_(None)) |
+                    (Lead.status == "UNASSIGNED")
+                )
+            elif role == "MANAGER":
+                pass
+
+        # 2. Không lấy lead đã gộp trừ khi được yêu cầu (S4-04)
         if not include_merged:
             query = query.filter(Lead.status != "MERGED")
 
+        # 3. Bộ lọc trạng thái
         if status_filter:
             query = query.filter(Lead.status == status_filter.strip().upper())
+
+        # 4. Bộ lọc nguồn
         if source_filter:
             query = query.filter(Lead.source.ilike(f"%{source_filter.strip()}%"))
+
+        # 5. Bộ lọc phân loại Nóng/Ấm/Lạnh
         if grade_filter:
             query = query.filter(Lead.grade == grade_filter.strip().upper())
+
+        # 6. Bộ lọc chiến dịch (S4-03)
         if campaign_id is not None:
             query = query.filter(Lead.campaign_id == campaign_id)
+
+        # 7. Bộ lọc điểm số tối thiểu
         if min_score is not None:
             query = query.filter(Lead.score >= min_score)
 
+        # 8. Bộ lọc người phụ trách (owner_id hoặc assigned_to)
+        assignee_id = owner_id if owner_id is not None else assigned_to
+        if assignee_id is not None:
+            query = query.filter(
+                (Lead.owner_id == assignee_id) | (Lead.assigned_to == assignee_id)
+            )
+
+        # 9. Bộ lọc SLA
+        if is_overdue_sla is not None:
+            query = query.filter(Lead.is_overdue_sla == is_overdue_sla)
+
+        # 10. Khoảng thời gian (start_date, end_date)
+        if start_date is not None:
+            query = query.filter(Lead.created_at >= start_date)
+        if end_date is not None:
+            query = query.filter(Lead.created_at <= end_date)
+
+        # 11. Tìm kiếm tự do
         if search:
             term = f"%{search.strip()}%"
             query = query.filter(
                 (Lead.full_name.ilike(term))
+                | (Lead.name.ilike(term))
                 | (Lead.email.ilike(term))
                 | (Lead.phone.ilike(term))
                 | (Lead.company.ilike(term))
             )
 
         total = query.count()
+
+        # 12. Sắp xếp kết quả
         if sort_by == "score_desc":
             query = query.order_by(Lead.score.desc(), Lead.id.desc())
+        elif sort_by == "score_asc":
+            query = query.order_by(Lead.score.asc(), Lead.id.desc())
+        elif sort_by == "created_at_desc":
+            query = query.order_by(Lead.created_at.desc(), Lead.id.desc())
+        elif sort_by == "created_at_asc":
+            query = query.order_by(Lead.created_at.asc(), Lead.id.desc())
+        elif sort_by == "sla_deadline_asc":
+            query = query.order_by(Lead.sla_deadline.asc().nullslast(), Lead.id.desc())
         else:
             query = query.order_by(Lead.id.desc())
 
@@ -1167,10 +1246,17 @@ def lead_to_dict(lead: Lead) -> dict:
         "ip_address": getattr(lead, "ip_address", None),
         "merged_into_id": lead.merged_into_id,
         "owner_id": lead.owner_id,
+        "assigned_to": getattr(lead, "assigned_to", None),
         "team_id": getattr(lead, "team_id", None),
         "owner_name": getattr(lead, "owner_name", None),
         "campaign_name": getattr(lead, "campaign_name", None),
         "customer_name": getattr(lead, "customer_name", None),
+        "rejection_reason": getattr(lead, "rejection_reason", None),
+        "is_overdue_sla": bool(getattr(lead, "is_overdue_sla", False)),
+        "sla_deadline": getattr(lead, "sla_deadline", None),
+        "converted_customer_id": getattr(lead, "converted_customer_id", None),
+        "converted_opportunity_id": getattr(lead, "converted_opportunity_id", None),
+        "converted_at": getattr(lead, "converted_at", None),
         "score": lead.score or 0,
         "grade": lead.grade or "COLD",
         "score_details": getattr(lead, "score_details", None),
@@ -2150,3 +2236,255 @@ def convert_lead(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Lỗi khi thực hiện giao dịch chuyển đổi Lead: {str(e)}",
         )
+
+
+# ============================================================================
+# TIẾP NHẬN, TỪ CHỐI VÀ KIỂM TRA SLA PHẢN HỒI LEAD (TASK S4-07)
+# ============================================================================
+
+def accept_lead(lead_id: int, user_id: Optional[int] = None, db: Optional[Session] = None) -> Lead:
+    """
+    Task S4-07: Tiếp nhận lead: đổi status sang IN_PROGRESS.
+    Nếu user_id được chỉ định, gán assigned_to = user_id và owner_id = user_id.
+    """
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        lead = db.query(Lead).filter(Lead.id == lead_id).first()
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lead với ID {lead_id} không tồn tại",
+            )
+
+        lead.status = "IN_PROGRESS"
+        if user_id is not None:
+            lead.assigned_to = user_id
+            lead.owner_id = user_id
+        lead.updated_at = datetime.now(timezone.utc)
+
+        db.commit()
+        db.refresh(lead)
+        return lead
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if should_close:
+            db.close()
+
+
+def reject_lead(
+    lead_id: int,
+    reason: str,
+    user_id: Optional[int] = None,
+    db: Optional[Session] = None,
+) -> Lead:
+    """
+    Task S4-07: Từ chối tiếp nhận lead:
+    - Bắt buộc phải có lý do (reason).
+    - Đổi status sang UNASSIGNED.
+    - Gán assigned_to = None, owner_id = None.
+    - Lưu rejection_reason.
+    """
+    if not reason or not str(reason).strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lý do từ chối không được để trống",
+        )
+
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        lead = db.query(Lead).filter(Lead.id == lead_id).first()
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lead với ID {lead_id} không tồn tại",
+            )
+
+        lead.status = "UNASSIGNED"
+        lead.assigned_to = None
+        lead.owner_id = None
+        lead.rejection_reason = str(reason).strip()
+        lead.updated_at = datetime.now(timezone.utc)
+
+        db.commit()
+        db.refresh(lead)
+        return lead
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if should_close:
+            db.close()
+
+
+def check_sla_violations(
+    sla_minutes: Optional[int] = None,
+    current_time: Optional[datetime] = None,
+    db: Optional[Session] = None,
+) -> List[Lead]:
+    """
+    Task S4-07: Kiểm tra vi phạm SLA phản hồi lead:
+    - Áp dụng cho các lead chưa được tiếp nhận xử lý (status != IN_PROGRESS, CONVERTED, DISQUALIFIED)
+    - Nếu đã qua sla_deadline hoặc vượt quá threshold (sla_minutes) thì gán is_overdue_sla = True.
+    - Trả về danh sách các lead vi phạm SLA.
+    """
+    now = current_time or datetime.now(timezone.utc)
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        leads = db.query(Lead).all()
+        violated_leads: List[Lead] = []
+        for lead in leads:
+            # Chỉ kiểm tra các lead chưa vào xử lý
+            if lead.status in ["UNASSIGNED", "ASSIGNED", "NEW"]:
+                is_overdue = False
+
+                # Kiểm tra hạn chót sla_deadline
+                if lead.sla_deadline is not None:
+                    deadline = lead.sla_deadline
+                    if deadline.tzinfo is None and now.tzinfo is not None:
+                        deadline = deadline.replace(tzinfo=timezone.utc)
+                    elif deadline.tzinfo is not None and now.tzinfo is None:
+                        deadline = deadline.replace(tzinfo=None)
+                    if now > deadline:
+                        is_overdue = True
+
+                # Kiểm tra số phút từ lúc tạo lead nếu có cấu hình sla_minutes
+                if sla_minutes is not None and lead.created_at is not None:
+                    created_at = lead.created_at
+                    if created_at.tzinfo is None and now.tzinfo is not None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    elif created_at.tzinfo is not None and now.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=None)
+                    if (now - created_at) > timedelta(minutes=sla_minutes):
+                        is_overdue = True
+
+                if is_overdue:
+                    lead.is_overdue_sla = True
+                    violated_leads.append(lead)
+
+        db.commit()
+        for v in violated_leads:
+            db.refresh(v)
+        return violated_leads
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if should_close:
+            db.close()
+
+
+# ============================================================================
+# BỘ LỌC LEAD ĐÃ LƯU (LEAD SAVED FILTERS - TASK S4-09)
+# ============================================================================
+
+def list_lead_saved_filters(user_id: int, db: Optional[Session] = None) -> List[LeadSavedFilter]:
+    """Lấy danh sách các bộ lọc lead đã lưu của người dùng."""
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        return db.query(LeadSavedFilter).filter(
+            LeadSavedFilter.user_id == user_id
+        ).order_by(LeadSavedFilter.id.desc()).all()
+    finally:
+        if should_close:
+            db.close()
+
+
+def get_lead_saved_filter_by_id(filter_id: int, user_id: int, db: Optional[Session] = None) -> Optional[LeadSavedFilter]:
+    """Lấy chi tiết bộ lọc lead đã lưu theo ID và quyền sở hữu."""
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        return db.query(LeadSavedFilter).filter(
+            LeadSavedFilter.id == filter_id,
+            LeadSavedFilter.user_id == user_id,
+        ).first()
+    finally:
+        if should_close:
+            db.close()
+
+
+def create_lead_saved_filter(
+    user_id: int,
+    name: str,
+    filter_criteria: dict,
+    db: Optional[Session] = None,
+) -> LeadSavedFilter:
+    """Tạo mới và lưu bộ lọc lead để nhân viên tái sử dụng nhanh mỗi sáng."""
+    if not name or not name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tên bộ lọc không được để trống",
+        )
+
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        criteria_json = json.dumps(filter_criteria, ensure_ascii=False)
+        saved = LeadSavedFilter(
+            user_id=user_id,
+            name=name.strip(),
+            filter_criteria=criteria_json,
+        )
+        db.add(saved)
+        db.commit()
+        db.refresh(saved)
+        return saved
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if should_close:
+            db.close()
+
+
+def delete_lead_saved_filter(
+    filter_id: int,
+    user_id: int,
+    db: Optional[Session] = None,
+) -> bool:
+    """Xóa bộ lọc lead đã lưu của nhân viên."""
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
+    try:
+        filter_item = db.query(LeadSavedFilter).filter(
+            LeadSavedFilter.id == filter_id,
+            LeadSavedFilter.user_id == user_id,
+        ).first()
+        if not filter_item:
+            return False
+        db.delete(filter_item)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if should_close:
+            db.close()

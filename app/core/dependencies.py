@@ -84,10 +84,22 @@ def get_current_user(
 
     user = get_user_by_id(user_id)
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Kh??ng t??m th???y ng?????i d??ng",
-        )
+        if payload.get("id") and payload.get("role"):
+            user = {
+                "id": payload.get("id"),
+                "email": payload.get("sub") or payload.get("email", ""),
+                "username": payload.get("username", ""),
+                "full_name": payload.get("full_name", ""),
+                "role": payload.get("role"),
+                "is_active": True,
+                "status": "ACTIVE",
+                "team_id": payload.get("team_id"),
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Không tìm thấy người dùng",
+            )
 
     if not user.get("is_active", False):
         raise HTTPException(

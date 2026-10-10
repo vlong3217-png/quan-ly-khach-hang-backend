@@ -8,6 +8,14 @@ from app.schemas.customer import (
     CustomerListResponse,
 )
 
+from app.schemas.lead import (
+    LeadRejectSchema,
+    LeadCreate,
+    LeadUpdate,
+    LeadResponse,
+    LeadStatus,
+)
+
 __all__ = [
     "LoginRequest",
     "LoginResponse",
@@ -17,4 +25,9 @@ __all__ = [
     "CustomerUpdate",
     "CustomerResponse",
     "CustomerListResponse",
+    "LeadRejectSchema",
+    "LeadCreate",
+    "LeadUpdate",
+    "LeadResponse",
+    "LeadStatus",
 ]
