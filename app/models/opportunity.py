@@ -16,6 +16,7 @@ class Opportunity(BaseModel):
     expected_close_date: Optional[str] = None
     win_probability: Optional[float] = None
     probability_notes: Optional[str] = None
+    stagnant_warning: Optional[str] = None
     description: Optional[str] = None
     owner_id: int
     team_id: Optional[int] = None
