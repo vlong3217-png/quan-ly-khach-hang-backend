@@ -1,10 +1,11 @@
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, EmailStr, Field
+from enum import Enum
+from typing import Annotated, List, Optional
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
 
 
 # ============================================================================
-# CẤU HÌNH BIỂU MẪU WEB-TO-LEAD (LEAD FORM CONFIG)
+# CẤU HÌNH BIỂU MẪU WEB-TO-LEAD (LEAD FORM CONFIG - S4-01)
 # ============================================================================
 
 class LeadFormCreate(BaseModel):
@@ -53,7 +54,7 @@ class LeadFormEmbedCodeResponse(BaseModel):
 
 
 # ============================================================================
-# NỘP DỮ LIỆU LEAD TỪ WEBSITE (PUBLIC WEB-TO-LEAD SUBMISSION)
+# NỘP DỮ LIỆU LEAD TỪ WEBSITE (PUBLIC WEB-TO-LEAD SUBMISSION - S4-01)
 # ============================================================================
 
 class WebToLeadSubmitRequest(BaseModel):
@@ -75,12 +76,51 @@ class WebToLeadSubmitResponse(BaseModel):
 
 
 # ============================================================================
+# ENUM & SCHEMAS CHO LEAD RESPONSE & SLA (S4-07)
+# ============================================================================
+
+class LeadStatus(str, Enum):
+    UNASSIGNED = "UNASSIGNED"
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    CONVERTED = "CONVERTED"
+    DISQUALIFIED = "DISQUALIFIED"
+    NEW = "NEW"
+
+
+class LeadRejectSchema(BaseModel):
+    """Schema cho thao tác từ chối nhận lead (bắt buộc nhập lý do)."""
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = Field(
+        ..., description="Lý do từ chối nhận lead (bắt buộc)"
+    )
+
+
+class LeadBase(BaseModel):
+    name: Optional[str] = Field(None, max_length=255, description="Họ và tên hoặc tên Lead")
+    full_name: Optional[str] = Field(None, max_length=255, description="Họ và tên đầy đủ")
+    title: Optional[str] = Field(None, max_length=255, description="Chức danh")
+    company: Optional[str] = Field(None, max_length=255, description="Tên công ty")
+    email: Optional[str] = Field(None, max_length=255, description="Email")
+    phone: Optional[str] = Field(None, max_length=50, description="Số điện thoại")
+    source: Optional[str] = Field(None, max_length=100, description="Nguồn lead")
+    status: Optional[str] = Field(default=LeadStatus.UNASSIGNED.value, description="Trạng thái lead")
+    assigned_to: Optional[int] = Field(default=None, description="ID nhân viên phụ trách")
+    owner_id: Optional[int] = Field(default=None, description="ID chủ sở hữu / nhân viên phụ trách")
+    notes: Optional[str] = Field(default=None, description="Ghi chú thêm")
+    rejection_reason: Optional[str] = Field(default=None, description="Lý do từ chối tiếp nhận")
+    is_overdue_sla: Optional[bool] = Field(default=False, description="Cờ đánh dấu vi phạm SLA phản hồi")
+    sla_deadline: Optional[datetime] = Field(default=None, description="Thời hạn SLA phản hồi")
+
+
+# ============================================================================
 # QUẢN LÝ DANH SÁCH LEAD (CRM LEADS)
 # ============================================================================
 
 class LeadCreate(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=255)
-    email: EmailStr
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    title: Optional[str] = Field(None, max_length=255)
+    email: Optional[str] = None
     phone: Optional[str] = Field(None, max_length=50)
     company: Optional[str] = Field(None, max_length=255)
     industry: Optional[str] = Field(None, max_length=100)
@@ -91,12 +131,19 @@ class LeadCreate(BaseModel):
     interest: Optional[str] = Field(None, max_length=2000)
     source: Optional[str] = Field("Manual Entry", max_length=100)
     status: Optional[str] = Field("NEW", max_length=50)
+    assigned_to: Optional[int] = None
     owner_id: Optional[int] = None
+    notes: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    is_overdue_sla: Optional[bool] = False
+    sla_deadline: Optional[datetime] = None
 
 
 class LeadUpdate(BaseModel):
-    full_name: Optional[str] = Field(None, min_length=2, max_length=255)
-    email: Optional[EmailStr] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    title: Optional[str] = None
+    email: Optional[str] = None
     phone: Optional[str] = None
     company: Optional[str] = None
     industry: Optional[str] = None
@@ -107,21 +154,35 @@ class LeadUpdate(BaseModel):
     interest: Optional[str] = None
     source: Optional[str] = None
     status: Optional[str] = None
+    assigned_to: Optional[int] = None
     owner_id: Optional[int] = None
+    notes: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    is_overdue_sla: Optional[bool] = None
+    sla_deadline: Optional[datetime] = None
 
 
 class LeadResponse(BaseModel):
     id: int
-    full_name: str
-    email: str
+    name: Optional[str] = None
+    full_name: Optional[str] = None
+    title: Optional[str] = None
+    email: Optional[str] = None
     phone: Optional[str] = None
     company: Optional[str] = None
     interest: Optional[str] = None
-    source: str
-    status: str
+    source: Optional[str] = None
+    status: Optional[str] = None
     form_key: Optional[str] = None
     ip_address: Optional[str] = None
     owner_id: Optional[int] = None
+    assigned_to: Optional[int] = None
+
+    # S4-07 Lead Response & SLA fields
+    rejection_reason: Optional[str] = None
+    is_overdue_sla: Optional[bool] = False
+    sla_deadline: Optional[datetime] = None
+    notes: Optional[str] = None
     
     # S4-05 Lead Scoring fields
     score: int = 0
@@ -149,8 +210,7 @@ class LeadResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
-
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LeadListResponse(BaseModel):
@@ -316,6 +376,3 @@ class LeadConvertResponse(BaseModel):
     contact: dict
     opportunity: dict
     converted_at: Optional[datetime] = None
-
-
-

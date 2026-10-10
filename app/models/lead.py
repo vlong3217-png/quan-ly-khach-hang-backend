@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, Float
 from sqlalchemy.sql import func
 from app.models.user import Base
@@ -28,22 +28,30 @@ class LeadSourceConfig(Base):
 
 class Lead(Base):
     """
-    Bảng quản lý khách hàng tiềm năng (Lead) - S4-01.
-    Thu thập từ biểu mẫu nhúng trên website hoặc các nguồn khác.
+    Bảng quản lý khách hàng tiềm năng (Lead) - Hợp nhất S4-01, S4-05, S4-06, S4-07, S4-08.
     """
     __tablename__ = "leads"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    full_name = Column(String(255), nullable=False)
-    email = Column(String(255), nullable=False, index=True)
+    full_name = Column(String(255), nullable=True)
+    name = Column(String(255), nullable=True)
+    title = Column(String(255), nullable=True)
+    email = Column(String(255), nullable=True, index=True)
     phone = Column(String(50), nullable=True, index=True)
     company = Column(String(255), nullable=True)
     interest = Column(Text, nullable=True)  # Nhu cầu quan tâm
-    source = Column(String(100), nullable=False, default="Website Form", index=True)
-    status = Column(String(50), nullable=False, default="NEW", index=True)  # Mới (NEW), Đang xử lý (IN_PROGRESS), Đạt (QUALIFIED), Hủy (DISQUALIFIED)
+    source = Column(String(100), nullable=True, default="Website Form", index=True)
+    status = Column(String(50), nullable=False, default="UNASSIGNED", index=True)
     form_key = Column(String(64), nullable=True, index=True)  # Mã biểu mẫu nếu tạo từ web-to-lead
     ip_address = Column(String(64), nullable=True)
-    owner_id = Column(Integer, nullable=True)  # Phân bổ cho nhân viên nào (nếu có)
+    owner_id = Column(Integer, nullable=True)  # Phân bổ cho nhân viên nào
+    assigned_to = Column(Integer, nullable=True)  # S4-07 alias / assigned user ID
+
+    # Task S4-07 requirements: Phản hồi lead & SLA
+    rejection_reason = Column(String(500), nullable=True)
+    is_overdue_sla = Column(Boolean, default=False, nullable=False)
+    sla_deadline = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
 
     # Lead Scoring (S4-05)
     score = Column(Integer, default=0, nullable=False, index=True)
@@ -68,8 +76,46 @@ class Lead(Base):
     converted_opportunity_id = Column(Integer, nullable=True)
     converted_at = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now(), onupdate=func.now())
+
+    def __init__(self, **kwargs):
+        # Đồng bộ name và full_name nếu 1 trong 2 được cung cấp
+        if "name" in kwargs and "full_name" not in kwargs:
+            kwargs["full_name"] = kwargs["name"]
+        elif "full_name" in kwargs and "name" not in kwargs:
+            kwargs["name"] = kwargs["full_name"]
+            
+        # Đồng bộ owner_id và assigned_to nếu 1 trong 2 được cung cấp
+        if "assigned_to" in kwargs and "owner_id" not in kwargs:
+            kwargs["owner_id"] = kwargs["assigned_to"]
+        elif "owner_id" in kwargs and "assigned_to" not in kwargs:
+            kwargs["assigned_to"] = kwargs["owner_id"]
+            
+        super().__init__(**kwargs)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name or self.full_name,
+            "full_name": self.full_name or self.name,
+            "title": self.title,
+            "company": self.company,
+            "email": self.email,
+            "phone": self.phone,
+            "source": self.source,
+            "status": self.status,
+            "assigned_to": self.assigned_to or self.owner_id,
+            "owner_id": self.owner_id or self.assigned_to,
+            "rejection_reason": self.rejection_reason,
+            "is_overdue_sla": self.is_overdue_sla,
+            "sla_deadline": self.sla_deadline,
+            "notes": self.notes,
+            "score": self.score,
+            "grade": self.grade,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
 
 
 class LeadScoringRule(Base):
@@ -137,5 +183,3 @@ class LeadAllocationLog(Base):
     status = Column(String(50), nullable=False)  # SUCCESS, QUEUED, MANUAL
     note = Column(String(500), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
-
-

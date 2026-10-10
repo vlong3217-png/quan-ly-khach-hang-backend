@@ -5,6 +5,24 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_roles
+from app.core.security import ALGORITHM, SECRET_KEY
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+
+security_optional = HTTPBearer(auto_error=False)
+
+
+def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+) -> Optional[dict]:
+    """Lấy thông tin người dùng hiện tại nếu có Authorization header."""
+    if not credentials:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
 from app.schemas.lead import (
     BatchAllocationRunResponse,
     LeadAllocationLogResponse,
@@ -19,6 +37,7 @@ from app.schemas.lead import (
     LeadFormResponse,
     LeadListResponse,
     LeadRecalculateResponse,
+    LeadRejectSchema,
     LeadResponse,
     LeadScoringRuleCreate,
     LeadScoringRuleResponse,
@@ -31,6 +50,9 @@ from app.schemas.lead import (
     WebToLeadSubmitResponse,
 )
 from app.services.lead_service import (
+    accept_lead,
+    check_sla_violations,
+    reject_lead,
     convert_lead,
     create_allocation_rule,
     create_crm_lead,
@@ -749,6 +771,70 @@ def convert_lead_endpoint(
         current_user=current_user,
         db=db,
     )
+
+
+# ============================================================================
+# 6. API TIẾP NHẬN, TỪ CHỐI & KIỂM TRA SLA PHẢN HỒI LEAD (S4-07)
+# ============================================================================
+
+@router.post(
+    "/leads/{id}/accept",
+    response_model=LeadResponse,
+    summary="Tiếp nhận khách hàng tiềm năng (S4-07)",
+)
+def accept_lead_endpoint(
+    id: int,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """
+    Task S4-07: Tiếp nhận lead
+    - Chuyển trạng thái sang IN_PROGRESS.
+    - Gán người phụ trách nếu chưa có.
+    """
+    user_id = current_user.get("id") if current_user else None
+    return accept_lead(lead_id=id, user_id=user_id, db=db)
+
+
+@router.post(
+    "/leads/{id}/reject",
+    response_model=LeadResponse,
+    summary="Từ chối tiếp nhận khách hàng tiềm năng kèm lý do (S4-07)",
+)
+def reject_lead_endpoint(
+    id: int,
+    payload: LeadRejectSchema,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """
+    Task S4-07: Từ chối tiếp nhận lead
+    - Bắt buộc nhập lý do (reason).
+    - Chuyển trạng thái sang UNASSIGNED.
+    - Gán assigned_to = None, owner_id = None.
+    - Lưu lý do từ chối (rejection_reason).
+    """
+    user_id = current_user.get("id") if current_user else None
+    return reject_lead(
+        lead_id=id,
+        reason=payload.reason,
+        user_id=user_id,
+        db=db,
+    )
+
+
+@router.post(
+    "/leads/sla/check",
+    response_model=List[LeadResponse],
+    summary="Quét kiểm tra vi phạm SLA phản hồi lead (S4-07)",
+)
+def check_sla_endpoint(
+    sla_minutes: Optional[int] = Query(None, description="Thời gian SLA tối đa tính theo phút"),
+    db: Session = Depends(get_db),
+):
+    """Kiểm tra và cập nhật các lead vi phạm SLA phản hồi."""
+    return check_sla_violations(sla_minutes=sla_minutes, db=db)
+
 
 
 
