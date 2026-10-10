@@ -14,6 +14,7 @@ from app.models.lead import (
     LeadScoringSetting,
     LeadAllocationRule,
     LeadAllocationLog,
+    LeadSavedFilter,
 )
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "LeadScoringSetting",
     "LeadAllocationRule",
     "LeadAllocationLog",
+    "LeadSavedFilter",
 ]
 
 

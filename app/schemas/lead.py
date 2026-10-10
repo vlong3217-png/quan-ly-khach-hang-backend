@@ -376,3 +376,26 @@ class LeadConvertResponse(BaseModel):
     contact: dict
     opportunity: dict
     converted_at: Optional[datetime] = None
+
+
+# ============================================================================
+# BỘ LỌC LEAD ĐÃ LƯU (LEAD SAVED FILTERS - S4-09)
+# ============================================================================
+
+class LeadSavedFilterBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, description="Tên bộ lọc đã lưu (VD: Lead Nóng quá hạn hôm nay)")
+    filter_criteria: dict = Field(..., description="Các tham số lọc cần lưu trữ (status, grade, source, is_overdue_sla, date range...)")
+
+
+class LeadSavedFilterCreate(LeadSavedFilterBase):
+    pass
+
+
+class LeadSavedFilterResponse(LeadSavedFilterBase):
+    id: int
+    user_id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
