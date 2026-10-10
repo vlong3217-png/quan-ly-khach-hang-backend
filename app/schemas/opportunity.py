@@ -1,26 +1,42 @@
 from datetime import date
 from typing import Optional, List, Any
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class OpportunityCreate(BaseModel):
-    title: str
-    value: float = 0.0
-    stage: str = "PROSPECTING"
-    customer_id: Optional[int] = None
+    title: str = Field(..., min_length=1, description="Tên cơ hội bán hàng")
+    value: float = Field(default=0.0, ge=0, description="Giá trị dự kiến")
+    stage: str = Field(default="PROSPECTING", description="Giai đoạn bán hàng")
+    customer_id: Optional[int] = Field(default=None, description="Mã khách hàng")
+    contact_person: Optional[str] = Field(default=None, description="Người liên hệ chính")
+    contact_id: Optional[int] = Field(default=None, description="Mã người liên hệ")
+    source: Optional[str] = Field(default=None, description="Nguồn cơ hội")
+    expected_close_date: Optional[date] = Field(default=None, description="Ngày dự kiến chốt")
+    win_probability: Optional[float] = Field(default=None, ge=0, le=100, description="Xác suất thắng (%)")
+    probability_notes: Optional[str] = Field(default=None, description="Ghi chú khi sửa tay xác suất thắng")
     campaign_id: Optional[int] = None
     lead_id: Optional[int] = None
     team_id: Optional[int] = None
-    expected_close_date: Optional[date] = None
+    description: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
 
 
 class OpportunityUpdate(BaseModel):
     title: Optional[str] = None
-    value: Optional[float] = None
+    value: Optional[float] = Field(default=None, ge=0)
     stage: Optional[str] = None
     customer_id: Optional[int] = None
+    contact_person: Optional[str] = None
+    contact_id: Optional[int] = None
+    source: Optional[str] = None
+    expected_close_date: Optional[date] = None
+    win_probability: Optional[float] = Field(default=None, ge=0, le=100)
+    probability_notes: Optional[str] = None
     campaign_id: Optional[int] = None
     lead_id: Optional[int] = None
+    team_id: Optional[int] = None
+    description: Optional[str] = None
     override: Optional[bool] = False
     override_reason: Optional[str] = None
 
@@ -69,6 +85,13 @@ class OpportunityResponse(BaseModel):
     value: float
     stage: str
     customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_id: Optional[int] = None
+    source: Optional[str] = None
+    win_probability: Optional[float] = None
+    probability_notes: Optional[str] = None
+    description: Optional[str] = None
     campaign_id: Optional[int] = None
     lead_id: Optional[int] = None
     owner_id: int

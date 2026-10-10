@@ -85,15 +85,46 @@ def recalculate_opportunity_value(opportunity_id: int) -> Optional[dict]:
     return opp
 
 
+def _enrich_opportunity_record(opp: dict) -> dict:
+    opp_copy = copy.deepcopy(opp)
+    opp_id = opp["id"]
+    items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp_id]
+    opp_copy["products"] = items
+    opp_copy["has_products"] = len(items) > 0
+    opp_copy["arr"] = opp.get("arr", 0.0)
+
+    # 1. Bổ sung customer_name nếu có customer_id
+    if opp.get("customer_id") and not opp_copy.get("customer_name"):
+        try:
+            from app.services import customer_service
+            cust = customer_service.get_customer_by_id(opp["customer_id"])
+            opp_copy["customer_name"] = cust.get("name") if cust else None
+        except Exception:
+            opp_copy["customer_name"] = None
+
+    # 2. Bổ sung win_probability nếu chưa có
+    if opp_copy.get("win_probability") is None:
+        try:
+            from app.services import pipeline_service
+            stage_info = pipeline_service.find_stage(opp.get("stage", "PROSPECTING"))
+            opp_copy["win_probability"] = float(stage_info["win_probability"]) if stage_info and "win_probability" in stage_info else 10.0
+        except Exception:
+            opp_copy["win_probability"] = 10.0
+
+    # 3. Tích hợp cảnh báo đình trệ S5-07 nếu có
+    try:
+        from app.services import opportunity_stagnant_service
+        opp_copy = opportunity_stagnant_service.enrich_opportunity_stagnation(opp_copy)
+    except Exception:
+        pass
+
+    return opp_copy
+
+
 def get_raw_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
     for opp in FAKE_OPPORTUNITIES:
         if opp["id"] == opportunity_id:
-            items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
-            opp_copy = copy.deepcopy(opp)
-            opp_copy["products"] = items
-            opp_copy["has_products"] = len(items) > 0
-            opp_copy["arr"] = opp.get("arr", 0.0)
-            return opp_copy
+            return _enrich_opportunity_record(opp)
     return None
 
 
@@ -101,6 +132,7 @@ def get_opportunities_by_scope(
     current_user: dict,
     scope: DataScope,
     search: Optional[str] = None,
+    customer_id: Optional[int] = None,
 ) -> list[dict]:
     if scope == DataScope.ALL:
         raw_list = list(FAKE_OPPORTUNITIES)
@@ -114,14 +146,10 @@ def get_opportunities_by_scope(
         user_id = current_user["id"]
         raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("owner_id") == user_id]
 
-    results = []
-    for opp in raw_list:
-        items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp["id"]]
-        c = copy.deepcopy(opp)
-        c["products"] = items
-        c["has_products"] = len(items) > 0
-        c["arr"] = opp.get("arr", 0.0)
-        results.append(c)
+    if customer_id is not None:
+        raw_list = [o for o in raw_list if o.get("customer_id") == customer_id]
+
+    results = [_enrich_opportunity_record(opp) for opp in raw_list]
 
     if search:
         s = search.lower().strip()
@@ -134,36 +162,132 @@ def get_opportunities_by_scope(
 
 
 def create_opportunity_record(data: dict, current_user: dict) -> dict:
+    from app.services import pipeline_service, customer_service
+    from fastapi import HTTPException, status
+    from datetime import date
+
+    # AC S5-01: Đối với Nhân viên kinh doanh, ngày dự kiến chốt không được ở quá khứ khi tạo mới
+    user_role = (current_user.get("role") or "").upper()
+    if user_role not in ("ADMIN", "MANAGER"):
+        close_date_raw = data.get("expected_close_date")
+        if close_date_raw:
+            if isinstance(close_date_raw, str):
+                try:
+                    close_date_obj = datetime.strptime(close_date_raw[:10], "%Y-%m-%d").date()
+                except Exception:
+                    close_date_obj = None
+            elif isinstance(close_date_raw, date):
+                close_date_obj = close_date_raw
+            else:
+                close_date_obj = None
+            if close_date_obj and close_date_obj < date.today():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Ngày dự kiến chốt không được ở quá khứ khi tạo mới",
+                )
+
+    # AC S5-01: Xác suất thắng lấy mặc định theo giai đoạn, sửa tay được kèm ghi chú
+    stage = data.get("stage", "PROSPECTING")
+    stage_info = pipeline_service.find_stage(stage)
+    default_prob = float(stage_info["win_probability"]) if stage_info and "win_probability" in stage_info else 10.0
+
+    prob_notes = (data.get("probability_notes") or "").strip()
+    if data.get("win_probability") is not None:
+        user_prob = float(data["win_probability"])
+        if abs(user_prob - default_prob) > 1e-4:
+            if not prob_notes:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Sửa tay xác suất thắng khác mặc định của giai đoạn bắt buộc phải có ghi chú giải trình",
+                )
+            final_prob = user_prob
+            final_notes = prob_notes
+        else:
+            final_prob = user_prob
+            final_notes = prob_notes or None
+    else:
+        final_prob = default_prob
+        final_notes = prob_notes or None
+
+    customer_name = None
+    if data.get("customer_id"):
+        cust = customer_service.get_customer_by_id(data["customer_id"])
+        if cust:
+            customer_name = cust.get("name")
+
     new_id = (max(o["id"] for o in FAKE_OPPORTUNITIES) + 1) if FAKE_OPPORTUNITIES else 1
     new_opp = {
         "id": new_id,
         "title": data["title"],
-        "value": data["value"],
-        "stage": data.get("stage", "PROSPECTING"),
+        "value": float(data.get("value", 0.0)),
+        "stage": stage,
         "customer_id": data.get("customer_id"),
+        "customer_name": customer_name,
+        "contact_person": data.get("contact_person"),
+        "contact_id": data.get("contact_id"),
+        "source": data.get("source"),
+        "expected_close_date": str(data.get("expected_close_date")) if data.get("expected_close_date") else None,
+        "win_probability": final_prob,
+        "probability_notes": final_notes,
+        "description": data.get("description"),
         "campaign_id": data.get("campaign_id"),
         "lead_id": data.get("lead_id"),
         "owner_id": current_user["id"],
         "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
-        "expected_close_date": data.get("expected_close_date"),
         "arr": 0.0,
         "has_products": False,
         "products": [],
         "status": "OPEN",
-        "expected_close_date": data.get("expected_close_date"),
         "created_at": datetime.utcnow().isoformat(),
     }
     FAKE_OPPORTUNITIES.append(new_opp)
-    return new_opp
+    return _enrich_opportunity_record(new_opp)
 
 
-def update_opportunity_record(opportunity_id: int, data: dict) -> Optional[dict]:
+def update_opportunity_record(opportunity_id: int, data: dict, current_user: Optional[dict] = None) -> Optional[dict]:
+    from app.services import pipeline_service, customer_service
+    from fastapi import HTTPException, status
+
     opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
     if opp is None:
         return None
+
+    new_stage = data.get("stage")
+    stage_to_check = new_stage or opp.get("stage", "PROSPECTING")
+    stage_info = pipeline_service.find_stage(stage_to_check)
+    default_prob = float(stage_info["win_probability"]) if stage_info and "win_probability" in stage_info else 10.0
+
+    if data.get("win_probability") is not None:
+        user_prob = float(data["win_probability"])
+        prob_notes = (data.get("probability_notes") or opp.get("probability_notes") or "").strip()
+        if abs(user_prob - default_prob) > 1e-4:
+            if not prob_notes:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Sửa tay xác suất thắng khác mặc định của giai đoạn bắt buộc phải có ghi chú giải trình",
+                )
+            opp["win_probability"] = user_prob
+            opp["probability_notes"] = prob_notes
+        else:
+            opp["win_probability"] = user_prob
+            if data.get("probability_notes") is not None:
+                opp["probability_notes"] = (data.get("probability_notes") or "").strip() or None
+    elif new_stage and new_stage != opp.get("stage"):
+        # Chuyển giai đoạn mà không truyền win_probability -> cập nhật theo mặc định của stage mới
+        opp["win_probability"] = default_prob
+
     for key, value in data.items():
-        if value is not None and key not in ("id", "owner_id"):
-            opp[key] = value
+        if value is not None and key not in ("id", "owner_id", "win_probability"):
+            if key == "expected_close_date":
+                opp[key] = str(value)
+            else:
+                opp[key] = value
+
+    if data.get("customer_id"):
+        cust = customer_service.get_customer_by_id(data["customer_id"])
+        if cust:
+            opp["customer_name"] = cust.get("name")
+
     return get_raw_opportunity_by_id(opportunity_id)
 
 

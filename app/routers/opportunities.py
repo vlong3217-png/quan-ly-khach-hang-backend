@@ -53,13 +53,14 @@ def list_opportunities(
         None,
         description="Data scope filter: MY, MY_TEAM, TEAM, or ALL. Defaults based on role.",
     ),
+    customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
     current_user: dict = Depends(get_current_user),
 ):
     effective_scope = resolve_scope(current_user, scope)
     search_query = search or q
-    opportunities = get_opportunities_by_scope(current_user, effective_scope, search=search_query)
+    opportunities = get_opportunities_by_scope(current_user, effective_scope, search=search_query, customer_id=customer_id)
     return {
         "scope": effective_scope.value,
         "total": len(opportunities),
@@ -91,7 +92,7 @@ def get_opportunity(
 @router.post("", response_model=OpportunityResponse, status_code=status.HTTP_201_CREATED)
 def create_opportunity(
     payload: OpportunityCreate,
-    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    current_user: dict = Depends(get_current_user),
 ):
     new_opp = create_opportunity_record(payload.model_dump(), current_user)
     return new_opp
@@ -153,7 +154,7 @@ def update_opportunity(
         payload_dict["override_reason"] = transition_result["override_reason"]
         payload_dict["override_by"] = transition_result["override_by"]
 
-    updated = update_opportunity_record(opportunity_id, payload_dict)
+    updated = update_opportunity_record(opportunity_id, payload_dict, current_user=current_user)
     return updated
 
 

@@ -9,6 +9,14 @@ class Opportunity(BaseModel):
     value: float
     stage: str
     customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_id: Optional[int] = None
+    source: Optional[str] = None
+    expected_close_date: Optional[str] = None
+    win_probability: Optional[float] = None
+    probability_notes: Optional[str] = None
+    description: Optional[str] = None
     owner_id: int
     team_id: Optional[int] = None
     arr: Optional[float] = 0.0
