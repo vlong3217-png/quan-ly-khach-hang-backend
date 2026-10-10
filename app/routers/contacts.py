@@ -29,34 +29,44 @@ def _get_customer_and_check_access(customer_id: int, current_user: dict) -> dict
 @router.get("", response_model=List[ContactResponse])
 def get_contacts(
     customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng tối đa mỗi trang"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Lấy danh sách người liên hệ, hỗ trợ lọc theo khách hàng cụ thể.
+    Lấy danh sách người liên hệ, hỗ trợ lọc theo khách hàng cụ thể và phân trang.
     Áp dụng kiểm tra data scope:
     - Nếu truyền customer_id: kiểm tra quyền truy cập của người dùng với khách hàng đó.
     - Nếu không truyền: lọc danh sách chỉ trả về các contacts thuộc các khách hàng được phép xem.
     """
     if customer_id is not None:
         _get_customer_and_check_access(customer_id, current_user)
-        return contact_service.list_contacts(customer_id=customer_id, db=db)
+        raw_contacts = contact_service.list_contacts(customer_id=customer_id, db=db)
+    else:
+        all_contacts = contact_service.list_contacts(db=db)
+        allowed_contacts = []
+        scope_cache = {}
+        for c in all_contacts:
+            cid = c.get("customer_id")
+            if cid not in scope_cache:
+                cust = get_raw_customer_by_id(cid)
+                if cust and check_scope_access(current_user, cust.get("owner_id", 0), cust.get("team_id")):
+                    scope_cache[cid] = True
+                else:
+                    scope_cache[cid] = False
+            if scope_cache.get(cid):
+                allowed_contacts.append(c)
+        raw_contacts = allowed_contacts
 
-    all_contacts = contact_service.list_contacts(db=db)
-    allowed_contacts = []
-    scope_cache = {}
-    for c in all_contacts:
-        cid = c.get("customer_id")
-        if cid not in scope_cache:
-            cust = get_raw_customer_by_id(cid)
-            if cust and check_scope_access(current_user, cust.get("owner_id", 0), cust.get("team_id")):
-                scope_cache[cid] = True
-            else:
-                scope_cache[cid] = False
-        if scope_cache.get(cid):
-            allowed_contacts.append(c)
+    if limit is not None:
+        effective_skip = (page - 1) * limit if page is not None else (skip or 0)
+        return raw_contacts[effective_skip : effective_skip + limit]
+    elif skip is not None:
+        return raw_contacts[skip:]
 
-    return allowed_contacts
+    return raw_contacts
 
 
 @router.get("/{contact_id}", response_model=ContactResponse)

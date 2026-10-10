@@ -44,3 +44,7 @@ class QuoteListResponse(BaseModel):
     scope: str
     total: int
     quotes: List[QuoteResponse]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    skip: Optional[int] = 0
+    total_pages: Optional[int] = 1

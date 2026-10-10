@@ -481,15 +481,17 @@ def list_users_endpoint(
     search: Optional[str] = Query(None, description="Tìm kiếm theo email, username hoặc họ tên"),
     role: Optional[str] = Query(None, description="Lọc theo vai trò (ADMIN, MANAGER, USER)"),
     is_active: Optional[bool] = Query(None, description="Lọc theo trạng thái hoạt động (true/false)"),
-    skip: int = Query(0, ge=0, description="Vị trí bắt đầu"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu"),
     limit: int = Query(20, ge=1, le=100, description="Số lượng tối đa trả về (mặc định 20)"),
     admin_user: dict = Depends(require_admin),
 ):
+    effective_skip = (page - 1) * limit if page is not None else (skip or 0)
     return get_all_users(
         search=search,
         role=role,
         is_active=is_active,
-        skip=skip,
+        skip=effective_skip,
         limit=limit,
     )
 
