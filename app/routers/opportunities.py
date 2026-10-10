@@ -18,6 +18,8 @@ from app.schemas.opportunity import (
     OpportunityProductCreate,
     OpportunityProductResponse,
     OpportunityProductUpdate,
+    OpportunityReassignRequest,
+    OpportunityReassignResponse,
     OpportunityResponse,
     OpportunityUpdate,
 )
@@ -34,6 +36,7 @@ from app.services.opportunity_service import (
     get_opportunities_by_scope,
     get_raw_opportunity_by_id,
     list_opportunity_products,
+    reassign_opportunities,
     update_opportunity_product,
     update_opportunity_record,
 )
@@ -92,6 +95,26 @@ def create_opportunity(
 ):
     new_opp = create_opportunity_record(payload.model_dump(), current_user)
     return new_opp
+
+
+@router.post("/reassign", response_model=OpportunityReassignResponse)
+def reassign_opportunity_endpoint(
+    payload: OpportunityReassignRequest,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"], detail="Chỉ Trưởng nhóm kinh doanh hoặc Quản trị viên mới có quyền phân bổ lại cơ hội")),
+):
+    """
+    S5-08: Phân bổ lại một hoặc nhiều cơ hội cho người khác trong nhóm:
+    - Chuyển quyền sở hữu một hoặc nhiều cơ hội cùng lúc.
+    - Người nhận thấy được cơ hội và toàn bộ lịch sử (Activities).
+    - Mỗi lần chuyển quyền phải ghi nhật ký kèm lý do.
+    - Chỉ người có quyền phù hợp (ADMIN hoặc MANAGER của nhóm) mới được phân bổ lại.
+    """
+    return reassign_opportunities(
+        opportunity_ids=payload.opportunity_ids,
+        new_owner_id=payload.new_owner_id,
+        reason=payload.reason,
+        current_user=current_user,
+    )
 
 
 @router.put("/{opportunity_id}", response_model=OpportunityResponse)

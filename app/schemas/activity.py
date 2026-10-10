@@ -11,6 +11,7 @@ class ActivityCreate(BaseModel):
     lead_id: Optional[int] = None
     opportunity_id: Optional[int] = None
     team_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
 
 
 class ActivityUpdate(BaseModel):
@@ -32,6 +33,8 @@ class ActivityResponse(BaseModel):
     opportunity_id: Optional[int] = None
     owner_id: int
     team_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
+    created_at: Optional[str] = None
 
 
 class ActivityListResponse(BaseModel):

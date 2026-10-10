@@ -5,8 +5,12 @@ Unified Lead Router:
 - S4-04: Duplicate check, Attach to customer, Merge leads with history preservation
 - S4-05: Lead scoring rules & classification
 - S4-06: Lead allocation rules & assignment
+- S4-07: Lead response & SLA deadline tracking
+- S4-08: Lead conversion
+- S4-09: Lead filters & saved filters
 """
 
+from datetime import datetime
 import html
 import json
 from typing import Any, Dict, List, Optional
@@ -16,6 +20,24 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, get_optional_current_user, require_roles
+from app.core.security import ALGORITHM, SECRET_KEY
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+
+security_optional = HTTPBearer(auto_error=False)
+
+
+def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+) -> Optional[dict]:
+    """Lấy thông tin người dùng hiện tại nếu có Authorization header."""
+    if not credentials:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
 from app.schemas.lead import (
     BatchAllocationRunResponse,
     LeadAllocationLogResponse,
@@ -37,7 +59,10 @@ from app.schemas.lead import (
     LeadMergePreviewResponse,
     LeadMergeRequest,
     LeadRecalculateResponse,
+    LeadRejectSchema,
     LeadResponse,
+    LeadSavedFilterCreate,
+    LeadSavedFilterResponse,
     LeadScoringRuleCreate,
     LeadScoringRuleResponse,
     LeadScoringRuleUpdate,
@@ -49,7 +74,43 @@ from app.schemas.lead import (
     WebToLeadSubmitResponse,
 )
 from app.services import lead_service
-from app.services.lead_service import convert_lead
+from app.services.lead_service import (
+    accept_lead,
+    check_sla_violations,
+    create_lead_saved_filter,
+    delete_lead_saved_filter,
+    get_lead_saved_filter_by_id,
+    list_lead_saved_filters,
+    reject_lead,
+    convert_lead,
+    create_allocation_rule,
+    create_crm_lead,
+    create_lead_form,
+    create_scoring_rule,
+    delete_allocation_rule,
+    delete_scoring_rule,
+    get_allocation_rule_by_id,
+    get_lead_by_id,
+    get_lead_form_by_key,
+    get_lead_form_embed_code,
+    get_or_create_scoring_settings,
+    get_scoring_rule_by_id,
+    list_allocation_logs,
+    list_allocation_queue,
+    list_allocation_rules,
+    list_lead_forms,
+    list_leads,
+    list_scoring_rules,
+    manual_assign_lead,
+    process_web_to_lead_submission,
+    recalculate_all_leads_scores,
+    recalculate_single_lead_score,
+    run_batch_lead_allocation,
+    update_allocation_rule,
+    update_crm_lead,
+    update_scoring_rule,
+    update_scoring_settings,
+)
 
 router = APIRouter(
     tags=["Leads"],
@@ -455,30 +516,70 @@ def merge_two_leads(
     summary="Xem danh sách khách hàng tiềm năng (Leads)",
 )
 def list_leads_endpoint(
-    status: Optional[str] = Query(None, description="Lọc theo trạng thái"),
-    source: Optional[str] = Query(None, description="Lọc theo nguồn"),
-    grade: Optional[str] = Query(None, description="Lọc theo phân loại: HOT, WARM, COLD"),
-    campaign_id: Optional[int] = Query(None, description="Lọc theo ID chiến dịch"),
-    min_score: Optional[int] = Query(None, description="Lọc điểm tối thiểu"),
-    search: Optional[str] = Query(None, description="Tìm kiếm theo tên, email, sđt, công ty"),
-    sort_by: Optional[str] = Query(None, description="Sắp xếp: score_desc hoặc mặc định mới nhất"),
-    include_merged: bool = Query(False, description="Bao gồm cả lead đã gộp"),
+    status: Optional[str] = Query(None, description="Lọc theo trạng thái: NEW, IN_PROGRESS, QUALIFIED, DISQUALIFIED"),
+    source: Optional[str] = Query(None, description="Lọc theo nguồn: Website Form, Google Ads, Hội thảo..."),
+    grade: Optional[str] = Query(None, description="Lọc theo phân loại: HOT, WARM, COLD (S4-05)"),
+    campaign_id: Optional[int] = Query(None, description="Lọc theo ID chiến dịch (S4-03)"),
+    min_score: Optional[int] = Query(None, description="Lọc theo điểm tối thiểu (S4-05)"),
+    owner_id: Optional[int] = Query(None, description="Lọc theo người phụ trách (S4-09)"),
+    assigned_to: Optional[int] = Query(None, description="Lọc theo ID người được phân bổ (S4-09)"),
+    is_overdue_sla: Optional[bool] = Query(None, description="Lọc theo lead quá hạn phản hồi SLA (S4-09)"),
+    start_date: Optional[str] = Query(None, description="Khoảng thời gian: từ ngày (ISO format hoặc YYYY-MM-DD) (S4-09)"),
+    end_date: Optional[str] = Query(None, description="Khoảng thời gian: đến ngày (ISO format hoặc YYYY-MM-DD) (S4-09)"),
+    search: Optional[str] = Query(None, description="Tìm kiếm theo họ tên, email, SĐT, công ty"),
+    sort_by: Optional[str] = Query(None, description="Sắp xếp: score_desc, score_asc, created_at_desc, created_at_asc, sla_deadline_asc"),
+    include_merged: bool = Query(False, description="Bao gồm cả lead đã gộp (S4-04)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    AC S4-09:
+    - Danh sách lead với bộ lọc đa năng: trạng thái, nguồn, phân loại Nóng/Ấm/Lạnh, người phụ trách, khoảng thời gian.
+    - Nhận diện nổi bật các lead quá SLA phản hồi (is_overdue_sla).
+    - Áp dụng phạm vi dữ liệu Scope RBAC: Sales mở máy buổi sáng biết ngay hôm nay cần gọi ai.
+    """
+    parsed_start_date: Optional[datetime] = None
+    if start_date:
+        try:
+            # Hỗ trợ cả trường hợp dấu + bị thay thế thành space trong query URL
+            clean_start = start_date.replace(" ", "+")
+            parsed_start_date = datetime.fromisoformat(clean_start)
+        except Exception:
+            try:
+                parsed_start_date = datetime.strptime(start_date[:10], "%Y-%m-%d")
+            except Exception:
+                pass
+
+    parsed_end_date: Optional[datetime] = None
+    if end_date:
+        try:
+            clean_end = end_date.replace(" ", "+")
+            parsed_end_date = datetime.fromisoformat(clean_end)
+        except Exception:
+            try:
+                parsed_end_date = datetime.strptime(end_date[:10], "%Y-%m-%d")
+            except Exception:
+                pass
+
     total, items = lead_service.list_leads(
         status_filter=status,
         source_filter=source,
         grade_filter=grade,
         campaign_id=campaign_id,
         min_score=min_score,
+        owner_id=owner_id,
+        assigned_to=assigned_to,
+        is_overdue_sla=is_overdue_sla,
+        start_date=parsed_start_date,
+        end_date=parsed_end_date,
         search=search,
         sort_by=sort_by,
         include_merged=include_merged,
         skip=skip,
         limit=limit,
+        current_user=current_user,
         db=db,
     )
     serialized = [lead_service.lead_to_dict(it) for it in items]
@@ -728,8 +829,102 @@ def list_allocation_logs_endpoint(
 
 
 # ============================================================================
-# 7. CHI TIẾT LEAD
+# BỘ LỌC LEAD ĐÃ LƯU (LEAD SAVED FILTERS - S4-09)
+# (Đặt trước route /leads/{lead_id} để tránh lỗi parse path param)
 # ============================================================================
+
+@router.get(
+    "/leads/saved-filters",
+    response_model=List[LeadSavedFilterResponse],
+    summary="Xem danh sách bộ lọc lead đã lưu của nhân viên (S4-09)",
+)
+def list_lead_saved_filters_endpoint(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-09: Lấy danh sách các bộ lọc lead đã lưu để nhân viên mở máy buổi sáng là chọn ngay được.
+    """
+    filters = list_lead_saved_filters(user_id=current_user["id"], db=db)
+    result = []
+    for f in filters:
+        try:
+            criteria = json.loads(f.filter_criteria) if isinstance(f.filter_criteria, str) else f.filter_criteria
+        except Exception:
+            criteria = {}
+        result.append(
+            LeadSavedFilterResponse(
+                id=f.id,
+                user_id=f.user_id,
+                name=f.name,
+                filter_criteria=criteria,
+                created_at=f.created_at,
+                updated_at=f.updated_at,
+            )
+        )
+    return result
+
+
+@router.post(
+    "/leads/saved-filters",
+    response_model=LeadSavedFilterResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Lưu và đặt tên bộ lọc lead thường dùng (S4-09)",
+)
+def create_lead_saved_filter_endpoint(
+    payload: LeadSavedFilterCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-09: Cho phép lưu và đặt tên các bộ lọc thường dùng (Ví dụ: 'Hôm nay cần gọi', 'Lead Nóng quá hạn').
+    """
+    saved = create_lead_saved_filter(
+        user_id=current_user["id"],
+        name=payload.name,
+        filter_criteria=payload.filter_criteria,
+        db=db,
+    )
+    try:
+        criteria = json.loads(saved.filter_criteria) if isinstance(saved.filter_criteria, str) else saved.filter_criteria
+    except Exception:
+        criteria = payload.filter_criteria
+
+    return LeadSavedFilterResponse(
+        id=saved.id,
+        user_id=saved.user_id,
+        name=saved.name,
+        filter_criteria=criteria,
+        created_at=saved.created_at,
+        updated_at=saved.updated_at,
+    )
+
+
+@router.delete(
+    "/leads/saved-filters/{filter_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Xóa bộ lọc lead đã lưu (S4-09)",
+)
+def delete_lead_saved_filter_endpoint(
+    filter_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-09: Xóa bộ lọc lead đã lưu khi không còn nhu cầu sử dụng.
+    """
+    success = delete_lead_saved_filter(
+        filter_id=filter_id,
+        user_id=current_user["id"],
+        db=db,
+    )
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy bộ lọc lead đã lưu với ID {filter_id}",
+        )
+    return None
+
 
 @router.get(
     "/leads/{lead_id}",
@@ -790,3 +985,66 @@ def convert_lead_endpoint(
         current_user=current_user,
         db=db,
     )
+
+
+# ============================================================================
+# 6. API TIẾP NHẬN, TỪ CHỐI & KIỂM TRA SLA PHẢN HỒI LEAD (S4-07)
+# ============================================================================
+
+@router.post(
+    "/leads/{id}/accept",
+    response_model=LeadResponse,
+    summary="Tiếp nhận khách hàng tiềm năng (S4-07)",
+)
+def accept_lead_endpoint(
+    id: int,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """
+    Task S4-07: Tiếp nhận lead
+    - Chuyển trạng thái sang IN_PROGRESS.
+    - Gán người phụ trách nếu chưa có.
+    """
+    user_id = current_user.get("id") if current_user else None
+    return accept_lead(lead_id=id, user_id=user_id, db=db)
+
+
+@router.post(
+    "/leads/{id}/reject",
+    response_model=LeadResponse,
+    summary="Từ chối tiếp nhận khách hàng tiềm năng kèm lý do (S4-07)",
+)
+def reject_lead_endpoint(
+    id: int,
+    payload: LeadRejectSchema,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """
+    Task S4-07: Từ chối tiếp nhận lead
+    - Bắt buộc nhập lý do (reason).
+    - Chuyển trạng thái sang UNASSIGNED.
+    - Gán assigned_to = None, owner_id = None.
+    - Lưu lý do từ chối (rejection_reason).
+    """
+    user_id = current_user.get("id") if current_user else None
+    return reject_lead(
+        lead_id=id,
+        reason=payload.reason,
+        user_id=user_id,
+        db=db,
+    )
+
+
+@router.post(
+    "/leads/sla/check",
+    response_model=List[LeadResponse],
+    summary="Quét kiểm tra vi phạm SLA phản hồi lead (S4-07)",
+)
+def check_sla_endpoint(
+    sla_minutes: Optional[int] = Query(None, description="Thời gian SLA tối đa tính theo phút"),
+    db: Session = Depends(get_db),
+):
+    """Kiểm tra và cập nhật các lead vi phạm SLA phản hồi."""
+    return check_sla_violations(sla_minutes=sla_minutes, db=db)

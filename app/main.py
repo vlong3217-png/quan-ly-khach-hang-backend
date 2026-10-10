@@ -80,6 +80,8 @@ app.include_router(auth_router)
 app.include_router(customers_router)
 app.include_router(users_router)
 app.include_router(users_router, prefix="/admin")
+from app.routers.opportunity_alerts import router as opportunity_alerts_router
+app.include_router(opportunity_alerts_router)  # S5-07: phải đứng trước /opportunities/{id}
 app.include_router(opportunities_router)
 app.include_router(activities_router)
 app.include_router(quotes_router)
@@ -111,6 +113,7 @@ app.include_router(win_loss_router)
 
 from app.routers.leads import router as leads_router
 app.include_router(leads_router)
+app.include_router(leads_router, prefix="/api/v1")
 
 from app.routers.campaigns import router as campaigns_router
 app.include_router(campaigns_router)
