@@ -3,6 +3,7 @@ Opportunity service with data scope filtering (MY/MY_TEAM/TEAM/ALL).
 """
 
 import copy
+from datetime import datetime
 from typing import Optional
 from app.core.dependencies import DataScope
 
@@ -146,6 +147,9 @@ def create_opportunity_record(data: dict, current_user: dict) -> dict:
         "arr": 0.0,
         "has_products": False,
         "products": [],
+        "status": "OPEN",
+        "expected_close_date": data.get("expected_close_date"),
+        "created_at": datetime.utcnow().isoformat(),
     }
     FAKE_OPPORTUNITIES.append(new_opp)
     return new_opp
