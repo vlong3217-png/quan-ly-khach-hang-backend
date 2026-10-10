@@ -69,6 +69,13 @@ class OpportunityResponse(BaseModel):
     value: float
     stage: str
     customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_id: Optional[int] = None
+    source: Optional[str] = None
+    win_probability: Optional[float] = None
+    probability_notes: Optional[str] = None
+    description: Optional[str] = None
     campaign_id: Optional[int] = None
     lead_id: Optional[int] = None
     owner_id: int
@@ -81,17 +88,42 @@ class OpportunityResponse(BaseModel):
     override_by: Optional[int] = None
     status: Optional[str] = "OPEN"
     expected_close_date: Optional[Any] = None
-    # S5-07: cờ cảnh báo đình trệ / quá hạn
+    # S5-07 & S5-02: cờ cảnh báo đình trệ / quá hạn trên thẻ Kanban
     is_flagged: Optional[bool] = False
     is_stagnant: Optional[bool] = False
     is_overdue: Optional[bool] = False
     flag_reasons: Optional[List[str]] = []
+    stagnant_warning: Optional[str] = None
     days_inactive: Optional[int] = None
     stagnant_threshold_days: Optional[int] = None
     days_overdue: Optional[int] = None
     flagged_at: Optional[str] = None
 
     model_config = ConfigDict(extra="allow")
+
+
+class OpportunityStageMoveRequest(BaseModel):
+    new_stage: str
+    probability: Optional[float] = None
+    probability_notes: Optional[str] = None
+
+
+class KanbanColumnResponse(BaseModel):
+    stage_id: int
+    stage_code: str
+    stage_name: str
+    order_index: int
+    default_win_probability: float
+    count: int
+    total_value: float
+    opportunities: List[OpportunityResponse]
+
+
+class KanbanBoardResponse(BaseModel):
+    scope: str
+    total_opportunities: int
+    total_pipeline_value: float
+    columns: List[KanbanColumnResponse]
 
 
 class OpportunityListResponse(BaseModel):
