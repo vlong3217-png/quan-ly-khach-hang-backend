@@ -197,8 +197,8 @@ def test_data_ownership_change_automatically_writes_audit_log():
     """AC S2-04: Thay đổi quyền sở hữu dữ liệu khách hàng tự động ghi nhật ký với entity_type='DATA_OWNERSHIP'."""
     admin_headers = get_auth_headers("admin@gmail.com")
 
-    # Chuyển quyền sở hữu khách hàng ID 1 cho user ID 4
-    cust_res = client.put("/customers/1", json={"owner_id": 4}, headers=admin_headers)
+    # Chuyển quyền sở hữu khách hàng ID 1 cho user ID 2 (Manager)
+    cust_res = client.put("/customers/1", json={"owner_id": 2}, headers=admin_headers)
     assert cust_res.status_code == 200
 
     # Kiểm tra log ghi nhận
@@ -208,7 +208,7 @@ def test_data_ownership_change_automatically_writes_audit_log():
     assert latest_log["entity_type"] == "DATA_OWNERSHIP"
     assert latest_log["entity_id"] == "CUST-1"
     assert latest_log["field_name"] == "owner_id"
-    assert latest_log["new_value"] == "4"
+    assert latest_log["new_value"] == "2"
 
 
 def test_audit_log_immutability_no_modification_endpoints():
