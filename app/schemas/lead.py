@@ -295,6 +295,10 @@ class LeadListResponse(BaseModel):
     total: int
     leads: List[LeadResponse] = []
     items: List[LeadResponse] = []
+    page: Optional[int] = 1
+    limit: Optional[int] = 50
+    skip: Optional[int] = 0
+    total_pages: Optional[int] = 1
 
 
 # ============================================================================

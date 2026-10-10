@@ -98,12 +98,20 @@ class OpportunityListResponse(BaseModel):
     scope: str
     total: int
     opportunities: List[OpportunityResponse]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    skip: Optional[int] = 0
+    total_pages: Optional[int] = 1
 
 
 class FlaggedOpportunityListResponse(BaseModel):
     scope: str
     total: int
     opportunities: List[OpportunityResponse]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    skip: Optional[int] = 0
+    total_pages: Optional[int] = 1
 
 
 class OpportunityScanResponse(BaseModel):

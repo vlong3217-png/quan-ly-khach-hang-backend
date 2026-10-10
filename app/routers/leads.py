@@ -529,8 +529,9 @@ def list_leads_endpoint(
     search: Optional[str] = Query(None, description="Tìm kiếm theo họ tên, email, SĐT, công ty"),
     sort_by: Optional[str] = Query(None, description="Sắp xếp: score_desc, score_asc, created_at_desc, created_at_asc, sla_deadline_asc"),
     include_merged: bool = Query(False, description="Bao gồm cả lead đã gộp (S4-04)"),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (offset)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng lead mỗi trang (mặc định 50)"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -540,6 +541,8 @@ def list_leads_endpoint(
     - Nhận diện nổi bật các lead quá SLA phản hồi (is_overdue_sla).
     - Áp dụng phạm vi dữ liệu Scope RBAC: Sales mở máy buổi sáng biết ngay hôm nay cần gọi ai.
     """
+    import math
+
     parsed_start_date: Optional[datetime] = None
     if start_date:
         try:
@@ -563,6 +566,17 @@ def list_leads_endpoint(
             except Exception:
                 pass
 
+    effective_limit = limit if limit is not None else 50
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        effective_skip = 0
+        effective_page = 1
+
     total, items = lead_service.list_leads(
         status_filter=status,
         source_filter=source,
@@ -577,16 +591,22 @@ def list_leads_endpoint(
         search=search,
         sort_by=sort_by,
         include_merged=include_merged,
-        skip=skip,
-        limit=limit,
+        skip=effective_skip,
+        limit=effective_limit,
         current_user=current_user,
         db=db,
     )
     serialized = [lead_service.lead_to_dict(it) for it in items]
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
+
     return {
         "total": total,
         "items": serialized,
         "leads": serialized,
+        "page": effective_page,
+        "limit": effective_limit,
+        "skip": effective_skip,
+        "total_pages": total_pages,
     }
 
 

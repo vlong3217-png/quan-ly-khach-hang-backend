@@ -42,15 +42,40 @@ def list_quotes(
     ),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng báo giá mỗi trang (mặc định 20)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (offset)"),
     current_user: dict = Depends(get_current_user),
 ):
+    import math
+
     effective_scope = resolve_scope(current_user, scope)
     search_query = search or q
-    quotes = get_quotes_by_scope(current_user, effective_scope, search=search_query)
+    all_quotes = get_quotes_by_scope(current_user, effective_scope, search=search_query)
+    total = len(all_quotes)
+
+    effective_limit = limit if limit is not None else 20
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        effective_skip = 0
+        effective_page = 1
+
+    paged_items = all_quotes[effective_skip : effective_skip + effective_limit]
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
+
     return {
         "scope": effective_scope.value,
-        "total": len(quotes),
-        "quotes": quotes,
+        "total": total,
+        "quotes": paged_items,
+        "page": effective_page,
+        "limit": effective_limit,
+        "skip": effective_skip,
+        "total_pages": total_pages,
     }
 
 
