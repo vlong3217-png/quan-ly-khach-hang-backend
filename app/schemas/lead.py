@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, List, Optional
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
+from typing import Annotated, Any, Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, field_validator, model_validator
 
 
 # ============================================================================
@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
 
 class LeadFormCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=255, description="Tên biểu mẫu nhúng (VD: Form Đăng ký tư vấn)")
-    source_name: Optional[str] = Field("Website Form", max_length=100, description="Tên nguồn gắn vào lead (VD: Website Landing Page, Google Ads, Blog)")
+    source_name: Optional[str] = Field("Website Form", max_length=100, description="Tên nguồn gắn vào lead")
     description: Optional[str] = Field(None, description="Mô tả mục đích biểu mẫu")
     target_url: Optional[str] = Field(None, max_length=500, description="URL website dự kiến nhúng")
     rate_limit_per_minute: Optional[int] = Field(5, ge=1, le=100, description="Số lượt gửi tối đa cho phép / IP / phút")
@@ -40,7 +40,7 @@ class LeadFormResponse(BaseModel):
     embed_iframe_code: Optional[str] = None
     embed_html_form: Optional[str] = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LeadFormEmbedCodeResponse(BaseModel):
@@ -63,8 +63,6 @@ class WebToLeadSubmitRequest(BaseModel):
     phone: Optional[str] = Field(None, max_length=50, description="Số điện thoại liên hệ")
     company: Optional[str] = Field(None, max_length=255, description="Tên công ty hoặc doanh nghiệp")
     interest: Optional[str] = Field(None, max_length=2000, description="Nhu cầu quan tâm, thông tin trao đổi")
-    
-    # Honeypot field chống spam bot (người dùng thật để trống, bot điền sẽ bị từ chối)
     hp_website: Optional[str] = Field(None, description="Honeypot field (hidden)")
 
 
@@ -113,30 +111,74 @@ class LeadBase(BaseModel):
 
 
 # ============================================================================
-# QUẢN LÝ DANH SÁCH LEAD (CRM LEADS)
+# QUẢN LÝ LEAD (CRM LEADS - S4-01, S4-02, S4-03, S4-04, S4-05, S4-06, S4-07)
 # ============================================================================
 
 class LeadCreate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
-    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    full_name: Optional[str] = Field(None, max_length=255)
+    name: Optional[str] = Field(None, max_length=255)
     title: Optional[str] = Field(None, max_length=255)
     email: Optional[str] = None
     phone: Optional[str] = Field(None, max_length=50)
     company: Optional[str] = Field(None, max_length=255)
+    company_name: Optional[str] = Field(None, max_length=255)
+    address: Optional[str] = Field(None, max_length=500)
     industry: Optional[str] = Field(None, max_length=100)
     company_size: Optional[str] = Field(None, max_length=100)
     budget: Optional[float] = None
     job_title: Optional[str] = Field(None, max_length=100)
     city: Optional[str] = Field(None, max_length=100)
     interest: Optional[str] = Field(None, max_length=2000)
-    source: Optional[str] = Field("Manual Entry", max_length=100)
-    status: Optional[str] = Field("NEW", max_length=50)
-    assigned_to: Optional[int] = None
-    owner_id: Optional[int] = None
     notes: Optional[str] = None
+    source: Optional[str] = Field(None, max_length=100)
+    status: Optional[str] = Field("NEW", max_length=50)
+    campaign_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    owner_id: Optional[int] = None
+    assigned_to: Optional[int] = None
+    team_id: Optional[int] = None
     rejection_reason: Optional[str] = None
     is_overdue_sla: Optional[bool] = False
     sla_deadline: Optional[datetime] = None
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("Mọi lead nhập vào đều bắt buộc có nguồn")
+        return v.strip() if v is not None else None
+
+    @model_validator(mode="after")
+    def sync_and_validate(self):
+        had_name = "name" in self.__pydantic_fields_set__
+        had_full_name = "full_name" in self.__pydantic_fields_set__
+        had_source = "source" in self.__pydantic_fields_set__
+
+        # Đồng bộ name <-> full_name
+        if not self.full_name and self.name:
+            self.full_name = self.name
+        elif not self.name and self.full_name:
+            self.name = self.full_name
+
+        if not self.full_name or not self.full_name.strip():
+            raise ValueError("Họ và tên lead là bắt buộc")
+
+        # Đồng bộ company <-> company_name
+        if not self.company and self.company_name:
+            self.company = self.company_name
+        elif not self.company_name and self.company:
+            self.company_name = self.company
+
+        # Xử lý quy tắc bắt buộc có nguồn (AC S4-02):
+        if not self.source:
+            if had_name and not had_full_name and not had_source:
+                raise ValueError("Mọi lead nhập vào đều bắt buộc có nguồn")
+            elif had_full_name and not had_source:
+                self.source = "Manual Entry"
+            else:
+                raise ValueError("Mọi lead nhập vào đều bắt buộc có nguồn")
+
+        return self
 
 
 class LeadUpdate(BaseModel):
@@ -146,56 +188,77 @@ class LeadUpdate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     company: Optional[str] = None
+    company_name: Optional[str] = None
+    address: Optional[str] = None
     industry: Optional[str] = None
     company_size: Optional[str] = None
     budget: Optional[float] = None
     job_title: Optional[str] = None
     city: Optional[str] = None
     interest: Optional[str] = None
+    notes: Optional[str] = None
     source: Optional[str] = None
     status: Optional[str] = None
-    assigned_to: Optional[int] = None
+    campaign_id: Optional[int] = None
+    customer_id: Optional[int] = None
     owner_id: Optional[int] = None
-    notes: Optional[str] = None
+    assigned_to: Optional[int] = None
+    team_id: Optional[int] = None
     rejection_reason: Optional[str] = None
     is_overdue_sla: Optional[bool] = None
     sla_deadline: Optional[datetime] = None
+
+    @field_validator("source")
+    @classmethod
+    def validate_source_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("Nguồn lead không được để trống")
+        return v.strip() if v is not None else None
 
 
 class LeadResponse(BaseModel):
     id: int
     name: Optional[str] = None
     full_name: Optional[str] = None
-    title: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     company: Optional[str] = None
+    company_name: Optional[str] = None
+    title: Optional[str] = None
+    job_title: Optional[str] = None
+    address: Optional[str] = None
     interest: Optional[str] = None
     source: Optional[str] = None
     status: Optional[str] = None
     form_key: Optional[str] = None
     ip_address: Optional[str] = None
+    campaign_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    merged_into_id: Optional[int] = None
     owner_id: Optional[int] = None
     assigned_to: Optional[int] = None
+    team_id: Optional[int] = None
+    owner_name: Optional[str] = None
+    campaign_name: Optional[str] = None
+    customer_name: Optional[str] = None
 
     # S4-07 Lead Response & SLA fields
     rejection_reason: Optional[str] = None
     is_overdue_sla: Optional[bool] = False
     sla_deadline: Optional[datetime] = None
     notes: Optional[str] = None
-    
+
     # S4-05 Lead Scoring fields
     score: int = 0
     grade: str = "COLD"
     industry: Optional[str] = None
     company_size: Optional[str] = None
     budget: Optional[float] = None
-    job_title: Optional[str] = None
     city: Optional[str] = None
     score_details: Optional[str] = None
     last_scored_at: Optional[datetime] = None
 
-    # S4-06 Lead Allocation fields
+    # Lead Allocation (S4-06)
     allocation_status: str = "UNASSIGNED"
     allocated_at: Optional[datetime] = None
     allocation_rule_id: Optional[int] = None
@@ -207,38 +270,100 @@ class LeadResponse(BaseModel):
     converted_opportunity_id: Optional[int] = None
     converted_at: Optional[datetime] = None
 
+    # S4-04 Attach to customer
+    created_contact: Optional[Dict[str, Any]] = None
+
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="allow")
+
+    @model_validator(mode="after")
+    def sync_display_fields(self):
+        if not self.name and self.full_name:
+            self.name = self.full_name
+        elif not self.full_name and self.name:
+            self.full_name = self.name
+        if not self.company_name and self.company:
+            self.company_name = self.company
+        elif not self.company and self.company_name:
+            self.company = self.company_name
+        return self
 
 
 class LeadListResponse(BaseModel):
     total: int
-    items: List[LeadResponse]
+    leads: List[LeadResponse] = []
+    items: List[LeadResponse] = []
 
 
 # ============================================================================
-# CẤU HÌNH TIÊU CHÍ CHẤM ĐIỂM LEAD (LEAD SCORING RULES - S4-05)
+# EXCEL IMPORT SCHEMAS (S4-02)
+# ============================================================================
+
+class LeadImportRowData(BaseModel):
+    row_number: int
+    name: Optional[str] = None
+    source: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    company_name: Optional[str] = None
+    title: Optional[str] = None
+    address: Optional[str] = None
+    notes: Optional[str] = None
+    campaign_code: Optional[str] = None
+    campaign_id: Optional[int] = None
+    is_valid: bool = True
+    errors: List[str] = []
+    is_duplicate: bool = False
+    duplicate_reasons: List[str] = []
+    existing_lead_id: Optional[int] = None
+    existing_customer_id: Optional[int] = None
+
+
+class LeadImportPreviewResponse(BaseModel):
+    total_rows: int
+    valid_rows_count: int
+    invalid_rows_count: int
+    duplicate_rows_count: int
+    rows: List[LeadImportRowData]
+
+
+class LeadImportCommitRequest(BaseModel):
+    duplicate_handling: str = Field(default="SKIP", description="SKIP, UPDATE, IMPORT_ANYWAY")
+    rows: List[LeadImportRowData]
+
+
+class LeadImportCommitResponse(BaseModel):
+    total_rows: int
+    inserted_count: int
+    updated_count: int
+    skipped_count: int
+    failed_count: int
+    leads: List[LeadResponse]
+
+
+# ============================================================================
+# LEAD SCORING SCHEMAS (S4-05)
 # ============================================================================
 
 class LeadScoringRuleCreate(BaseModel):
-    name: str = Field(..., min_length=2, max_length=255, description="Tên tiêu chí (VD: Ngành CNTT hoặc Tài chính)")
+    name: str = Field(..., min_length=2, max_length=255)
     description: Optional[str] = None
-    field_name: str = Field(..., max_length=50, description="Trường lead: industry, company_size, source, budget, job_title, phone, email, interest, city")
-    operator: str = Field("EQUALS", max_length=30, description="Toán tử: EQUALS, NOT_EQUALS, CONTAINS, NOT_EMPTY, IS_EMPTY, GREATER_THAN, LESS_THAN, IN")
-    target_value: Optional[str] = Field(None, max_length=255, description="Giá trị so sánh")
-    points: int = Field(10, description="Số điểm cộng/trừ khi khớp")
-    is_active: Optional[bool] = Field(True, description="Trạng thái kích hoạt")
+    field_name: str = Field(..., max_length=50)
+    operator: str = Field("EQUALS", max_length=30)
+    target_value: Optional[str] = Field(None, max_length=255)
+    points: int = Field(..., ge=-100, le=100)
+    is_active: bool = True
 
 
 class LeadScoringRuleUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
     description: Optional[str] = None
-    field_name: Optional[str] = Field(None, max_length=50)
-    operator: Optional[str] = Field(None, max_length=30)
+    field_name: Optional[str] = None
+    operator: Optional[str] = None
     target_value: Optional[str] = None
-    points: Optional[int] = None
+    points: Optional[int] = Field(None, ge=-100, le=100)
     is_active: Optional[bool] = None
 
 
@@ -254,12 +379,7 @@ class LeadScoringRuleResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
-
-
-class LeadScoringSettingUpdate(BaseModel):
-    hot_threshold: int = Field(..., ge=1, description="Ngưỡng điểm Nóng (HOT)")
-    warm_threshold: int = Field(..., ge=0, description="Ngưỡng điểm Ấm (WARM)")
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LeadScoringSettingResponse(BaseModel):
@@ -267,37 +387,39 @@ class LeadScoringSettingResponse(BaseModel):
     warm_threshold: int
     updated_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LeadScoringSettingUpdate(BaseModel):
+    hot_threshold: int = Field(..., ge=1, le=1000)
+    warm_threshold: int = Field(..., ge=0, le=1000)
 
 
 class LeadRecalculateResponse(BaseModel):
-    lead_id: int
-    score: int
-    grade: str
-    matched_rules_count: int
-    score_details: Optional[str] = None
+    success: bool
     message: str
+    total_recalculated: int
 
 
 # ============================================================================
-# CẤU HÌNH QUY TẮC PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
+# LEAD ALLOCATION SCHEMAS (S4-06)
 # ============================================================================
 
 class LeadAllocationRuleCreate(BaseModel):
-    name: str = Field(..., min_length=2, max_length=255, description="Tên quy tắc phân bổ")
+    name: str = Field(..., min_length=2, max_length=255)
     description: Optional[str] = None
-    priority: int = Field(1, ge=1, description="Thứ tự ưu tiên (1 = cao nhất)")
-    criterion_type: str = Field("ANY", description="Tiêu chí khớp: REGION, INDUSTRY, SOURCE, ANY")
-    criterion_value: Optional[str] = Field(None, max_length=255, description="Giá trị tiêu chí (VD: Hà Nội, Hải Phòng hoặc Công nghệ thông tin)")
-    allocation_method: str = Field("ROUND_ROBIN", description="Phương thức: ROUND_ROBIN, SPECIFIC_USER, REGION, INDUSTRY")
-    assignee_user_ids: List[int] = Field(..., min_length=1, description="Danh sách User ID nhân viên nhận lead")
-    is_active: Optional[bool] = Field(True, description="Trạng thái kích hoạt")
+    priority: int = Field(1, ge=1, le=1000)
+    criterion_type: str = Field(..., max_length=50)
+    criterion_value: Optional[str] = Field(None, max_length=255)
+    allocation_method: str = Field("ROUND_ROBIN", max_length=50)
+    assignee_user_ids: List[int] = Field(..., min_length=1)
+    is_active: bool = True
 
 
 class LeadAllocationRuleUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
     description: Optional[str] = None
-    priority: Optional[int] = Field(None, ge=1)
+    priority: Optional[int] = Field(None, ge=1, le=1000)
     criterion_type: Optional[str] = None
     criterion_value: Optional[str] = None
     allocation_method: Optional[str] = None
@@ -319,12 +441,7 @@ class LeadAllocationRuleResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
-
-
-class ManualAssignRequest(BaseModel):
-    owner_id: int = Field(..., description="ID nhân viên phụ trách được gán")
-    note: Optional[str] = Field(None, max_length=500, description="Ghi chú phân bổ của trưởng nhóm")
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LeadAllocationLogResponse(BaseModel):
@@ -338,7 +455,12 @@ class LeadAllocationLogResponse(BaseModel):
     note: Optional[str] = None
     created_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ManualAssignRequest(BaseModel):
+    owner_id: int = Field(..., description="ID nhân viên nhận lead")
+    note: Optional[str] = Field(None, max_length=500, description="Ghi chú phân bổ")
 
 
 class BatchAllocationRunResponse(BaseModel):
@@ -347,6 +469,46 @@ class BatchAllocationRunResponse(BaseModel):
     assigned_count: int
     queued_count: int
     message: str
+
+
+# ============================================================================
+# DUPLICATE & MERGE SCHEMAS (S4-04)
+# ============================================================================
+
+class DuplicateLeadMatch(BaseModel):
+    confidence_score: float
+    match_reasons: List[str]
+    lead: LeadResponse
+
+
+class DuplicateCustomerMatch(BaseModel):
+    confidence_score: float
+    match_reasons: List[str]
+    customer: Dict[str, Any]
+
+
+class LeadDuplicateCheckResponse(BaseModel):
+    has_duplicates: bool
+    matching_leads: List[DuplicateLeadMatch] = []
+    matching_customers: List[DuplicateCustomerMatch] = []
+
+
+class LeadAttachToCustomerRequest(BaseModel):
+    customer_id: int
+    create_contact: bool = True
+
+
+class LeadMergeRequest(BaseModel):
+    primary_lead_id: int
+    secondary_lead_id: int
+    chosen_fields: Optional[Dict[str, Any]] = None
+
+
+class LeadMergePreviewResponse(BaseModel):
+    primary: LeadResponse
+    secondary: LeadResponse
+    comparison_fields: List[Dict[str, Any]]
+    activities_to_transfer: int
 
 
 # ============================================================================
@@ -398,4 +560,3 @@ class LeadSavedFilterResponse(LeadSavedFilterBase):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
-
