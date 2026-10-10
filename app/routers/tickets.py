@@ -12,10 +12,19 @@ router = APIRouter(prefix="/tickets", tags=["tickets"])
 def get_tickets(
     customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
     status: Optional[str] = Query(None, description="Lọc theo trạng thái"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng tối đa mỗi trang"),
     current_user: dict = Depends(get_current_user),
 ):
-    """AC S3-08: Danh sách ticket hỗ trợ khách hàng sau bán."""
-    return ticket_service.list_tickets(customer_id=customer_id, status=status)
+    """AC S3-08: Danh sách ticket hỗ trợ khách hàng sau bán có phân trang."""
+    items = ticket_service.list_tickets(customer_id=customer_id, status=status)
+    if limit is not None:
+        effective_skip = (page - 1) * limit if page is not None else (skip or 0)
+        return items[effective_skip : effective_skip + limit]
+    elif skip is not None:
+        return items[skip:]
+    return items
 
 
 @router.get("/churn-risk-alerts", response_model=List[ChurnRiskAlert])

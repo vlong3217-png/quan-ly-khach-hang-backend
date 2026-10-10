@@ -41,3 +41,7 @@ class ActivityListResponse(BaseModel):
     scope: str
     total: int
     activities: List[ActivityResponse]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    skip: Optional[int] = 0
+    total_pages: Optional[int] = 1

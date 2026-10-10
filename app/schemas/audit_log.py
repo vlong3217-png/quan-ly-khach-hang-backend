@@ -27,3 +27,7 @@ class AuditLogFilterParams(BaseModel):
 class AuditLogListResponse(BaseModel):
     total: int
     items: List[AuditLogEntry]
+    page: Optional[int] = 1
+    limit: Optional[int] = 50
+    skip: Optional[int] = 0
+    total_pages: Optional[int] = 1

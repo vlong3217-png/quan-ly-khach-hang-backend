@@ -89,15 +89,39 @@ def list_opportunities(
     customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng cơ hội mỗi trang (mặc định 20)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (offset)"),
     current_user: dict = Depends(get_current_user),
 ):
+    import math
+
     effective_scope = resolve_scope(current_user, scope)
     search_query = search or q
-    opportunities = get_opportunities_by_scope(current_user, effective_scope, search=search_query, customer_id=customer_id)
+    all_opportunities = get_opportunities_by_scope(current_user, effective_scope, search=search_query, customer_id=customer_id)
+    total = len(all_opportunities)
+
+    effective_limit = limit if limit is not None else 20
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        effective_skip = 0
+        effective_page = 1
+
+    paged_items = all_opportunities[effective_skip : effective_skip + effective_limit]
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
     return {
         "scope": effective_scope.value,
-        "total": len(opportunities),
-        "opportunities": opportunities,
+        "total": total,
+        "opportunities": paged_items,
+        "page": effective_page,
+        "limit": effective_limit,
+        "skip": effective_skip,
+        "total_pages": total_pages,
     }
 
 

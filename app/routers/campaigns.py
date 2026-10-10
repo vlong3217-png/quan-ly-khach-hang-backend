@@ -31,17 +31,42 @@ def get_campaigns_list(
     status: Optional[str] = Query(None, description="Lọc theo trạng thái: PLANNING, ACTIVE, COMPLETED, PAUSED, CANCELLED"),
     channel: Optional[str] = Query(None, description="Lọc theo kênh: EVENT, WORKSHOP, FACEBOOK_ADS, GOOGLE_ADS..."),
     search: Optional[str] = Query(None, description="Tìm theo tên, mã hoặc mô tả"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng chiến dịch mỗi trang (mặc định 20)"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (offset)"),
     current_user: dict = Depends(get_current_user),
 ):
     """AC S4-03: Xem danh sách chiến dịch tiếp thị."""
-    campaigns = campaign_service.list_campaigns(
+    import math
+
+    all_campaigns = campaign_service.list_campaigns(
         status_filter=status,
         channel_filter=channel,
         search=search,
     )
+    total = len(all_campaigns)
+
+    effective_limit = limit if limit is not None else 20
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        effective_skip = 0
+        effective_page = 1
+
+    paged_items = all_campaigns[effective_skip : effective_skip + effective_limit]
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
+
     return {
-        "total": len(campaigns),
-        "campaigns": campaigns,
+        "total": total,
+        "campaigns": paged_items,
+        "page": effective_page,
+        "limit": effective_limit,
+        "skip": effective_skip,
+        "total_pages": total_pages,
     }
 
 
