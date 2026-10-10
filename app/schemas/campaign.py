@@ -85,6 +85,10 @@ class CampaignResponse(CampaignBase):
 class CampaignListResponse(BaseModel):
     total: int
     campaigns: List[CampaignResponse]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    skip: Optional[int] = 0
+    total_pages: Optional[int] = 1
 
 
 class CampaignMetricsResponse(BaseModel):
