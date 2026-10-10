@@ -115,6 +115,9 @@ from app.routers.leads import router as leads_router
 app.include_router(leads_router)
 app.include_router(leads_router, prefix="/api/v1")
 
+from app.routers.campaigns import router as campaigns_router
+app.include_router(campaigns_router)
+
 from app.routers.sales_forecast import router as sales_forecast_router
 app.include_router(sales_forecast_router)
 
