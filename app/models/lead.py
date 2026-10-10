@@ -183,3 +183,19 @@ class LeadAllocationLog(Base):
     status = Column(String(50), nullable=False)  # SUCCESS, QUEUED, MANUAL
     note = Column(String(500), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class LeadSavedFilter(Base):
+    """
+    Bộ lọc khách hàng tiềm năng đã lưu (S4-09).
+    Cho phép nhân viên lưu và đặt tên các bộ lọc thường dùng để truy cập nhanh.
+    """
+    __tablename__ = "lead_saved_filters"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    filter_criteria = Column(Text, nullable=False)  # JSON string lưu tiêu chí lọc
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
