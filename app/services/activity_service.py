@@ -97,6 +97,8 @@ def create_activity_record(data: dict, current_user: dict) -> dict:
         "type": data.get("type", "CALL"),
         "description": data.get("description", ""),
         "customer_id": data.get("customer_id"),
+        "lead_id": data.get("lead_id"),
+        "opportunity_id": data.get("opportunity_id"),
         "owner_id": current_user["id"],
         "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
     }

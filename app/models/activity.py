@@ -9,5 +9,7 @@ class Activity(BaseModel):
     type: str
     description: Optional[str] = ""
     customer_id: Optional[int] = None
+    lead_id: Optional[int] = None
+    opportunity_id: Optional[int] = None
     owner_id: int
     team_id: Optional[int] = None
