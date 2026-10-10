@@ -141,6 +141,8 @@ def create_opportunity_record(data: dict, current_user: dict) -> dict:
         "value": data["value"],
         "stage": data.get("stage", "PROSPECTING"),
         "customer_id": data.get("customer_id"),
+        "campaign_id": data.get("campaign_id"),
+        "lead_id": data.get("lead_id"),
         "owner_id": current_user["id"],
         "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
         "expected_close_date": data.get("expected_close_date"),
