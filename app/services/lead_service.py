@@ -22,9 +22,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.models.customer import Customer as CustomerModel
+from app.models.contact import Contact as ContactModel, ContactCompanyHistory as ContactCompanyHistoryModel
+from app.services.customer_service import FAKE_CUSTOMERS, _enrich_customer_names
+from app.services.contact_service import FAKE_CONTACTS, _model_to_dict as _contact_model_to_dict
+from app.services.opportunity_service import FAKE_OPPORTUNITIES
+from app.services.activity_service import FAKE_ACTIVITIES
 from app.models.lead import (
     Lead,
     LeadSourceConfig,
@@ -36,6 +43,10 @@ from app.models.lead import (
 )
 from app.models.customer import Customer
 from app.schemas.lead import (
+    LeadAllocationRuleCreate,
+    LeadAllocationRuleUpdate,
+    LeadConvertRequest,
+    LeadConvertResponse,
     LeadCreate,
     LeadUpdate,
     LeadFormCreate,
@@ -543,6 +554,7 @@ def recalculate_all_leads_scores(db: Session) -> Dict[str, Any]:
 # ============================================================================
 # PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
 # ============================================================================
+# ============================================================================
 
 def list_allocation_rules(active_only: bool = False, db: Session = None) -> List[LeadAllocationRule]:
     query = db.query(LeadAllocationRule)
@@ -728,6 +740,13 @@ def manual_assign_lead(lead_id: int, owner_id: int, note: Optional[str], current
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+
+    # S4-08: Không phân bổ lại lead đã chuyển đổi
+    if lead.status in ["CONVERTED", "ĐÃ CHUYỂN ĐỔI", "Đã chuyển đổi"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể phân bổ khách hàng tiềm năng đã được chuyển đổi",
         )
 
     assigner_name = current_user.get("full_name") or current_user.get("username") or "Manager"
@@ -987,6 +1006,13 @@ def update_crm_lead(lead_id: int, payload: Any, db: Session, current_user: Optio
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+
+    # S4-08: Chặn chức năng chỉnh sửa đối với Lead đã chuyển đổi
+    if lead.status in ["CONVERTED", "ĐÃ CHUYỂN ĐỔI", "Đã chuyển đổi"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể chỉnh sửa khách hàng tiềm năng đã được chuyển đổi",
         )
 
     data = payload if isinstance(payload, dict) else payload.model_dump(exclude_unset=True)
@@ -1801,3 +1827,233 @@ def reset_fake_leads() -> None:
         db.commit()
     finally:
         db.close()
+
+
+# ============================================================================
+# CHUYỂN ĐỔI LEAD SANG KHÁCH HÀNG & CƠ HỘI (LEAD CONVERSION - S4-08)
+# ============================================================================
+
+def convert_lead(
+    lead_id: int,
+    payload: Optional[LeadConvertRequest],
+    current_user: dict,
+    db: Session,
+) -> Dict[str, Any]:
+    """
+    AC S4-08: Chuyển một lead đủ điều kiện thành khách hàng và cơ hội.
+    - Kế thừa toàn bộ thông tin từ Lead, không bắt người dùng nhập lại các thông tin đã có sẵn.
+    - Chạy trong 1 database transaction:
+      + Tạo Khách hàng (Customer) doanh nghiệp/cá nhân từ dữ liệu của Lead.
+      + Tạo Người liên hệ (Contact) gắn với Customer vừa tạo.
+      + Tạo Cơ hội (Opportunity) gắn với Customer và Contact đó.
+    - Cập nhật trạng thái Lead sang 'CONVERTED'.
+    - Di chuyển/liên kết toàn bộ lịch sử hoạt động (Activity/Interaction) của Lead sang Customer/Opportunity mới.
+    - Validate quyền hạn và dữ liệu chặt chẽ.
+    """
+    lead = get_lead_by_id(lead_id, db=db)
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
+        )
+
+    # 1. Kiểm tra trạng thái đã chuyển đổi
+    if lead.status in ["CONVERTED", "ĐÃ CHUYỂN ĐỔI", "Đã chuyển đổi"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Khách hàng tiềm năng đã được chuyển đổi trước đó",
+        )
+
+    # 2. Kiểm tra nếu Lead bị loại/hủy (DISQUALIFIED)
+    if lead.status == "DISQUALIFIED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể chuyển đổi khách hàng tiềm năng không đạt điều kiện (DISQUALIFIED)",
+        )
+
+    # 3. Validate quyền hạn: USER chỉ được convert lead của mình hoặc lead chưa phân bổ
+    role = current_user.get("role", "USER")
+    user_id = current_user.get("id")
+    if role == "USER" and lead.owner_id is not None and lead.owner_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền chuyển đổi khách hàng tiềm năng của người khác",
+        )
+
+    if payload is None:
+        payload = LeadConvertRequest()
+
+    owner_id = lead.owner_id or user_id or 1
+    team_id = current_user.get("team_id")
+
+    # Xác định tên Customer
+    raw_customer_name = payload.customer_name or lead.company or lead.full_name
+    customer_name = raw_customer_name.strip()
+    tax_code = payload.tax_code.strip() if payload.tax_code else None
+
+    # Kiểm tra trùng lặp MST nếu có
+    if tax_code:
+        existing_in_db = db.query(CustomerModel).filter(CustomerModel.tax_code == tax_code).first()
+        if existing_in_db or any(c.get("tax_code") == tax_code for c in FAKE_CUSTOMERS):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Mã số thuế '{tax_code}' đã tồn tại trong hệ thống",
+            )
+
+    try:
+        # --- 1. TẠO KHÁCH HÀNG (CUSTOMER) ---
+        db_max_cust_id = db.query(func.max(CustomerModel.id)).scalar() or 0
+        fake_max_cust_id = max((c["id"] for c in FAKE_CUSTOMERS), default=0)
+        new_cust_id = max(db_max_cust_id, fake_max_cust_id) + 1
+
+        now_utc = datetime.utcnow()
+        new_customer = CustomerModel(
+            id=new_cust_id,
+            name=customer_name,
+            tax_code=tax_code,
+            industry=lead.industry,
+            company_size=lead.company_size,
+            website=None,
+            address=lead.city,
+            status="CUSTOMER",
+            parent_company_id=None,
+            email=lead.email,
+            phone=lead.phone,
+            company=lead.company or customer_name,
+            owner_id=owner_id,
+            team_id=team_id,
+            created_at=now_utc,
+        )
+        db.add(new_customer)
+        db.flush()
+
+        customer_dict = {
+            "id": new_cust_id,
+            "name": customer_name,
+            "tax_code": tax_code,
+            "industry": lead.industry,
+            "company_size": lead.company_size,
+            "website": None,
+            "address": lead.city,
+            "status": "CUSTOMER",
+            "parent_company_id": None,
+            "email": lead.email,
+            "phone": lead.phone,
+            "company": lead.company or customer_name,
+            "owner_id": owner_id,
+            "team_id": team_id,
+            "created_at": now_utc,
+        }
+        FAKE_CUSTOMERS.append(customer_dict)
+
+        # --- 2. TẠO NGƯỜI LIÊN HỆ (CONTACT) ---
+        raw_contact_name = payload.contact_name or lead.full_name
+        contact_name = raw_contact_name.strip()
+        decision_role = payload.contact_role or "DECISION_MAKER"
+        contact_notes = payload.notes or lead.interest
+
+        now_tz = datetime.now(timezone.utc)
+        new_contact = ContactModel(
+            customer_id=new_cust_id,
+            name=contact_name,
+            phone=lead.phone,
+            email=lead.email,
+            position=lead.job_title,
+            decision_role=decision_role,
+            is_primary=True,
+            notes=contact_notes,
+            created_at=now_tz,
+        )
+        db.add(new_contact)
+        db.flush()
+
+        performer = current_user.get("full_name") or current_user.get("email") or "system"
+        contact_history = ContactCompanyHistoryModel(
+            contact_id=new_contact.id,
+            action="CREATE",
+            from_customer_id=None,
+            to_customer_id=new_cust_id,
+            note="Chuyển đổi từ khách hàng tiềm năng (Lead)",
+            performed_by=performer,
+            timestamp=now_tz,
+        )
+        db.add(contact_history)
+
+        contact_dict = _contact_model_to_dict(new_contact)
+        FAKE_CONTACTS.append(contact_dict)
+
+        # --- 3. TẠO CƠ HỘI (OPPORTUNITY) ---
+        opp_title = (payload.opportunity_name and payload.opportunity_name.strip()) or f"Cơ hội - {customer_name}"
+        opp_value = payload.opportunity_value if payload.opportunity_value is not None else (lead.budget or 0.0)
+        opp_stage = payload.opportunity_stage or "PROSPECTING"
+        new_opp_id = (max(o["id"] for o in FAKE_OPPORTUNITIES) + 1) if FAKE_OPPORTUNITIES else 1
+
+        opp_dict = {
+            "id": new_opp_id,
+            "title": opp_title,
+            "value": float(opp_value),
+            "stage": opp_stage,
+            "customer_id": new_cust_id,
+            "contact_id": new_contact.id,
+            "owner_id": owner_id,
+            "team_id": team_id,
+            "arr": 0.0,
+            "has_products": False,
+            "products": [],
+        }
+        FAKE_OPPORTUNITIES.append(opp_dict)
+
+        # --- 4. DI CHUYỂN / LIÊN KẾT TOÀN BỘ HOẠT ĐỘNG (ACTIVITY/INTERACTION) ---
+        for act in FAKE_ACTIVITIES:
+            if act.get("lead_id") == lead.id:
+                act["customer_id"] = new_cust_id
+                act["opportunity_id"] = new_opp_id
+
+        # Tạo thêm 1 activity ghi nhận log chuyển đổi
+        new_act_id = (max(a["id"] for a in FAKE_ACTIVITIES) + 1) if FAKE_ACTIVITIES else 1
+        conversion_act = {
+            "id": new_act_id,
+            "title": f"Chuyển đổi khách hàng tiềm năng: {lead.full_name}",
+            "type": "NOTE",
+            "description": f"Lead #{lead.id} ({lead.full_name}) đã được chuyển đổi thành Khách hàng '{customer_name}' và Cơ hội '{opp_title}'. Ngân sách: {lead.budget or 0}.",
+            "customer_id": new_cust_id,
+            "opportunity_id": new_opp_id,
+            "lead_id": lead.id,
+            "owner_id": owner_id,
+            "team_id": team_id,
+        }
+        FAKE_ACTIVITIES.append(conversion_act)
+
+        # --- 5. CẬP NHẬT TRẠNG THÁI LEAD SANG 'CONVERTED' ---
+        lead.status = "CONVERTED"
+        lead.converted_customer_id = new_cust_id
+        lead.converted_opportunity_id = new_opp_id
+        lead.converted_at = datetime.utcnow()
+        lead.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(lead)
+        db.refresh(new_customer)
+        db.refresh(new_contact)
+
+        return {
+            "success": True,
+            "message": f"Chuyển đổi khách hàng tiềm năng #{lead.id} thành công",
+            "lead_id": lead.id,
+            "customer_id": new_cust_id,
+            "contact_id": new_contact.id,
+            "opportunity_id": new_opp_id,
+            "customer": _enrich_customer_names(customer_dict),
+            "contact": contact_dict,
+            "opportunity": opp_dict,
+            "converted_at": lead.converted_at,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi khi thực hiện giao dịch chuyển đổi Lead: {str(e)}",
+        )

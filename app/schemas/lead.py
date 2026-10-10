@@ -214,6 +214,11 @@ class LeadResponse(BaseModel):
     allocation_method: Optional[str] = None
     allocation_note: Optional[str] = None
 
+    # S4-08 Lead Conversion fields
+    converted_customer_id: Optional[int] = None
+    converted_opportunity_id: Optional[int] = None
+    converted_at: Optional[datetime] = None
+
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -450,3 +455,32 @@ class LeadMergePreviewResponse(BaseModel):
     secondary: LeadResponse
     comparison_fields: List[Dict[str, Any]]
     activities_to_transfer: int
+
+
+# ============================================================================
+# CHUYỂN ĐỔI LEAD SANG KHÁCH HÀNG & CƠ HỘI (LEAD CONVERSION - S4-08)
+# ============================================================================
+
+class LeadConvertRequest(BaseModel):
+    customer_name: Optional[str] = Field(None, max_length=255, description="Tên khách hàng/công ty (mặc định lấy từ công ty hoặc họ tên lead)")
+    customer_type: Optional[str] = Field("ORGANIZATION", description="Loại khách hàng: ORGANIZATION hoặc INDIVIDUAL")
+    tax_code: Optional[str] = Field(None, max_length=50, description="Mã số thuế (nếu có)")
+    contact_name: Optional[str] = Field(None, max_length=255, description="Tên người liên hệ (mặc định lấy từ họ tên lead)")
+    contact_role: Optional[str] = Field("DECISION_MAKER", description="Vai trò quyết định: DECISION_MAKER, INFLUENCER, USER, BLOCKER")
+    opportunity_name: Optional[str] = Field(None, max_length=255, description="Tên cơ hội bán hàng")
+    opportunity_value: Optional[float] = Field(None, ge=0, description="Giá trị cơ hội bán hàng (mặc định lấy từ budget của lead)")
+    opportunity_stage: Optional[str] = Field("PROSPECTING", description="Giai đoạn cơ hội ban đầu")
+    notes: Optional[str] = Field(None, max_length=1000, description="Ghi chú thêm khi chuyển đổi")
+
+
+class LeadConvertResponse(BaseModel):
+    success: bool = True
+    message: str
+    lead_id: int
+    customer_id: int
+    contact_id: int
+    opportunity_id: int
+    customer: dict
+    contact: dict
+    opportunity: dict
+    converted_at: Optional[datetime] = None

@@ -23,6 +23,8 @@ from app.schemas.lead import (
     LeadAllocationRuleResponse,
     LeadAllocationRuleUpdate,
     LeadAttachToCustomerRequest,
+    LeadConvertRequest,
+    LeadConvertResponse,
     LeadCreate,
     LeadDuplicateCheckResponse,
     LeadFormCreate,
@@ -47,6 +49,7 @@ from app.schemas.lead import (
     WebToLeadSubmitResponse,
 )
 from app.services import lead_service
+from app.services.lead_service import convert_lead
 
 router = APIRouter(
     tags=["Leads"],
@@ -439,58 +442,7 @@ def merge_two_leads(
     )
 
 
-@router.post(
-    "/leads/{lead_id}/convert",
-    summary="Chuyển đổi Lead sang Khách hàng & Cơ hội kế thừa chiến dịch",
-)
-def convert_lead_to_opportunity_or_customer(
-    lead_id: int,
-    opportunity_title: Optional[str] = Query(None),
-    opportunity_value: Optional[float] = Query(0.0),
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    lead = lead_service.get_lead_by_id(lead_id, db=db)
-    if not lead:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy lead ID {lead_id}",
-        )
 
-    from app.services import customer_service, opportunity_service
-
-    cust_id = lead.customer_id
-    if not cust_id:
-        cust_payload = {
-            "name": lead.company or lead.company_name or lead.full_name or lead.name,
-            "email": lead.email,
-            "phone": lead.phone,
-            "address": lead.address,
-            "status": "PROSPECT",
-        }
-        new_cust = customer_service.create_customer(cust_payload, current_user)
-        cust_id = new_cust["id"]
-        lead_service.attach_lead_to_customer(lead_id, cust_id, create_contact=True, current_user=current_user, db=db)
-
-    opp_title = opportunity_title or f"Cơ hội từ Lead: {lead.full_name or lead.name}"
-    opp_data = {
-        "title": opp_title,
-        "value": float(opportunity_value or 0.0),
-        "stage": "PROSPECTING",
-        "customer_id": cust_id,
-        "campaign_id": lead.campaign_id,
-        "lead_id": lead_id,
-        "team_id": current_user.get("team_id"),
-    }
-    created_opp = opportunity_service.create_opportunity_record(opp_data, current_user)
-    lead_service.update_crm_lead(lead_id, {"status": "CONVERTED"}, db=db, current_user=current_user)
-
-    return {
-        "message": "Chuyển đổi Lead thành công",
-        "lead_id": lead_id,
-        "customer_id": cust_id,
-        "opportunity": created_opp,
-    }
 
 
 # ============================================================================
@@ -796,3 +748,45 @@ def get_lead_detail_endpoint(
             detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
         )
     return lead_service.lead_to_dict(lead)
+
+
+# ============================================================================
+# 8. API CHUYỂN ĐỔI LEAD SANG KHÁCH HÀNG & CƠ HỘI (LEAD CONVERSION - S4-08)
+# ============================================================================
+
+@router.post(
+    "/leads/{lead_id}/convert",
+    response_model=LeadConvertResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Chuyển đổi khách hàng tiềm năng thành Khách hàng và Cơ hội (S4-08)",
+)
+@router.post(
+    "/api/v1/leads/{lead_id}/convert",
+    response_model=LeadConvertResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Chuyển đổi khách hàng tiềm năng thành Khách hàng và Cơ hội (S4-08)",
+)
+def convert_lead_endpoint(
+    lead_id: int,
+    payload: Optional[LeadConvertRequest] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AC S4-08:
+    - Chạy trong 1 database transaction:
+      + Tạo Khách hàng (Customer) doanh nghiệp/cá nhân từ dữ liệu của Lead.
+      + Tạo Người liên hệ (Contact) gắn với Customer vừa tạo.
+      + Tạo Cơ hội (Opportunity) gắn với Customer và Contact đó.
+    - Kế thừa toàn bộ thông tin từ Lead, không bắt người dùng nhập lại các thông tin đã có sẵn.
+    - Cập nhật trạng thái Lead sang 'CONVERTED'.
+    - Chặn chức năng chỉnh sửa đối với Lead đã chuyển đổi.
+    - Di chuyển/liên kết toàn bộ lịch sử hoạt động (Activity/Interaction) của Lead sang Customer/Opportunity mới.
+    - Validate quyền hạn và dữ liệu chặt chẽ.
+    """
+    return convert_lead(
+        lead_id=lead_id,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+    )
