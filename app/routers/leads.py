@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_roles
+from app.core.dependencies import get_current_user, get_optional_current_user, require_roles
 from app.schemas.lead import (
     BatchAllocationRunResponse,
     LeadAllocationLogResponse,
@@ -306,14 +306,14 @@ def recalculate_single_score_endpoint(
     summary="Tải file mẫu Excel (.xlsx) để nhập lead hàng loạt (S4-02)",
 )
 def download_lead_template(
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
     content = lead_service.generate_lead_import_template()
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": "attachment; filename=KhachHang_Lead_Template.xlsx"
+            "Content-Disposition": "attachment; filename=Mau_Nhap_Lead_S4_02.xlsx"
         },
     )
 

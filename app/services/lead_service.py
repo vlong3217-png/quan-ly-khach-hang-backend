@@ -1188,11 +1188,21 @@ def lead_to_dict(lead: Lead) -> dict:
 # ============================================================================
 # S4-02: EXCEL TEMPLATE, PREVIEW & BATCH IMPORT
 # ============================================================================
+# 2. XUẤT TỆP MẪU EXCEL & NHẬP LEAD HÀNG LOẠT (S4-02)
+# ============================================================================
 
 def generate_lead_import_template() -> bytes:
+    """
+    AC S4-02: Xuất tệp mẫu Excel chuẩn để người dùng thấy cấu trúc & nội dung cần điền.
+    - Sheet 1: 'Mau_Nhap_Lead' chứa tiêu đề và 2 dòng dữ liệu mẫu ví dụ trực quan.
+    - Sheet 2: 'Huong_Dan' hướng dẫn chi tiết định dạng từng trường, lưu ý các trường bắt buộc.
+    - Tuyệt đối không lấy dữ liệu thực tế trong hệ thống ra, chỉ cung cấp mẫu chuẩn.
+    """
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Lead_Template"
+
+    # --- Sheet 1: Mẫu nhập liệu ---
+    ws1 = wb.active
+    ws1.title = "Mau_Nhap_Lead"
 
     headers = [
         "Họ và tên (*)",
@@ -1210,13 +1220,14 @@ def generate_lead_import_template() -> bytes:
     header_fill = PatternFill(start_color="1E88E5", end_color="1E88E5", fill_type="solid")
     center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    ws.append(headers)
+    ws1.append(headers)
     for col_idx in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_idx)
+        cell = ws1.cell(row=1, column=col_idx)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = center_align
 
+    # 2 dòng dữ liệu mẫu minh họa nội dung cần ghi vào
     sample_rows = [
         [
             "Trần Quốc Bảo",
@@ -1243,12 +1254,53 @@ def generate_lead_import_template() -> bytes:
     ]
 
     for row in sample_rows:
-        ws.append(row)
+        ws1.append(row)
 
-    column_widths = [22, 26, 16, 26, 32, 22, 28, 38, 18]
+    column_widths = [24, 28, 18, 28, 34, 24, 28, 40, 20]
     for i, width in enumerate(column_widths, start=1):
         col_letter = openpyxl.utils.get_column_letter(i)
-        ws.column_dimensions[col_letter].width = width
+        ws1.column_dimensions[col_letter].width = width
+
+    # --- Sheet 2: Hướng dẫn nhập liệu ---
+    ws2 = wb.create_sheet(title="Huong_Dan")
+    ws2.column_dimensions["A"].width = 25
+    ws2.column_dimensions["B"].width = 15
+    ws2.column_dimensions["C"].width = 35
+    ws2.column_dimensions["D"].width = 45
+
+    guide_title = "HƯỚNG DẪN ĐIỀN DỮ LIỆU TỆP MẪU NHẬP LEAD (USER STORY S4-02)"
+    ws2["A1"] = guide_title
+    ws2["A1"].font = Font(name="Calibri", size=13, bold=True, color="1E88E5")
+
+    ws2["A2"] = "Lưu ý: Tệp này là tệp mẫu hướng dẫn. Các dòng trên Sheet 'Mau_Nhap_Lead' là ví dụ minh họa cách ghi nội dung."
+    ws2["A2"].font = Font(name="Calibri", size=10, italic=True)
+
+    guide_headers = ["Tên cột", "Bắt buộc", "Ví dụ nội dung", "Quy tắc kiểm tra hợp lệ"]
+    ws2.append([])  # Row 3 trống
+    ws2.append(guide_headers)  # Row 4
+
+    guide_hdr_fill = PatternFill(start_color="37474F", end_color="37474F", fill_type="solid")
+    guide_hdr_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    for col_idx in range(1, 5):
+        c = ws2.cell(row=4, column=col_idx)
+        c.fill = guide_hdr_fill
+        c.font = guide_hdr_font
+        c.alignment = center_align
+
+    guide_rows = [
+        ["Họ và tên (*)", "Bắt buộc", "Nguyễn Văn A", "Không được để trống. Họ tên của khách hàng tiềm năng."],
+        ["Nguồn lead (*)", "Bắt buộc", "Hội thảo, Sự kiện, Danh thiếp", "Bắt buộc theo AC S4-02: Mọi lead nhập vào đều phải có nguồn."],
+        ["Số điện thoại", "Tùy chọn", "0981234567, 0912345678", "Gồm 10 hoặc 11 chữ số hợp lệ."],
+        ["Email", "Tùy chọn", "bao.tran@techvn.com", "Định dạng email chuẩn (ten@domain.com)."],
+        ["Tên công ty", "Tùy chọn", "Công ty Cổ phần Công nghệ ABC", "Tên doanh nghiệp nơi lead đang làm việc."],
+        ["Chức vụ", "Tùy chọn", "Trưởng phòng CNTT, Giám đốc", "Vị trí / chức danh chuyên môn."],
+        ["Địa chỉ", "Tùy chọn", "Cầu Giấy, Hà Nội", "Địa chỉ liên hệ hoặc khu vực địa lý."],
+        ["Ghi chú", "Tùy chọn", "Trao đổi danh thiếp tại hội thảo", "Nhu cầu tư vấn, mối quan tâm sơ bộ."],
+        ["Mã chiến dịch", "Tùy chọn", "CAMP-2026-EXPO", "Mã chiến dịch marketing liên kết nếu có."],
+    ]
+
+    for g_row in guide_rows:
+        ws2.append(g_row)
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -1264,26 +1316,52 @@ def preview_import_leads_excel(file_bytes: bytes, current_user: dict) -> dict:
             detail=f"Tệp không đúng định dạng Excel (.xlsx): {str(e)}",
         )
 
-    ws = wb.active
+    # Ưu tiên sheet Mau_Nhap_Lead hoặc Lead_Template nếu có
+    ws = None
+    for s_name in ["Mau_Nhap_Lead", "Lead_Template", "Sheet1"]:
+        if s_name in wb.sheetnames:
+            ws = wb[s_name]
+            break
+    if ws is None:
+        ws = wb.active
+
     rows_data: List[dict] = []
     duplicate_count = 0
     invalid_count = 0
 
     from app.services import campaign_service
 
+    # Đọc dòng tiêu đề (Header row 1) để map linh hoạt tên cột
+    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None) or []
+    header_col_map = {}
+    for idx, cell_val in enumerate(header_row):
+        if cell_val is not None:
+            clean_hdr = str(cell_val).strip().lower()
+            header_col_map[clean_hdr] = idx
+
+    def get_cell(row_tuple, default_col_idx, aliases):
+        for alias in aliases:
+            if alias in header_col_map:
+                mapped_idx = header_col_map[alias]
+                if mapped_idx < len(row_tuple) and row_tuple[mapped_idx] is not None:
+                    return str(row_tuple[mapped_idx]).strip()
+        if default_col_idx < len(row_tuple) and row_tuple[default_col_idx] is not None:
+            return str(row_tuple[default_col_idx]).strip()
+        return ""
+
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if not row or all(c is None or str(c).strip() == "" for c in row):
             continue
 
-        raw_name = str(row[0]).strip() if len(row) > 0 and row[0] is not None else ""
-        raw_source = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
-        raw_phone = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ""
-        raw_email = str(row[3]).strip() if len(row) > 3 and row[3] is not None else ""
-        raw_company = str(row[4]).strip() if len(row) > 4 and row[4] is not None else ""
-        raw_title = str(row[5]).strip() if len(row) > 5 and row[5] is not None else ""
-        raw_address = str(row[6]).strip() if len(row) > 6 and row[6] is not None else ""
-        raw_notes = str(row[7]).strip() if len(row) > 7 and row[7] is not None else ""
-        raw_camp_code = str(row[8]).strip() if len(row) > 8 and row[8] is not None else ""
+        raw_name = get_cell(row, 0, ["họ và tên (*)", "họ và tên", "họ tên (*)", "họ tên", "name", "full_name"])
+        raw_source = get_cell(row, 1, ["nguồn lead (*)", "nguồn lead", "nguồn", "source"])
+        raw_phone = get_cell(row, 2, ["số điện thoại", "sđt", "điện thoại", "phone"])
+        raw_email = get_cell(row, 3, ["email", "thư điện tử"])
+        raw_company = get_cell(row, 4, ["tên công ty", "công ty", "company", "tên công ty / doanh nghiệp"])
+        raw_title = get_cell(row, 5, ["chức vụ", "chức danh", "title", "position"])
+        raw_address = get_cell(row, 6, ["địa chỉ", "address", "ngành nghề"])
+        raw_notes = get_cell(row, 7, ["ghi chú", "nhu cầu tư vấn / ghi chú", "nhu cầu tư vấn", "notes"])
+        raw_camp_code = get_cell(row, 8, ["mã chiến dịch", "mã chiến dịch (*)", "chiến dịch", "campaign_code"])
 
         errors: List[str] = []
         is_duplicate = False

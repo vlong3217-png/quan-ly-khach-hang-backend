@@ -112,11 +112,27 @@ def test_download_lead_import_template():
 
     wb = openpyxl.load_workbook(io.BytesIO(resp.content))
     ws = wb.active
-    assert ws.title == "Lead_Template"
+    assert ws.title in ["Mau_Nhap_Lead", "Lead_Template"]
     assert ws.cell(row=1, column=1).value == "Họ và tên (*)"
     assert ws.cell(row=1, column=2).value == "Nguồn lead (*)"
     assert ws.cell(row=1, column=3).value == "Số điện thoại"
     assert ws.cell(row=1, column=4).value == "Email"
+    assert "Huong_Dan" in wb.sheetnames
+
+
+def test_download_lead_import_template_is_sample_not_from_system():
+    """Tải tệp mẫu không cần token (trực tiếp trình duyệt) và xác nhận là mẫu minh họa, không lấy từ DB."""
+    resp = client.get("/leads/import/template")
+    assert resp.status_code == 200
+    assert "application/vnd.openxmlformats" in resp.headers["content-type"]
+    wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+    ws = wb["Mau_Nhap_Lead"]
+    # Xác nhận chỉ có header và đúng 2 dòng ví dụ minh họa
+    assert ws.max_row == 3  # row 1 header + 2 rows sample
+    assert ws.cell(row=2, column=1).value == "Trần Quốc Bảo"
+    assert ws.cell(row=3, column=1).value == "Lê Thu Hà"
+    # Xác nhận có sheet hướng dẫn
+    assert "Huong_Dan" in wb.sheetnames
 
 
 # ==============================================================================
