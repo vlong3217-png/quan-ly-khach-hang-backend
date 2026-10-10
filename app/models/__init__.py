@@ -14,11 +14,10 @@ from app.models.lead import (
     LeadScoringSetting,
     LeadAllocationRule,
     LeadAllocationLog,
+    LeadMergeHistory,
     LeadSavedFilter,
 )
-
 from app.models.campaign import Campaign
-
 __all__ = [
     "Base",
     "User",
@@ -38,10 +37,7 @@ __all__ = [
     "LeadScoringSetting",
     "LeadAllocationRule",
     "LeadAllocationLog",
+    "LeadMergeHistory",
     "LeadSavedFilter",
     "Campaign",
 ]
-
-
-
-
