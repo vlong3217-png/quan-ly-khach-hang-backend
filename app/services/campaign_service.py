@@ -273,6 +273,24 @@ def delete_campaign(campaign_id: int) -> bool:
 # S4-03: Campaign Performance Measurement (Metrics & ROI)
 # ==============================================================================
 
+def get_campaign_leads(campaign_id: int) -> List[dict]:
+    """AC S4-03: Lấy danh sách Lead sinh ra từ chiến dịch."""
+    from app.services.lead_service import lead_to_dict
+    from app.models.lead import Lead
+    try:
+        db: Session = SessionLocal()
+        try:
+            leads = db.query(Lead).filter(
+                Lead.campaign_id == campaign_id,
+                Lead.status != "MERGED",
+            ).all()
+            return [lead_to_dict(l) for l in leads]
+        finally:
+            db.close()
+    except Exception:
+        return []
+
+
 def get_campaign_metrics(campaign_id: int) -> dict:
     """
     AC S4-03: Xem được số lead, số cơ hội và giá trị đã chốt của từng chiến dịch.
@@ -285,14 +303,22 @@ def get_campaign_metrics(campaign_id: int) -> dict:
             detail=f"Không tìm thấy chiến dịch ID {campaign_id}",
         )
 
-    from app.services.lead_service import FAKE_LEADS
-
     # 1. Số lead liên kết với chiến dịch (loại trừ lead MERGED nếu có)
-    leads_in_camp = [
-        l for l in FAKE_LEADS
-        if l.get("campaign_id") == campaign_id and l.get("status") != "MERGED"
-    ]
-    total_leads = len(leads_in_camp)
+    from app.models.lead import Lead
+    db_leads = []
+    try:
+        db: Session = SessionLocal()
+        try:
+            db_leads = db.query(Lead).filter(
+                Lead.campaign_id == campaign_id,
+                Lead.status != "MERGED",
+            ).all()
+        finally:
+            db.close()
+    except Exception:
+        db_leads = []
+
+    total_leads = len(db_leads)
 
     # 2. Số cơ hội liên kết với chiến dịch
     opps_in_camp = [

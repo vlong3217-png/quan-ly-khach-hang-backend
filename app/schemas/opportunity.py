@@ -8,6 +8,8 @@ class OpportunityCreate(BaseModel):
     value: float = 0.0
     stage: str = "PROSPECTING"
     customer_id: Optional[int] = None
+    campaign_id: Optional[int] = None
+    lead_id: Optional[int] = None
     team_id: Optional[int] = None
     expected_close_date: Optional[date] = None
 
@@ -17,6 +19,8 @@ class OpportunityUpdate(BaseModel):
     value: Optional[float] = None
     stage: Optional[str] = None
     customer_id: Optional[int] = None
+    campaign_id: Optional[int] = None
+    lead_id: Optional[int] = None
     override: Optional[bool] = False
     override_reason: Optional[str] = None
 
@@ -65,6 +69,8 @@ class OpportunityResponse(BaseModel):
     value: float
     stage: str
     customer_id: Optional[int] = None
+    campaign_id: Optional[int] = None
+    lead_id: Optional[int] = None
     owner_id: int
     team_id: Optional[int] = None
     arr: Optional[float] = 0.0

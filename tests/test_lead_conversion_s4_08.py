@@ -254,6 +254,19 @@ def test_convert_lead_permission_rbac():
     - USER được chuyển đổi lead của chính mình hoặc lead chưa phân bổ.
     - ADMIN/MANAGER có toàn quyền chuyển đổi.
     """
+    from app.services.auth_service import FAKE_USERS
+    if not any(u["id"] == 4 for u in FAKE_USERS):
+        FAKE_USERS.append({
+            "id": 4,
+            "email": "user2@gmail.com",
+            "username": "user2",
+            "full_name": "User 2 Team A",
+            "role": "USER",
+            "is_active": True,
+            "status": "ACTIVE",
+            "team_id": 1,
+        })
+
     user1_headers = get_auth_headers("user1@gmail.com", role="USER", user_id=3)
     user2_headers = get_auth_headers("user2@gmail.com", role="USER", user_id=4)
     manager_headers = get_auth_headers("manager@gmail.com", role="MANAGER", user_id=2)
