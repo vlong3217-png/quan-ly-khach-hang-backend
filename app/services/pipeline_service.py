@@ -19,6 +19,7 @@ INITIAL_PIPELINE_STAGES = [
         "is_won_stage": False,
         "is_lost_stage": False,
         "description": "Tiếp cận ban đầu và làm rõ nhu cầu sơ bộ",
+        "stagnant_days": 14,
         "created_at": datetime(2026, 1, 1, 8, 0, 0),
     },
     {
@@ -31,6 +32,7 @@ INITIAL_PIPELINE_STAGES = [
         "is_won_stage": False,
         "is_lost_stage": False,
         "description": "Xác định ngân sách và người ra quyết định",
+        "stagnant_days": 10,
         "created_at": datetime(2026, 1, 1, 8, 0, 0),
     },
     {
@@ -43,6 +45,7 @@ INITIAL_PIPELINE_STAGES = [
         "is_won_stage": False,
         "is_lost_stage": False,
         "description": "Gửi báo giá chính thức kèm hồ sơ kỹ thuật",
+        "stagnant_days": 7,
         "created_at": datetime(2026, 1, 1, 8, 0, 0),
     },
     {
@@ -55,6 +58,7 @@ INITIAL_PIPELINE_STAGES = [
         "is_won_stage": False,
         "is_lost_stage": False,
         "description": "Đàm phán điều khoản hợp đồng & phương thức thanh toán",
+        "stagnant_days": 5,
         "created_at": datetime(2026, 1, 1, 8, 0, 0),
     },
     {
@@ -154,6 +158,7 @@ def create_stage(stage_in: PipelineStageCreate) -> dict:
         "is_won_stage": stage_in.is_won_stage,
         "is_lost_stage": stage_in.is_lost_stage,
         "description": stage_in.description.strip() if stage_in.description else None,
+        "stagnant_days": stage_in.stagnant_days,
         "created_at": datetime.utcnow(),
     }
     fake_stages_db.append(new_stage)
@@ -178,6 +183,8 @@ def update_stage(stage_id: int, stage_in: PipelineStageUpdate) -> dict:
         stage["required_exit_fields"] = stage_in.required_exit_fields
     if stage_in.description is not None:
         stage["description"] = stage_in.description.strip()
+    if stage_in.stagnant_days is not None:
+        stage["stagnant_days"] = stage_in.stagnant_days
 
     return stage
 

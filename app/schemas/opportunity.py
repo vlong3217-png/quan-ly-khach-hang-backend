@@ -73,7 +73,17 @@ class OpportunityResponse(BaseModel):
     stage_overridden: Optional[bool] = False
     override_reason: Optional[str] = None
     override_by: Optional[int] = None
-    expected_close_date: Optional[date] = None
+    status: Optional[str] = "OPEN"
+    expected_close_date: Optional[Any] = None
+    # S5-07: cờ cảnh báo đình trệ / quá hạn
+    is_flagged: Optional[bool] = False
+    is_stagnant: Optional[bool] = False
+    is_overdue: Optional[bool] = False
+    flag_reasons: Optional[List[str]] = []
+    days_inactive: Optional[int] = None
+    stagnant_threshold_days: Optional[int] = None
+    days_overdue: Optional[int] = None
+    flagged_at: Optional[str] = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -82,4 +92,18 @@ class OpportunityListResponse(BaseModel):
     scope: str
     total: int
     opportunities: List[OpportunityResponse]
+
+
+class FlaggedOpportunityListResponse(BaseModel):
+    scope: str
+    total: int
+    opportunities: List[OpportunityResponse]
+
+
+class OpportunityScanResponse(BaseModel):
+    scanned: int
+    flagged: int
+    stagnant: int
+    overdue: int
+    scan_date: str
 
