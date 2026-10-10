@@ -1,11 +1,25 @@
+"""
+Unified Lead Router:
+- S4-01: Public Web-to-Lead submission & Form Embed Codes
+- S4-02: Manual lead creation with mandatory source & Excel batch import with template/preview/commit
+- S4-04: Duplicate check, Attach to customer, Merge leads with history preservation
+- S4-05: Lead scoring rules & classification
+- S4-06: Lead allocation rules & assignment
+- S4-07: Lead response & SLA deadline tracking
+- S4-08: Lead conversion
+- S4-09: Lead filters & saved filters
+"""
+
 from datetime import datetime
-from typing import List, Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+import html
+import json
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_roles
+from app.core.dependencies import get_current_user, get_optional_current_user, require_roles
 from app.core.security import ALGORITHM, SECRET_KEY
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -30,13 +44,20 @@ from app.schemas.lead import (
     LeadAllocationRuleCreate,
     LeadAllocationRuleResponse,
     LeadAllocationRuleUpdate,
+    LeadAttachToCustomerRequest,
     LeadConvertRequest,
     LeadConvertResponse,
     LeadCreate,
+    LeadDuplicateCheckResponse,
     LeadFormCreate,
     LeadFormEmbedCodeResponse,
     LeadFormResponse,
+    LeadImportCommitRequest,
+    LeadImportCommitResponse,
+    LeadImportPreviewResponse,
     LeadListResponse,
+    LeadMergePreviewResponse,
+    LeadMergeRequest,
     LeadRecalculateResponse,
     LeadRejectSchema,
     LeadResponse,
@@ -52,6 +73,7 @@ from app.schemas.lead import (
     WebToLeadSubmitRequest,
     WebToLeadSubmitResponse,
 )
+from app.services import lead_service
 from app.services.lead_service import (
     accept_lead,
     check_sla_violations,
@@ -90,15 +112,13 @@ from app.services.lead_service import (
     update_scoring_settings,
 )
 
-
-
 router = APIRouter(
-    tags=["Web-to-Lead & Quản lý Lead (S4-01)"],
+    tags=["Leads"],
 )
 
 
 # ============================================================================
-# 1. API PUBLIC TIẾP NHẬN LEAD TỪ BIỂU MẪU WEBSITE (KHÔNG YÊU CẦU TOKEN)
+# 1. API PUBLIC TIẾP NHẬN LEAD TỪ BIỂU MẪU WEBSITE (S4-01)
 # ============================================================================
 
 @router.post(
@@ -113,19 +133,12 @@ def submit_web_to_lead_endpoint(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-01:
-    - Biểu mẫu gồm: họ tên, email, số điện thoại, công ty, nhu cầu quan tâm.
-    - Có chống spam bot qua honeypot và giới hạn tần suất (Rate limit) theo địa chỉ IP.
-    - Gửi thành công tạo lead ở trạng thái 'Mới' (NEW) và gắn đúng nguồn của biểu mẫu.
-    """
     client_ip = request.client.host if request.client else "127.0.0.1"
-    # Kiểm tra X-Forwarded-For nếu đi qua reverse proxy / load balancer
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         client_ip = forwarded.split(",")[0].strip()
 
-    result = process_web_to_lead_submission(
+    result = lead_service.process_web_to_lead_submission(
         form_key=form_key,
         payload=payload,
         client_ip=client_ip,
@@ -139,160 +152,84 @@ def submit_web_to_lead_endpoint(
     response_class=HTMLResponse,
     summary="Hiển thị trang giao diện biểu mẫu độc lập để nhúng iframe",
 )
-def render_lead_form_iframe_endpoint(
+def render_lead_form_page(
     form_key: str,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    """
-    Phục vụ nhúng biểu mẫu qua thẻ <iframe> trên bất kỳ website nào.
-    """
-    form = get_lead_form_by_key(form_key, db=db)
+    form = lead_service.get_lead_form_by_key(form_key, db=db)
     if not form or not form.is_active:
-        return HTMLResponse(
-            status_code=404,
-            content="<h3>Biểu mẫu không tồn tại hoặc đã ngừng tiếp nhận thông tin.</h3>",
-        )
+        return HTMLResponse("<h3>Biểu mẫu không khả dụng hoặc đã bị tắt.</h3>", status_code=404)
+
+    base_url = str(request.base_url).rstrip("/")
+    endpoint = f"{base_url}/lead-forms/{form.form_key}/submit"
 
     html_content = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
+  <title>{html.escape(form.name)}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{form.name}</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; background: transparent; }}
-    .form-container {{ max-width: 480px; margin: 0 auto; background: #ffffff; padding: 24px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f8fafc; }}
+    .form-card {{ max-width: 480px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }}
+    h3 {{ margin-top: 0; color: #1e293b; }}
     .form-group {{ margin-bottom: 14px; }}
-    label {{ display: block; font-weight: 500; font-size: 14px; margin-bottom: 6px; color: #1e293b; }}
-    input, textarea {{ width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; outline: none; }}
-    input:focus, textarea:focus {{ border-color: #2563eb; ring: 2px solid #93c5fd; }}
-    button {{ width: 100%; padding: 12px; font-size: 15px; font-weight: 600; color: #ffffff; background: #2563eb; border: none; border-radius: 6px; cursor: pointer; transition: background 0.2s; }}
+    label {{ display: block; margin-bottom: 4px; font-weight: 500; font-size: 14px; color: #475569; }}
+    input, textarea {{ width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 14px; }}
+    button {{ width: 100%; padding: 10px; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }}
     button:hover {{ background: #1d4ed8; }}
-    .msg-box {{ display: none; padding: 12px; border-radius: 6px; font-size: 14px; margin-top: 12px; }}
-    .msg-success {{ background: #dcfce7; color: #166534; }}
-    .msg-error {{ background: #fee2e2; color: #991b1b; }}
   </style>
 </head>
 <body>
-  <div class="form-container">
-    <h3 style="margin-top:0;margin-bottom:16px;color:#0f172a;">{form.name}</h3>
-    <form id="leadForm">
-      <div class="form-group">
-        <label>Họ và tên *</label>
-        <input type="text" id="full_name" required placeholder="Nguyễn Văn A" />
-      </div>
-      <div class="form-group">
-        <label>Email *</label>
-        <input type="email" id="email" required placeholder="email@congty.com" />
-      </div>
-      <div class="form-group">
-        <label>Số điện thoại</label>
-        <input type="tel" id="phone" placeholder="0912345678" />
-      </div>
-      <div class="form-group">
-        <label>Công ty</label>
-        <input type="text" id="company" placeholder="Công ty TNHH ABC" />
-      </div>
-      <div class="form-group">
-        <label>Nhu cầu quan tâm</label>
-        <textarea id="interest" rows="3" placeholder="Ghi chú nhu cầu cần tư vấn..."></textarea>
-      </div>
-      <input type="text" id="hp_website" style="display:none;" tabindex="-1" autocomplete="off" />
-      <button type="submit" id="submitBtn">Gửi thông tin</button>
-      <div id="msgBox" class="msg-box"></div>
+  <div class="form-card">
+    <h3>{html.escape(form.name)}</h3>
+    <form action="{endpoint}" method="POST">
+      <div class="form-group"><label>Họ và tên *</label><input type="text" id="full_name" name="full_name" required></div>
+      <div class="form-group"><label>Email *</label><input type="email" id="email" name="email" required></div>
+      <div class="form-group"><label>Số điện thoại</label><input type="tel" id="phone" name="phone"></div>
+      <div class="form-group"><label>Công ty</label><input type="text" id="company" name="company"></div>
+      <div class="form-group"><label>Nhu cầu quan tâm</label><textarea id="interest" name="interest" rows="3"></textarea></div>
+      <input type="text" name="hp_website" style="display:none;" tabindex="-1" autocomplete="off">
+      <button type="submit">Gửi thông tin</button>
     </form>
   </div>
-
-  <script>
-    document.getElementById("leadForm").addEventListener("submit", async function(e) {{
-      e.preventDefault();
-      const btn = document.getElementById("submitBtn");
-      const msgBox = document.getElementById("msgBox");
-      btn.disabled = true;
-      btn.innerText = "Đang gửi...";
-      msgBox.style.display = "none";
-
-      const payload = {{
-        full_name: document.getElementById("full_name").value,
-        email: document.getElementById("email").value,
-        phone: document.getElementById("phone").value || null,
-        company: document.getElementById("company").value || null,
-        interest: document.getElementById("interest").value || null,
-        hp_website: document.getElementById("hp_website").value || null
-      }};
-
-      try {{
-        const res = await fetch("/lead-forms/{form_key}/submit", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify(payload)
-        }});
-        const data = await res.json();
-        if (res.ok) {{
-          msgBox.className = "msg-box msg-success";
-          msgBox.innerText = data.message || "Gửi thông tin thành công!";
-          msgBox.style.display = "block";
-          document.getElementById("leadForm").reset();
-        }} else {{
-          msgBox.className = "msg-box msg-error";
-          msgBox.innerText = data.detail || "Đã xảy ra lỗi, vui lòng thử lại!";
-          msgBox.style.display = "block";
-        }}
-      }} catch (err) {{
-        msgBox.className = "msg-box msg-error";
-        msgBox.innerText = "Không thể kết nối đến máy chủ. Vui lòng thử lại sau.";
-        msgBox.style.display = "block";
-      }} finally {{
-        btn.disabled = false;
-        btn.innerText = "Gửi thông tin";
-      }}
-    }});
-  </script>
 </body>
-</html>
-"""
+</html>"""
     return HTMLResponse(content=html_content)
 
-
-# ============================================================================
-# 2. API QUẢN TRỊ CẤU HÌNH BIỂU MẪU & MÃ NHÚNG (YÊU CẦU ĐĂNG NHẬP)
-# ============================================================================
 
 @router.post(
     "/lead-forms",
     response_model=LeadFormResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Tạo biểu mẫu Web-to-Lead và sinh mã nhúng (Nhân viên Marketing / Admin)",
+    summary="Tạo biểu mẫu Web-to-Lead và sinh mã nhúng (S4-01)",
 )
 def create_lead_form_endpoint(
     payload: LeadFormCreate,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER", "USER"])),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-01: Sinh mã nhúng cho một biểu mẫu, dán được vào website bất kỳ.
-    """
-    result = create_lead_form(payload=payload, user_id=current_user["id"], db=db)
-    return result
+    user_id = current_user.get("id")
+    return lead_service.create_lead_form(payload=payload, user_id=user_id, db=db)
 
 
 @router.get(
     "/lead-forms",
     response_model=List[LeadFormResponse],
-    summary="Xem danh sách biểu mẫu Web-to-Lead đã tạo",
+    summary="Xem danh sách biểu mẫu Web-to-Lead đã tạo (S4-01)",
 )
 def list_lead_forms_endpoint(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return list_lead_forms(db=db)
+    return lead_service.list_lead_forms(db=db)
 
 
 @router.get(
     "/lead-forms/{form_key}/embed-code",
     response_model=LeadFormEmbedCodeResponse,
-    summary="Lấy chi tiết mã nhúng (Script tag, iframe, raw HTML) để dán vào website",
+    summary="Lấy chi tiết mã nhúng (S4-01)",
 )
 def get_lead_form_embed_code_endpoint(
     form_key: str,
@@ -300,19 +237,12 @@ def get_lead_form_embed_code_endpoint(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-01: Sinh mã nhúng cho biểu mẫu dán được vào website bất kỳ.
-    Trả về:
-    - embed_script_tag: Đoạn JavaScript nhúng trực tiếp.
-    - embed_iframe_code: Thẻ <iframe> nhúng độc lập.
-    - embed_html_form: Khung HTML thuần kèm API endpoint.
-    """
     base_url = str(request.base_url).rstrip("/")
-    return get_lead_form_embed_code(form_key=form_key, base_url=base_url, db=db)
+    return lead_service.get_lead_form_embed_code(form_key=form_key, base_url=base_url, db=db)
 
 
 # ============================================================================
-# 3. API QUẢN LÝ VÀ CHẤM ĐIỂM LEAD (LEAD MANAGEMENT & SCORING - S4-05)
+# 2. CẤU HÌNH VÀ TÍNH ĐIỂM LEAD (S4-05)
 # ============================================================================
 
 @router.get(
@@ -324,8 +254,7 @@ def get_scoring_settings_endpoint(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """AC S4-05: Xem ngưỡng điểm Nóng (HOT), Ấm (WARM), Lạnh (COLD)."""
-    return get_or_create_scoring_settings(db=db)
+    return lead_service.get_or_create_scoring_settings(db=db)
 
 
 @router.put(
@@ -338,10 +267,7 @@ def update_scoring_settings_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-05: Giám đốc kinh doanh / Trưởng nhóm cấu hình ngưỡng phân loại Nóng, Ấm, Lạnh.
-    """
-    return update_scoring_settings(
+    return lead_service.update_scoring_settings(
         hot_threshold=payload.hot_threshold,
         warm_threshold=payload.warm_threshold,
         db=db,
@@ -354,12 +280,11 @@ def update_scoring_settings_endpoint(
     summary="Xem danh sách các tiêu chí chấm điểm lead (S4-05)",
 )
 def list_scoring_rules_endpoint(
-    active_only: bool = Query(False, description="Chỉ lấy các tiêu chí đang kích hoạt"),
+    active_only: bool = Query(False, description="Chỉ lấy các quy tắc đang active"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """AC S4-05: Khai báo tiêu chí và số điểm."""
-    return list_scoring_rules(active_only=active_only, db=db)
+    return lead_service.list_scoring_rules(active_only=active_only, db=db)
 
 
 @router.post(
@@ -373,12 +298,7 @@ def create_scoring_rule_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-05: Giám đốc kinh doanh khai báo tiêu chí và số điểm.
-    Hỗ trợ các trường: industry, company_size, source, budget, job_title, phone, email, interest, city.
-    Toán tử: EQUALS, NOT_EQUALS, CONTAINS, NOT_EMPTY, IS_EMPTY, GREATER_THAN, LESS_THAN, IN.
-    """
-    return create_scoring_rule(payload=payload, db=db)
+    return lead_service.create_scoring_rule(payload=payload, db=db)
 
 
 @router.put(
@@ -392,7 +312,7 @@ def update_scoring_rule_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    return update_scoring_rule(rule_id=rule_id, payload=payload, db=db)
+    return lead_service.update_scoring_rule(rule_id=rule_id, payload=payload, db=db)
 
 
 @router.delete(
@@ -405,13 +325,13 @@ def delete_scoring_rule_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    success = delete_scoring_rule(rule_id=rule_id, db=db)
+    success = lead_service.delete_scoring_rule(rule_id=rule_id, db=db)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy tiêu chí chấm điểm với ID {rule_id}",
         )
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -422,8 +342,7 @@ def recalculate_all_scores_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    """AC S4-05: Tự động tính lại điểm cho toàn bộ lead khi quy tắc hoặc ngưỡng thay đổi."""
-    return recalculate_all_leads_scores(db=db)
+    return lead_service.recalculate_all_leads_scores(db=db)
 
 
 @router.post(
@@ -436,19 +355,171 @@ def recalculate_single_score_endpoint(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """AC S4-05: Tự động tính lại điểm khi thông tin lead thay đổi."""
-    return recalculate_single_lead_score(lead_id=lead_id, db=db)
+    return lead_service.recalculate_single_lead_score(lead_id=lead_id, db=db)
 
+
+# ============================================================================
+# 3. EXCEL IMPORT & TEMPLATE (S4-02)
+# ============================================================================
+
+@router.get(
+    "/leads/import/template",
+    summary="Tải file mẫu Excel (.xlsx) để nhập lead hàng loạt (S4-02)",
+)
+def download_lead_template(
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+):
+    content = lead_service.generate_lead_import_template()
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=Mau_Nhap_Lead_S4_02.xlsx"
+        },
+    )
+
+
+@router.post(
+    "/leads/import/preview",
+    response_model=LeadImportPreviewResponse,
+    summary="Upload Excel, xem trước và báo lỗi chi tiết theo từng dòng (S4-02)",
+)
+async def preview_lead_excel(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    file_bytes = await file.read()
+    return lead_service.preview_import_leads_excel(file_bytes, current_user)
+
+
+@router.post(
+    "/leads/import/commit",
+    response_model=LeadImportCommitResponse,
+    summary="Xác nhận lưu các dòng hợp lệ vào hệ thống (S4-02)",
+)
+def commit_lead_excel_import(
+    payload: LeadImportCommitRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    return lead_service.commit_import_leads(
+        rows=[r.model_dump() for r in payload.rows],
+        duplicate_handling=payload.duplicate_handling.upper(),
+        current_user=current_user,
+    )
+
+
+# ============================================================================
+# 4. DUPLICATE CHECK, ATTACH TO CUSTOMER, MERGE (S4-04)
+# ============================================================================
+
+@router.post(
+    "/leads/check-duplicates",
+    response_model=LeadDuplicateCheckResponse,
+    summary="Kiểm tra trùng lặp email, SĐT, công ty trước khi tạo/nhập (S4-04)",
+)
+def check_lead_duplicates_api(
+    email: Optional[str] = Query(None),
+    phone: Optional[str] = Query(None),
+    company_name: Optional[str] = Query(None),
+    exclude_lead_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return lead_service.check_lead_duplicates(
+        email=email,
+        phone=phone,
+        company_name=company_name,
+        exclude_lead_id=exclude_lead_id,
+        db=db,
+    )
+
+
+@router.get(
+    "/leads/{lead_id}/duplicates",
+    response_model=LeadDuplicateCheckResponse,
+    summary="Phát hiện trùng lặp cho lead hiện tại và gợi ý khách hàng (S4-04)",
+)
+def get_duplicates_for_lead(
+    lead_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return lead_service.find_lead_duplicates(lead_id, db=db)
+
+
+@router.post(
+    "/leads/{lead_id}/attach-to-customer",
+    response_model=LeadResponse,
+    summary="Gợi ý & gắn lead vào khách hàng đã có trong hệ thống (S4-04)",
+)
+def attach_lead_to_customer_api(
+    lead_id: int,
+    payload: LeadAttachToCustomerRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return lead_service.attach_lead_to_customer(
+        lead_id=lead_id,
+        customer_id=payload.customer_id,
+        create_contact=payload.create_contact,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.post(
+    "/leads/merge-preview",
+    response_model=LeadMergePreviewResponse,
+    summary="Xem trước so sánh và hoạt động trước khi gộp 2 lead (S4-04)",
+)
+def preview_lead_merge(
+    payload: LeadMergeRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return lead_service.preview_merge_leads(
+        primary_id=payload.primary_lead_id,
+        secondary_id=payload.secondary_lead_id,
+        db=db,
+    )
+
+
+@router.post(
+    "/leads/merge",
+    response_model=LeadResponse,
+    summary="Gộp 2 lead giữ nguyên lịch sử hoạt động và lưu snapshot (S4-04)",
+)
+def merge_two_leads(
+    payload: LeadMergeRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return lead_service.merge_leads(
+        primary_id=payload.primary_lead_id,
+        secondary_id=payload.secondary_lead_id,
+        chosen_fields=payload.chosen_fields,
+        current_user=current_user,
+        db=db,
+    )
+
+
+
+
+
+# ============================================================================
+# 5. QUẢN LÝ DANH SÁCH LEAD (CRM LEADS - S4-02)
+# ============================================================================
 
 @router.get(
     "/leads",
     response_model=LeadListResponse,
-    summary="Xem danh sách khách hàng tiềm năng (Leads) trong hệ thống",
+    summary="Xem danh sách khách hàng tiềm năng (Leads)",
 )
 def list_leads_endpoint(
     status: Optional[str] = Query(None, description="Lọc theo trạng thái: NEW, IN_PROGRESS, QUALIFIED, DISQUALIFIED"),
     source: Optional[str] = Query(None, description="Lọc theo nguồn: Website Form, Google Ads, Hội thảo..."),
     grade: Optional[str] = Query(None, description="Lọc theo phân loại: HOT, WARM, COLD (S4-05)"),
+    campaign_id: Optional[int] = Query(None, description="Lọc theo ID chiến dịch (S4-03)"),
     min_score: Optional[int] = Query(None, description="Lọc theo điểm tối thiểu (S4-05)"),
     owner_id: Optional[int] = Query(None, description="Lọc theo người phụ trách (S4-09)"),
     assigned_to: Optional[int] = Query(None, description="Lọc theo ID người được phân bổ (S4-09)"),
@@ -457,8 +528,9 @@ def list_leads_endpoint(
     end_date: Optional[str] = Query(None, description="Khoảng thời gian: đến ngày (ISO format hoặc YYYY-MM-DD) (S4-09)"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo họ tên, email, SĐT, công ty"),
     sort_by: Optional[str] = Query(None, description="Sắp xếp: score_desc, score_asc, created_at_desc, created_at_asc, sla_deadline_asc"),
+    include_merged: bool = Query(False, description="Bao gồm cả lead đã gộp (S4-04)"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -491,10 +563,11 @@ def list_leads_endpoint(
             except Exception:
                 pass
 
-    total, items = list_leads(
+    total, items = lead_service.list_leads(
         status_filter=status,
         source_filter=source,
         grade_filter=grade,
+        campaign_id=campaign_id,
         min_score=min_score,
         owner_id=owner_id,
         assigned_to=assigned_to,
@@ -503,14 +576,17 @@ def list_leads_endpoint(
         end_date=parsed_end_date,
         search=search,
         sort_by=sort_by,
+        include_merged=include_merged,
         skip=skip,
         limit=limit,
         current_user=current_user,
         db=db,
     )
+    serialized = [lead_service.lead_to_dict(it) for it in items]
     return {
         "total": total,
-        "items": items,
+        "items": serialized,
+        "leads": serialized,
     }
 
 
@@ -518,21 +594,21 @@ def list_leads_endpoint(
     "/leads",
     response_model=LeadResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Tạo mới khách hàng tiềm năng nội bộ từ CRM (S4-05)",
+    summary="Tạo mới lead (Bắt buộc có nguồn - AC S4-02)",
 )
 def create_crm_lead_endpoint(
     payload: LeadCreate,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Tạo lead nội bộ và tự động tính điểm theo tiêu chí (S4-05)."""
-    return create_crm_lead(payload=payload, current_user=current_user, db=db)
+    new_lead = lead_service.create_crm_lead(payload=payload, current_user=current_user, db=db)
+    return lead_service.lead_to_dict(new_lead)
 
 
 @router.put(
     "/leads/{lead_id}",
     response_model=LeadResponse,
-    summary="Cập nhật thông tin khách hàng tiềm năng (S4-05)",
+    summary="Cập nhật thông tin khách hàng tiềm năng",
 )
 def update_crm_lead_endpoint(
     lead_id: int,
@@ -540,16 +616,30 @@ def update_crm_lead_endpoint(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-05: Tự động tính lại điểm khi thông tin lead thay đổi.
-    """
-    return update_crm_lead(lead_id=lead_id, payload=payload, db=db)
+    updated = lead_service.update_crm_lead(lead_id=lead_id, payload=payload, db=db, current_user=current_user)
+    return lead_service.lead_to_dict(updated)
 
 
+@router.delete(
+    "/leads/{lead_id}",
+    summary="Xóa khách hàng tiềm năng",
+)
+def delete_lead_endpoint(
+    lead_id: int,
+    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    success = lead_service.delete_lead(lead_id, db=db)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy lead ID {lead_id} để xóa",
+        )
+    return {"message": f"Đã xóa thành công lead ID {lead_id}"}
 
 
 # ============================================================================
-# 4. API CẤU HÌNH VÀ PHÂN BỔ LEAD TỰ ĐỘNG (LEAD ALLOCATION - S4-06)
+# 6. PHÂN BỔ LEAD TỰ ĐỘNG (S4-06)
 # ============================================================================
 
 @router.get(
@@ -558,37 +648,32 @@ def update_crm_lead_endpoint(
     summary="Xem danh sách quy tắc phân bổ lead tự động (S4-06)",
 )
 def list_allocation_rules_endpoint(
-    active_only: bool = Query(False, description="Chỉ lấy các quy tắc đang kích hoạt"),
+    active_only: bool = Query(False),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-06: Danh sách quy tắc phân bổ sắp xếp theo thứ tự ưu tiên (priority).
-    """
-    rules = list_allocation_rules(active_only=active_only, db=db)
-    result = []
+    rules = lead_service.list_allocation_rules(active_only=active_only, db=db)
+    results = []
     for r in rules:
         try:
-            assignee_ids = json.loads(r.assignee_user_ids)
+            u_ids = json.loads(r.assignee_user_ids)
         except Exception:
-            assignee_ids = []
-        result.append(
-            LeadAllocationRuleResponse(
-                id=r.id,
-                name=r.name,
-                description=r.description,
-                priority=r.priority,
-                criterion_type=r.criterion_type,
-                criterion_value=r.criterion_value,
-                allocation_method=r.allocation_method,
-                assignee_user_ids=assignee_ids,
-                last_assigned_index=r.last_assigned_index,
-                is_active=r.is_active,
-                created_at=r.created_at,
-                updated_at=r.updated_at,
-            )
-        )
-    return result
+            u_ids = []
+        results.append({
+            "id": r.id,
+            "name": r.name,
+            "description": r.description,
+            "priority": r.priority,
+            "criterion_type": r.criterion_type,
+            "criterion_value": r.criterion_value,
+            "allocation_method": r.allocation_method,
+            "assignee_user_ids": u_ids,
+            "last_assigned_index": r.last_assigned_index,
+            "is_active": r.is_active,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at,
+        })
+    return results
 
 
 @router.post(
@@ -602,27 +687,25 @@ def create_allocation_rule_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-06: Giám đốc kinh doanh cấu hình quy tắc phân bổ lead tự động:
-    - Tiêu chí: theo khu vực (REGION), ngành nghề (INDUSTRY), nguồn (SOURCE) hoặc tất cả (ANY).
-    - Phương thức: xoay vòng (ROUND_ROBIN), nhân viên cố định (SPECIFIC_USER), theo khu vực (REGION), ngành nghề (INDUSTRY).
-    - Có thứ tự ưu tiên (priority).
-    """
-    r = create_allocation_rule(payload=payload, db=db)
-    return LeadAllocationRuleResponse(
-        id=r.id,
-        name=r.name,
-        description=r.description,
-        priority=r.priority,
-        criterion_type=r.criterion_type,
-        criterion_value=r.criterion_value,
-        allocation_method=r.allocation_method,
-        assignee_user_ids=payload.assignee_user_ids,
-        last_assigned_index=r.last_assigned_index,
-        is_active=r.is_active,
-        created_at=r.created_at,
-        updated_at=r.updated_at,
-    )
+    rule = lead_service.create_allocation_rule(payload=payload, db=db)
+    try:
+        u_ids = json.loads(rule.assignee_user_ids)
+    except Exception:
+        u_ids = []
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "description": rule.description,
+        "priority": rule.priority,
+        "criterion_type": rule.criterion_type,
+        "criterion_value": rule.criterion_value,
+        "allocation_method": rule.allocation_method,
+        "assignee_user_ids": u_ids,
+        "last_assigned_index": rule.last_assigned_index,
+        "is_active": rule.is_active,
+        "created_at": rule.created_at,
+        "updated_at": rule.updated_at,
+    }
 
 
 @router.put(
@@ -636,25 +719,25 @@ def update_allocation_rule_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    r = update_allocation_rule(rule_id=rule_id, payload=payload, db=db)
+    rule = lead_service.update_allocation_rule(rule_id=rule_id, payload=payload, db=db)
     try:
-        assignee_ids = json.loads(r.assignee_user_ids)
+        u_ids = json.loads(rule.assignee_user_ids)
     except Exception:
-        assignee_ids = []
-    return LeadAllocationRuleResponse(
-        id=r.id,
-        name=r.name,
-        description=r.description,
-        priority=r.priority,
-        criterion_type=r.criterion_type,
-        criterion_value=r.criterion_value,
-        allocation_method=r.allocation_method,
-        assignee_user_ids=assignee_ids,
-        last_assigned_index=r.last_assigned_index,
-        is_active=r.is_active,
-        created_at=r.created_at,
-        updated_at=r.updated_at,
-    )
+        u_ids = []
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "description": rule.description,
+        "priority": rule.priority,
+        "criterion_type": rule.criterion_type,
+        "criterion_value": rule.criterion_value,
+        "allocation_method": rule.allocation_method,
+        "assignee_user_ids": u_ids,
+        "last_assigned_index": rule.last_assigned_index,
+        "is_active": rule.is_active,
+        "created_at": rule.created_at,
+        "updated_at": rule.updated_at,
+    }
 
 
 @router.delete(
@@ -667,13 +750,13 @@ def delete_allocation_rule_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    success = delete_allocation_rule(rule_id=rule_id, db=db)
+    success = lead_service.delete_allocation_rule(rule_id=rule_id, db=db)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy quy tắc phân bổ với ID {rule_id}",
         )
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
@@ -687,13 +770,12 @@ def get_allocation_queue_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-06: Lead không khớp quy tắc vào hàng chờ để trưởng nhóm phân tay.
-    """
-    total, items = list_allocation_queue(skip=skip, limit=limit, db=db)
+    total, items = lead_service.list_allocation_queue(skip=skip, limit=limit, db=db)
+    serialized = [lead_service.lead_to_dict(it) for it in items]
     return {
         "total": total,
-        "items": items,
+        "items": serialized,
+        "leads": serialized,
     }
 
 
@@ -708,16 +790,14 @@ def manual_assign_lead_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-06: Trưởng nhóm phân bổ lead thủ công kèm ghi chú và người phụ trách.
-    """
-    return manual_assign_lead(
+    lead = lead_service.manual_assign_lead(
         lead_id=lead_id,
         owner_id=payload.owner_id,
         note=payload.note,
         current_user=current_user,
         db=db,
     )
+    return lead_service.lead_to_dict(lead)
 
 
 @router.post(
@@ -726,16 +806,10 @@ def manual_assign_lead_endpoint(
     summary="Chạy nền quy trình phân bổ tự động cho hàng chờ (S4-06)",
 )
 def run_background_allocation_endpoint(
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
     db: Session = Depends(get_db),
 ):
-    """
-    AC S4-06: Phân bổ chạy nền và hoàn tất trong vòng 5 phút.
-    Kích hoạt quét toàn bộ hàng chờ để khớp quy tắc phân bổ tự động.
-    """
-    result = run_batch_lead_allocation(db=db)
-    return result
+    return lead_service.run_batch_lead_allocation(db=db)
 
 
 @router.get(
@@ -744,13 +818,13 @@ def run_background_allocation_endpoint(
     summary="Xem lịch sử / nhật ký phân bổ lead (S4-06)",
 )
 def list_allocation_logs_endpoint(
-    lead_id: Optional[int] = Query(None, description="Lọc theo lead ID"),
+    lead_id: Optional[int] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    total, items = list_allocation_logs(lead_id=lead_id, skip=skip, limit=limit, db=db)
+    total, items = lead_service.list_allocation_logs(lead_id=lead_id, skip=skip, limit=limit, db=db)
     return items
 
 
@@ -852,7 +926,6 @@ def delete_lead_saved_filter_endpoint(
     return None
 
 
-
 @router.get(
     "/leads/{lead_id}",
     response_model=LeadResponse,
@@ -863,17 +936,17 @@ def get_lead_detail_endpoint(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    lead = get_lead_by_id(lead_id, db=db)
+    lead = lead_service.get_lead_by_id(lead_id, db=db)
     if not lead:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy khách hàng tiềm năng với ID {lead_id}",
         )
-    return lead
+    return lead_service.lead_to_dict(lead)
 
 
 # ============================================================================
-# 5. API CHUYỂN ĐỔI LEAD SANG KHÁCH HÀNG & CƠ HỘI (LEAD CONVERSION - S4-08)
+# 8. API CHUYỂN ĐỔI LEAD SANG KHÁCH HÀNG & CƠ HỘI (LEAD CONVERSION - S4-08)
 # ============================================================================
 
 @router.post(
