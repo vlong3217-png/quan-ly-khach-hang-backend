@@ -13,6 +13,8 @@ from app.core.dependencies import (
     resolve_scope,
 )
 from app.schemas.opportunity import (
+    OpportunityCloseLostRequest,
+    OpportunityCloseWonRequest,
     OpportunityCreate,
     OpportunityListResponse,
     OpportunityProductCreate,
@@ -20,6 +22,7 @@ from app.schemas.opportunity import (
     OpportunityProductUpdate,
     OpportunityReassignRequest,
     OpportunityReassignResponse,
+    OpportunityReopenRequest,
     OpportunityResponse,
     OpportunityUpdate,
 )
@@ -30,13 +33,17 @@ from app.schemas.pipeline import (
 from app.services import pipeline_service
 from app.services.opportunity_service import (
     add_product_to_opportunity,
+    close_opportunity_lost,
+    close_opportunity_won,
     create_opportunity_record,
     delete_opportunity_product,
     delete_opportunity_record,
     get_opportunities_by_scope,
     get_raw_opportunity_by_id,
+    get_user_won_quota_achievement,
     list_opportunity_products,
     reassign_opportunities,
+    reopen_opportunity,
     update_opportunity_product,
     update_opportunity_record,
 )
@@ -136,6 +143,13 @@ def update_opportunity(
             detail="Không có quyền chỉnh sửa dữ liệu cơ hội này",
         )
 
+    # AC S5-05: Cơ hội đã đóng không sửa được, chỉ Trưởng nhóm trở lên mở lại được kèm lý do
+    if opp.get("stage") in ("CLOSED_WON", "CLOSED_LOST") or opp.get("status") in ("CLOSED_WON", "CLOSED_LOST"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cơ hội đã đóng không thể chỉnh sửa. Chỉ Trưởng nhóm trở lên mới có thể mở lại cơ hội kèm theo lý do.",
+        )
+
     payload_dict = payload.model_dump(exclude_unset=True)
 
     # AC S5-04: Kiểm tra điều kiện bắt buộc khi cơ hội rời một giai đoạn
@@ -155,6 +169,124 @@ def update_opportunity(
 
     updated = update_opportunity_record(opportunity_id, payload_dict)
     return updated
+
+
+# ============================================================================
+# ENDPOINTS S5-05: ĐÓNG THẮNG / ĐÓNG THUA / MỞ LẠI CƠ HỘI
+# ============================================================================
+
+@router.post("/{opportunity_id}/close-won", response_model=OpportunityResponse)
+def close_opportunity_won_endpoint(
+    opportunity_id: int,
+    payload: OpportunityCloseWonRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S5-05: Đóng Thắng (Closed Won)
+    - Nhân viên kinh doanh phụ trách cơ hội (hoặc Quản lý) đóng thương vụ thành công.
+    - Bắt buộc nhập giá trị chốt thực tế (actual_revenue > 0) và ngày ký (contract_signed_date).
+    - Tính vào chỉ tiêu của người sở hữu.
+    """
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền thao tác trên cơ hội này",
+        )
+
+    return close_opportunity_won(
+        opportunity_id=opportunity_id,
+        actual_revenue=payload.actual_revenue,
+        contract_signed_date=payload.contract_signed_date,
+        note=payload.note,
+        current_user=current_user,
+    )
+
+
+@router.post("/{opportunity_id}/close-lost", response_model=OpportunityResponse)
+def close_opportunity_lost_endpoint(
+    opportunity_id: int,
+    payload: OpportunityCloseLostRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S5-05: Đóng Thua (Closed Lost)
+    - Bắt buộc chọn lý do thua (loss_reason).
+    - Đối thủ thắng thầu nếu có (competitor).
+    """
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+
+    if not check_scope_access(current_user, opp["owner_id"], opp.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền thao tác trên cơ hội này",
+        )
+
+    return close_opportunity_lost(
+        opportunity_id=opportunity_id,
+        loss_reason=payload.loss_reason,
+        competitor=payload.competitor,
+        note=payload.note,
+        current_user=current_user,
+    )
+
+
+@router.post("/{opportunity_id}/reopen", response_model=OpportunityResponse)
+def reopen_opportunity_endpoint(
+    opportunity_id: int,
+    payload: OpportunityReopenRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S5-05: Mở lại cơ hội đã đóng
+    - Chỉ Trưởng nhóm trở lên (MANAGER, ADMIN) mới được mở lại kèm lý do.
+    - Nhân viên thường (USER) bị từ chối (403 Forbidden).
+    """
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+
+    return reopen_opportunity(
+        opportunity_id=opportunity_id,
+        reason=payload.reason,
+        target_stage=payload.target_stage,
+        current_user=current_user,
+    )
+
+
+@router.get("/users/{user_id}/quota-achievement")
+def get_user_quota_achievement_endpoint(
+    user_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S5-05: Cơ hội thắng được tính vào chỉ tiêu của người sở hữu.
+    """
+    # Chỉ xem được chỉ tiêu của chính mình hoặc manager/admin
+    current_role = current_user.get("role", "USER")
+    current_uid = current_user.get("id")
+    if current_role == "USER" and current_uid != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn chỉ có thể xem tiến độ chỉ tiêu của chính mình",
+        )
+
+    return get_user_won_quota_achievement(user_id=user_id)
+
 
 
 @router.post("/{opportunity_id}/transition-stage", response_model=OpportunityStageTransitionResponse)
