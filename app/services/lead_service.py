@@ -1601,7 +1601,8 @@ def attach_lead_to_customer(
                 "is_primary": False,
                 "notes": f"Được chuyển đổi từ Lead #{lead_id} (Nguồn: {lead.source})",
             }
-            created_contact = contact_service.create_contact(contact_payload, current_user or {"full_name": "Admin"})
+            user_str = (current_user.get("full_name") or current_user.get("email")) if current_user else "Admin"
+            created_contact = contact_service.create_contact(contact_payload, current_user_username=user_str, db=db)
 
         db.commit()
         db.refresh(lead)
@@ -1641,6 +1642,12 @@ def preview_merge_leads(primary_id: int, secondary_id: int, db: Optional[Session
             )
 
         acts_count = len([a for a in FAKE_ACTIVITIES if a.get("lead_id") == secondary_id])
+        try:
+            from app.models.activity import Activity as ActivityModel
+            db_acts = db.query(ActivityModel).filter(ActivityModel.lead_id == secondary_id).count()
+            acts_count = max(acts_count, db_acts)
+        except Exception:
+            pass
 
         comparison_fields = [
             {"field": "name", "label": "Họ và tên", "primary": primary.full_name or primary.name, "secondary": secondary.full_name or secondary.name},
@@ -1748,6 +1755,12 @@ def merge_leads(
         for a in FAKE_ACTIVITIES:
             if a.get("lead_id") == secondary_id:
                 a["lead_id"] = primary_id
+
+        try:
+            from app.models.activity import Activity as ActivityModel
+            db.query(ActivityModel).filter(ActivityModel.lead_id == secondary_id).update({"lead_id": primary_id})
+        except Exception:
+            pass
 
         # 4. Đánh dấu secondary là MERGED
         secondary.status = "MERGED"
@@ -1995,6 +2008,8 @@ def convert_lead(
             "stage": opp_stage,
             "customer_id": new_cust_id,
             "contact_id": new_contact.id,
+            "campaign_id": lead.campaign_id,
+            "lead_id": lead.id,
             "owner_id": owner_id,
             "team_id": team_id,
             "arr": 0.0,

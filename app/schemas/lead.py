@@ -219,10 +219,13 @@ class LeadResponse(BaseModel):
     converted_opportunity_id: Optional[int] = None
     converted_at: Optional[datetime] = None
 
+    # S4-04 Attach to customer
+    created_contact: Optional[Dict[str, Any]] = None
+
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     @model_validator(mode="after")
     def sync_display_fields(self):

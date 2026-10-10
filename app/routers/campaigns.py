@@ -5,7 +5,7 @@ Campaign API Router for S4-03:
 - Overall summary report
 """
 
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.dependencies import get_current_user
@@ -17,6 +17,7 @@ from app.schemas.campaign import (
     CampaignSummaryReportResponse,
     CampaignUpdate,
 )
+from app.schemas.lead import LeadResponse
 from app.services import campaign_service
 
 router = APIRouter(
@@ -117,3 +118,20 @@ def get_single_campaign_metrics(
     Đo lường chính xác hiệu quả doanh thu và ROI so với ngân sách bỏ ra.
     """
     return campaign_service.get_campaign_metrics(campaign_id)
+
+
+@router.get("/{campaign_id}/leads", response_model=List[LeadResponse])
+def get_campaign_leads_endpoint(
+    campaign_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    AC S4-03: Xem danh sách lead sinh ra từ chiến dịch.
+    """
+    camp = campaign_service.get_campaign_by_id(campaign_id)
+    if not camp:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy chiến dịch ID {campaign_id}",
+        )
+    return campaign_service.get_campaign_leads(campaign_id)
