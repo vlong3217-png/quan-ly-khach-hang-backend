@@ -18,8 +18,9 @@ from jose import JWTError, jwt
 from app.core.security import SECRET_KEY, ALGORITHM
 from app.services.auth_service import get_user_by_id, get_user_by_identifier, is_token_revoked
 
-# HTTP Bearer token scheme ??? returns 401 automatically if no token
+# HTTP Bearer token scheme — returns 401 automatically if no token
 security_scheme = HTTPBearer()
+optional_security_scheme = HTTPBearer(auto_error=False)
 
 
 class DataScope(str, Enum):
@@ -114,6 +115,40 @@ def get_current_user(
         )
 
     return user
+
+
+def get_optional_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security_scheme),
+) -> Optional[dict]:
+    """
+    Extract and validate current user if token is provided, returns None if anonymous.
+    Useful for template downloads or endpoints that work for both authenticated and guest users.
+    """
+    if not credentials:
+        return None
+    token = credentials.credentials
+    if is_token_revoked(token):
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("id")
+        if user_id is None:
+            sub = payload.get("sub")
+            if sub:
+                found_user = get_user_by_identifier(sub)
+                if found_user:
+                    user_id = found_user["id"]
+        if user_id is None:
+            return None
+        user = get_user_by_id(user_id)
+        if not user or not user.get("is_active", False):
+            return None
+        token_version = payload.get("token_version")
+        if token_version is not None and user.get("token_version", 1) != token_version:
+            return None
+        return user
+    except Exception:
+        return None
 
 
 def require_roles(
