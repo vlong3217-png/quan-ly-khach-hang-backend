@@ -107,3 +107,20 @@ class OpportunityScanResponse(BaseModel):
     overdue: int
     scan_date: str
 
+
+class OpportunityReassignRequest(BaseModel):
+    opportunity_ids: List[int]
+    new_owner_id: int
+    reason: str
+
+
+class OpportunityReassignResponse(BaseModel):
+    success: bool
+    reassigned_count: int
+    reassigned_opportunity_ids: List[int]
+    new_owner_id: int
+    new_owner_name: str
+    reason: str
+    message: str
+
+
