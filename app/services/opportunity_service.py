@@ -379,3 +379,133 @@ def delete_opportunity_product(opportunity_id: int, item_id: int) -> bool:
         return True
     return False
 
+
+def reassign_opportunities(
+    opportunity_ids: list[int],
+    new_owner_id: int,
+    reason: str,
+    current_user: dict,
+) -> dict:
+    """
+    S5-08: Phân bổ lại một hoặc nhiều cơ hội bán hàng cho nhân viên khác trong nhóm.
+    - Validate danh sách cơ hội (không rỗng, tồn tại).
+    - Validate người nhận mới (tồn tại trong hệ thống, đang hoạt động).
+    - Validate lý do chuyển quyền (bắt buộc nhập lý do, không được để trống).
+    - Validate quyền thực hiện (ADMIN, hoặc MANAGER phụ trách cơ hội đó).
+    - Cập nhật owner_id và team_id của người nhận mới cho các cơ hội.
+    - Cập nhật quyền sở hữu và gán người nhận mới vào các hoạt động (Activities) liên quan.
+    - Ghi nhật ký hệ thống (Audit Log) cho từng cơ hội được chuyển quyền kèm lý do.
+    """
+    from fastapi import HTTPException, status
+    from app.services.auth_service import get_user_by_id
+    from app.services.audit_log_service import log_change
+    from app.services.activity_service import FAKE_ACTIVITIES
+
+    clean_reason = reason.strip() if reason else ""
+    if not clean_reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lý do phân bổ lại cơ hội không được để trống",
+        )
+
+    if not opportunity_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Danh sách cơ hội cần phân bổ lại không được để trống",
+        )
+
+    # Validate người nhận mới
+    target_user = get_user_by_id(new_owner_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy người dùng nhận chuyển quyền với ID {new_owner_id}",
+        )
+
+    if not target_user.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể phân bổ cơ hội cho người dùng đã bị vô hiệu hóa",
+        )
+
+    # Tìm danh sách cơ hội
+    matched_opps = []
+    missing_ids = []
+    for oid in opportunity_ids:
+        found = False
+        for opp in FAKE_OPPORTUNITIES:
+            if opp["id"] == oid:
+                matched_opps.append(opp)
+                found = True
+                break
+        if not found:
+            missing_ids.append(oid)
+
+    if missing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy các cơ hội với ID: {missing_ids}",
+        )
+
+    current_role = current_user.get("role", "USER")
+    current_uid = current_user.get("id")
+    current_team = current_user.get("team_id")
+
+    # Kiểm tra quyền: ADMIN hoặc MANAGER
+    # Nếu là MANAGER: chỉ được phân bổ các cơ hội thuộc team của mình hoặc do mình sở hữu
+    for opp in matched_opps:
+        if current_role == "ADMIN":
+            continue
+        elif current_role == "MANAGER":
+            opp_team = opp.get("team_id")
+            opp_owner = opp.get("owner_id")
+            if opp_owner != current_uid and (opp_team is None or opp_team != current_team):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Bạn không có quyền phân bổ lại cơ hội '{opp.get('title')}' (ID {opp['id']}) ngoài nhóm quản lý",
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ Trưởng nhóm kinh doanh hoặc Quản trị viên mới có quyền phân bổ lại cơ hội",
+            )
+
+    # Thực hiện chuyển quyền sở hữu
+    reassigned_ids = []
+    for opp in matched_opps:
+        old_owner_id = opp["owner_id"]
+        opp["owner_id"] = new_owner_id
+        if target_user.get("team_id") is not None:
+            opp["team_id"] = target_user["team_id"]
+        reassigned_ids.append(opp["id"])
+
+        # Chuyển quyền / cập nhật các activity liên quan để người nhận thấy toàn bộ lịch sử
+        for act in FAKE_ACTIVITIES:
+            if act.get("opportunity_id") == opp["id"]:
+                if target_user.get("team_id") is not None:
+                    act["team_id"] = target_user["team_id"]
+
+        # Ghi nhật ký Audit Log
+        log_change(
+            user_id=current_uid,
+            user_name=current_user.get("full_name") or current_user.get("username") or "Manager",
+            entity_type="DATA_OWNERSHIP",
+            entity_id=str(opp["id"]),
+            action="REASSIGN_OPPORTUNITY",
+            field_name="owner_id",
+            old_value=f"Owner ID {old_owner_id}",
+            new_value=f"Owner ID {new_owner_id} ({target_user.get('full_name')}) - Lý do: {clean_reason}",
+        )
+
+    target_name = target_user.get("full_name") or target_user.get("username") or str(new_owner_id)
+    return {
+        "success": True,
+        "reassigned_count": len(reassigned_ids),
+        "reassigned_opportunity_ids": reassigned_ids,
+        "new_owner_id": new_owner_id,
+        "new_owner_name": target_name,
+        "reason": clean_reason,
+        "message": f"Đã phân bổ lại thành công {len(reassigned_ids)} cơ hội cho {target_name}",
+    }
+
+
