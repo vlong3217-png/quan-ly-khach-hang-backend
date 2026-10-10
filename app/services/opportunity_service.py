@@ -111,12 +111,31 @@ def _enrich_opportunity_record(opp: dict) -> dict:
         except Exception:
             opp_copy["win_probability"] = 10.0
 
-    # 3. Tích hợp cảnh báo đình trệ S5-07 nếu có
-    try:
-        from app.services import opportunity_stagnant_service
-        opp_copy = opportunity_stagnant_service.enrich_opportunity_stagnation(opp_copy)
-    except Exception:
-        pass
+    # 3. Tích hợp cảnh báo đình trệ S5-07 & S5-02
+    is_stagnant = bool(opp.get("is_stagnant"))
+    is_overdue = bool(opp.get("is_overdue"))
+    is_flagged = bool(opp.get("is_flagged"))
+    days_inactive = opp.get("days_inactive")
+    days_overdue = opp.get("days_overdue")
+    threshold = opp.get("stagnant_threshold_days") or 14
+
+    opp_copy["is_stagnant"] = is_stagnant
+    opp_copy["is_overdue"] = is_overdue
+    opp_copy["is_flagged"] = is_flagged
+    opp_copy["flag_reasons"] = opp.get("flag_reasons", [])
+    opp_copy["days_inactive"] = days_inactive
+    opp_copy["days_overdue"] = days_overdue
+    opp_copy["stagnant_threshold_days"] = threshold
+    opp_copy["flagged_at"] = opp.get("flagged_at")
+
+    if is_stagnant:
+        days_str = f" trong {days_inactive} ngày" if days_inactive is not None else ""
+        opp_copy["stagnant_warning"] = f"Cảnh báo đình trệ: không có hoạt động{days_str} (ngưỡng {threshold} ngày)"
+    elif is_overdue:
+        days_str = f" {days_overdue} ngày" if days_overdue is not None else ""
+        opp_copy["stagnant_warning"] = f"Cảnh báo quá hạn: trễ ngày dự kiến chốt{days_str}"
+    else:
+        opp_copy["stagnant_warning"] = None
 
     return opp_copy
 
@@ -159,6 +178,139 @@ def get_opportunities_by_scope(
         ]
 
     return results
+
+
+def get_kanban_board_data(
+    current_user: dict,
+    scope: DataScope,
+    owner_id: Optional[int] = None,
+    team_id: Optional[int] = None,
+    expected_close_date_from = None,
+    expected_close_date_to = None,
+    search: Optional[str] = None,
+) -> dict:
+    """
+    AC S5-02: Bảng pipeline dạng Kanban:
+    - Mỗi cột là một giai đoạn, hiển thị số cơ hội và tổng giá trị của cột.
+    - Thẻ cơ hội hiển thị tên khách, giá trị, ngày dự kiến chốt và cảnh báo nếu đình trệ.
+    - Lọc theo người sở hữu, nhóm, khoảng ngày chốt; nhân viên mặc định chỉ thấy cơ hội của mình.
+    """
+    from app.services import pipeline_service
+    from datetime import datetime, date
+
+    stages = pipeline_service.get_all_stages()
+    opps = get_opportunities_by_scope(current_user, scope, search=search)
+
+    # 1. Lọc theo người sở hữu (owner_id)
+    if owner_id is not None:
+        opps = [o for o in opps if o.get("owner_id") == owner_id]
+
+    # 2. Lọc theo nhóm (team_id)
+    if team_id is not None:
+        opps = [o for o in opps if o.get("team_id") == team_id]
+
+    # 3. Lọc theo khoảng ngày dự kiến chốt
+    from_date_obj = None
+    to_date_obj = None
+    if expected_close_date_from:
+        if isinstance(expected_close_date_from, str):
+            try:
+                from_date_obj = datetime.strptime(expected_close_date_from[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
+        elif isinstance(expected_close_date_from, date):
+            from_date_obj = expected_close_date_from
+
+    if expected_close_date_to:
+        if isinstance(expected_close_date_to, str):
+            try:
+                to_date_obj = datetime.strptime(expected_close_date_to[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
+        elif isinstance(expected_close_date_to, date):
+            to_date_obj = expected_close_date_to
+
+    filtered_opps = []
+    for o in opps:
+        close_date_str = o.get("expected_close_date")
+        close_date_obj = None
+        if close_date_str:
+            try:
+                close_date_obj = datetime.strptime(str(close_date_str)[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
+
+        if from_date_obj and (not close_date_obj or close_date_obj < from_date_obj):
+            continue
+        if to_date_obj and (not close_date_obj or close_date_obj > to_date_obj):
+            continue
+        filtered_opps.append(o)
+
+    # 4. Gom nhóm cơ hội vào từng cột giai đoạn
+    columns = []
+    for stg in stages:
+        stg_code = stg["code"]
+        stg_id = stg["id"]
+        col_opps = [o for o in filtered_opps if o.get("stage") == stg_code or o.get("stage") == str(stg_id)]
+        col_val = round(sum(o.get("value", 0.0) for o in col_opps), 2)
+        columns.append({
+            "stage_id": stg_id,
+            "stage_code": stg_code,
+            "stage_name": stg["name"],
+            "order_index": stg.get("order_index", 0),
+            "default_win_probability": float(stg.get("win_probability", 0.0)),
+            "count": len(col_opps),
+            "total_value": col_val,
+            "opportunities": col_opps,
+        })
+
+    total_count = sum(c["count"] for c in columns)
+    total_val = round(sum(c["total_value"] for c in columns), 2)
+
+    return {
+        "scope": scope.value if hasattr(scope, "value") else str(scope),
+        "total_opportunities": total_count,
+        "total_pipeline_value": total_val,
+        "columns": columns,
+    }
+
+
+def move_opportunity_kanban_stage(
+    opportunity_id: int,
+    new_stage_identifier: str,
+    current_user: dict,
+    probability: Optional[float] = None,
+    probability_notes: Optional[str] = None,
+) -> dict:
+    """
+    AC S5-02: Kéo thả để chuyển giai đoạn cơ hội bán hàng.
+    """
+    from app.services import pipeline_service
+    from fastapi import HTTPException, status
+
+    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+    if not opp:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+
+    target_stage = pipeline_service.find_stage(new_stage_identifier)
+    if not target_stage:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy giai đoạn '{new_stage_identifier}'",
+        )
+
+    opp["stage"] = target_stage["code"]
+
+    if probability is not None:
+        opp["win_probability"] = float(probability)
+        opp["probability_notes"] = probability_notes
+    else:
+        opp["win_probability"] = float(target_stage.get("win_probability", 10.0))
+
+    return get_raw_opportunity_by_id(opportunity_id)
 
 
 def create_opportunity_record(data: dict, current_user: dict) -> dict:
