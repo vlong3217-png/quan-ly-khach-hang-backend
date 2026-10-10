@@ -511,3 +511,292 @@ def reassign_opportunities(
     }
 
 
+# ============================================================================
+# NGHIỆP VỤ S5-05: ĐÓNG THẮNG, ĐÓNG THUA & MỞ LẠI CƠ HỘI
+# ============================================================================
+
+def close_opportunity_won(
+    opportunity_id: int,
+    actual_revenue: float,
+    contract_signed_date: str,
+    note: Optional[str],
+    current_user: dict,
+) -> dict:
+    """
+    AC S5-05: Đóng Thắng (Closed Won)
+    - Bắt buộc nhập giá trị chốt thực tế (> 0) và ngày ký hợp đồng (YYYY-MM-DD).
+    - Cơ hội đã đóng không được sửa/đóng lại nếu chưa mở.
+    - Cập nhật stage = 'CLOSED_WON', status = 'CLOSED_WON', actual_revenue, contract_signed_date.
+    - Ghi nhận Audit Log.
+    - Doanh số thực tế được cộng/tính vào chỉ tiêu của người sở hữu cơ hội.
+    """
+    from fastapi import HTTPException, status
+    from app.services.audit_log_service import log_change
+
+    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+    if not opp:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy cơ hội bán hàng với ID {opportunity_id}",
+        )
+
+    # Kiểm tra trạng thái đã đóng
+    if opp.get("stage") in ("CLOSED_WON", "CLOSED_LOST") or opp.get("status") in ("CLOSED_WON", "CLOSED_LOST"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cơ hội này đã được đóng trước đó. Cần liên hệ Trưởng nhóm trở lên để mở lại nếu muốn thay đổi.",
+        )
+
+    # Validate giá trị thực tế
+    if actual_revenue is None or float(actual_revenue) <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đóng Thắng bắt buộc nhập giá trị chốt thực tế (actual_revenue > 0)",
+        )
+
+    # Validate ngày ký hợp đồng
+    if not contract_signed_date or not str(contract_signed_date).strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đóng Thắng bắt buộc nhập ngày ký hợp đồng (contract_signed_date)",
+        )
+    date_str = str(contract_signed_date).strip()
+    try:
+        # Kiểm tra định dạng ngày
+        datetime.fromisoformat(date_str)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ngày ký hợp đồng không đúng định dạng chuẩn (YYYY-MM-DD)",
+        )
+
+    now_iso = datetime.utcnow().isoformat()
+    old_stage = opp.get("stage")
+    old_value = opp.get("value")
+
+    opp["stage"] = "CLOSED_WON"
+    opp["status"] = "CLOSED_WON"
+    opp["actual_revenue"] = float(actual_revenue)
+    opp["value"] = float(actual_revenue)  # Đồng bộ giá trị cơ hội thành giá trị thực tế
+    opp["contract_signed_date"] = date_str
+    opp["closed_date"] = date_str
+    opp["closed_at"] = now_iso
+    opp["closed_by"] = current_user.get("id")
+    if note:
+        opp["close_note"] = note.strip()
+
+    # Xóa cờ cảnh báo nếu có (S5-07)
+    opp["is_flagged"] = False
+    opp["is_stagnant"] = False
+    opp["is_overdue"] = False
+
+    # Ghi Audit Log
+    user_name = current_user.get("full_name") or current_user.get("username") or f"User {current_user.get('id')}"
+    log_change(
+        user_id=current_user.get("id"),
+        user_name=user_name,
+        entity_type="DATA_OWNERSHIP",
+        entity_id=str(opportunity_id),
+        action="CLOSE_OPPORTUNITY_WON",
+        field_name="stage",
+        old_value=f"Stage: {old_stage}, Value: {old_value}",
+        new_value=f"CLOSED_WON: Doanh thu thực tế {actual_revenue:,.0f} đ, Ngày ký {date_str}",
+    )
+
+    return get_raw_opportunity_by_id(opportunity_id)
+
+
+def close_opportunity_lost(
+    opportunity_id: int,
+    loss_reason: str,
+    competitor: Optional[str],
+    note: Optional[str],
+    current_user: dict,
+) -> dict:
+    """
+    AC S5-05: Đóng Thua (Closed Lost)
+    - Bắt buộc chọn lý do thua (loss_reason).
+    - Đối thủ thắng thầu nếu có (competitor).
+    - Cập nhật stage = 'CLOSED_LOST', status = 'CLOSED_LOST'.
+    - Ghi nhận Audit Log.
+    """
+    from fastapi import HTTPException, status
+    from app.services.audit_log_service import log_change
+
+    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+    if not opp:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy cơ hội bán hàng với ID {opportunity_id}",
+        )
+
+    # Kiểm tra trạng thái đã đóng
+    if opp.get("stage") in ("CLOSED_WON", "CLOSED_LOST") or opp.get("status") in ("CLOSED_WON", "CLOSED_LOST"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cơ hội này đã được đóng trước đó. Cần liên hệ Trưởng nhóm trở lên để mở lại nếu muốn thay đổi.",
+        )
+
+    # Validate lý do thua
+    clean_loss_reason = (loss_reason or "").strip()
+    if not clean_loss_reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đóng Thua bắt buộc nhập hoặc chọn lý do thất bại (loss_reason)",
+        )
+
+    now_iso = datetime.utcnow().isoformat()
+    old_stage = opp.get("stage")
+
+    opp["stage"] = "CLOSED_LOST"
+    opp["status"] = "CLOSED_LOST"
+    opp["loss_reason"] = clean_loss_reason
+    opp["competitor"] = competitor.strip() if competitor else None
+    opp["closed_date"] = datetime.utcnow().date().isoformat()
+    opp["closed_at"] = now_iso
+    opp["closed_by"] = current_user.get("id")
+    if note:
+        opp["close_note"] = note.strip()
+
+    # Xóa cờ cảnh báo nếu có
+    opp["is_flagged"] = False
+    opp["is_stagnant"] = False
+    opp["is_overdue"] = False
+
+    # Ghi Audit Log
+    user_name = current_user.get("full_name") or current_user.get("username") or f"User {current_user.get('id')}"
+    log_detail = f"Lý do: {clean_loss_reason}"
+    if opp["competitor"]:
+        log_detail += f", Đối thủ thắng: {opp['competitor']}"
+
+    log_change(
+        user_id=current_user.get("id"),
+        user_name=user_name,
+        entity_type="DATA_OWNERSHIP",
+        entity_id=str(opportunity_id),
+        action="CLOSE_OPPORTUNITY_LOST",
+        field_name="stage",
+        old_value=f"Stage: {old_stage}",
+        new_value=f"CLOSED_LOST: {log_detail}",
+    )
+
+    return get_raw_opportunity_by_id(opportunity_id)
+
+
+def reopen_opportunity(
+    opportunity_id: int,
+    reason: str,
+    target_stage: Optional[str],
+    current_user: dict,
+) -> dict:
+    """
+    AC S5-05: Mở lại cơ hội đã đóng
+    - Chỉ Trưởng nhóm trở lên (MANAGER, ADMIN) mới được mở lại.
+    - Nhân viên thường (USER) không được phép mở lại (HTTP 403).
+    - Bắt buộc nhập lý do mở lại (reason).
+    - Chuyển trạng thái từ CLOSED_WON/CLOSED_LOST về giai đoạn mở (mặc định PROPOSAL hoặc target_stage).
+    - Ghi nhận Audit Log.
+    """
+    from fastapi import HTTPException, status
+    from app.services.audit_log_service import log_change
+
+    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+    if not opp:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy cơ hội bán hàng với ID {opportunity_id}",
+        )
+
+    current_role = current_user.get("role", "USER")
+    current_uid = current_user.get("id")
+    current_team = current_user.get("team_id")
+
+    # Phân quyền: Chỉ ADMIN hoặc MANAGER
+    if current_role not in ("ADMIN", "MANAGER"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cơ hội đã đóng không sửa được. Chỉ Trưởng nhóm trở lên mới có quyền mở lại kèm lý do.",
+        )
+
+    # Manager chỉ được mở cơ hội trong nhóm mình
+    if current_role == "MANAGER":
+        opp_team = opp.get("team_id")
+        opp_owner = opp.get("owner_id")
+        if opp_owner != current_uid and (opp_team is None or opp_team != current_team):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bạn không có quyền mở lại cơ hội thuộc nhóm khác",
+            )
+
+    # Phải đang ở trạng thái đã đóng
+    if opp.get("stage") not in ("CLOSED_WON", "CLOSED_LOST") and opp.get("status") not in ("CLOSED_WON", "CLOSED_LOST"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cơ hội này chưa bị đóng, không cần mở lại.",
+        )
+
+    clean_reason = (reason or "").strip()
+    if not clean_reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mở lại cơ hội bắt buộc phải nhập lý do (reason)",
+        )
+
+    now_iso = datetime.utcnow().isoformat()
+    old_stage = opp.get("stage")
+    new_stage = target_stage.strip() if target_stage and target_stage.strip() else "PROPOSAL"
+
+    opp["stage"] = new_stage
+    opp["status"] = "OPEN"
+    opp["reopened_at"] = now_iso
+    opp["reopened_by"] = current_uid
+    opp["reopen_reason"] = clean_reason
+
+    # Ghi Audit Log
+    user_name = current_user.get("full_name") or current_user.get("username") or f"Manager {current_uid}"
+    log_change(
+        user_id=current_uid,
+        user_name=user_name,
+        entity_type="DATA_OWNERSHIP",
+        entity_id=str(opportunity_id),
+        action="REOPEN_OPPORTUNITY",
+        field_name="stage",
+        old_value=f"Stage: {old_stage}",
+        new_value=f"Reopened to {new_stage} - Lý do: {clean_reason}",
+    )
+
+    return get_raw_opportunity_by_id(opportunity_id)
+
+
+def get_user_won_quota_achievement(user_id: int) -> dict:
+    """
+    AC S5-05: Thống kê cơ hội thắng được tính vào chỉ tiêu (monthly_quota) của người sở hữu.
+    """
+    from app.services.auth_service import fake_users_db
+
+    user = next((u for u in fake_users_db if u["id"] == user_id), None)
+    monthly_quota = float(user.get("monthly_quota", 0.0)) if user else 0.0
+
+    won_opps = [
+        o for o in FAKE_OPPORTUNITIES
+        if o.get("owner_id") == user_id and o.get("stage") == "CLOSED_WON"
+    ]
+
+    total_won_value = sum(
+        float(o.get("actual_revenue") if o.get("actual_revenue") is not None else o.get("value", 0.0))
+        for o in won_opps
+    )
+
+    achievement_percent = round((total_won_value / monthly_quota) * 100, 2) if monthly_quota > 0 else None
+
+    return {
+        "user_id": user_id,
+        "monthly_quota": monthly_quota,
+        "total_won_opportunities": len(won_opps),
+        "total_won_value": total_won_value,
+        "achievement_percent": achievement_percent,
+        "won_opportunities": won_opps,
+    }
+
+
+

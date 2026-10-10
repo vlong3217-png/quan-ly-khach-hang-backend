@@ -90,6 +90,17 @@ class OpportunityResponse(BaseModel):
     stagnant_threshold_days: Optional[int] = None
     days_overdue: Optional[int] = None
     flagged_at: Optional[str] = None
+    # S5-05: Thông tin đóng thắng/thua/mở lại
+    actual_revenue: Optional[float] = None
+    contract_signed_date: Optional[str] = None
+    loss_reason: Optional[str] = None
+    competitor: Optional[str] = None
+    closed_date: Optional[str] = None
+    closed_at: Optional[str] = None
+    closed_by: Optional[int] = None
+    reopened_at: Optional[str] = None
+    reopened_by: Optional[int] = None
+    reopen_reason: Optional[str] = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -128,5 +139,27 @@ class OpportunityReassignResponse(BaseModel):
     new_owner_name: str
     reason: str
     message: str
+
+
+# ============================================================================
+# SCHEMAS S5-05: ĐÓNG THẮNG / ĐÓNG THUA / MỞ LẠI CƠ HỘI
+# ============================================================================
+
+class OpportunityCloseWonRequest(BaseModel):
+    actual_revenue: float
+    contract_signed_date: str  # YYYY-MM-DD
+    note: Optional[str] = None
+
+
+class OpportunityCloseLostRequest(BaseModel):
+    loss_reason: str
+    competitor: Optional[str] = None
+    note: Optional[str] = None
+
+
+class OpportunityReopenRequest(BaseModel):
+    reason: str
+    target_stage: Optional[str] = None  # Mặc định mở lại về PROSPECTING hoặc QUALIFICATION
+
 
 
