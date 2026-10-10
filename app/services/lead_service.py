@@ -1418,14 +1418,10 @@ def preview_import_leads_excel(file_bytes: bytes, current_user: dict) -> dict:
     duplicate_count = 0
     invalid_count = 0
 
-<<<<<<< HEAD
     try:
         from app.services import campaign_service
     except Exception:
         campaign_service = None
-=======
-    from app.services import campaign_service
->>>>>>> feature/S4-03-campaign-lead-backend
 
     # Đọc dòng tiêu đề (Header row 1) để map linh hoạt tên cột
     header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None) or []
@@ -1479,7 +1475,6 @@ def preview_import_leads_excel(file_bytes: bytes, current_user: dict) -> dict:
             errors.append("Số điện thoại không hợp lệ (phải gồm 10-11 chữ số)")
 
         if raw_camp_code:
-<<<<<<< HEAD
             if campaign_service:
                 camp = campaign_service.get_campaign_by_code(raw_camp_code)
                 if camp:
@@ -1488,13 +1483,6 @@ def preview_import_leads_excel(file_bytes: bytes, current_user: dict) -> dict:
                     errors.append(f"Không tìm thấy chiến dịch với mã '{raw_camp_code}'")
             else:
                 campaign_id = None
-=======
-            camp = campaign_service.get_campaign_by_code(raw_camp_code)
-            if camp:
-                campaign_id = camp["id"]
-            else:
-                errors.append(f"Không tìm thấy chiến dịch với mã '{raw_camp_code}'")
->>>>>>> feature/S4-03-campaign-lead-backend
 
         dup_check = check_lead_duplicates(
             email=raw_email,
