@@ -17,6 +17,8 @@ from app.models.lead import (
     LeadSavedFilter,
 )
 
+from app.models.campaign import Campaign
+
 __all__ = [
     "Base",
     "User",
@@ -25,7 +27,6 @@ __all__ = [
     "Opportunity",
     "OpportunityProduct",
     "Activity",
-
     "Quote",
     "AuditLog",
     "Product",
@@ -38,6 +39,7 @@ __all__ = [
     "LeadAllocationRule",
     "LeadAllocationLog",
     "LeadSavedFilter",
+    "Campaign",
 ]
 
 

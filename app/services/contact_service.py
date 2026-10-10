@@ -225,6 +225,17 @@ def create_contact(
         own_session = True
 
     try:
+        if isinstance(contact_data, dict):
+            from app.schemas.contact import ContactCreate
+            contact_data = ContactCreate(**contact_data)
+        if isinstance(current_user_username, dict):
+            current_user_username = (
+                current_user_username.get("full_name")
+                or current_user_username.get("username")
+                or current_user_username.get("email")
+                or "system"
+            )
+
         if not _check_customer_exists(contact_data.customer_id, db=db):
             raise ValueError("Khách hàng không tồn tại")
 
