@@ -288,3 +288,27 @@ def test_delete_saved_filter_not_found():
     headers = get_auth_headers(user_id=10, role="USER")
     res = client.delete("/leads/saved-filters/999999", headers=headers)
     assert res.status_code == 404
+
+
+def test_cannot_delete_saved_filter_owned_by_another_user():
+    """Nhân viên không thể xóa bộ lọc thuộc về nhân viên khác (trả về 404 do scope kiểm tra user_id)."""
+    headers_user10 = get_auth_headers(email="sales10@crm.vn", user_id=10, role="USER")
+    headers_user20 = get_auth_headers(email="sales20@crm.vn", user_id=20, role="USER")
+
+    # User 10 tạo bộ lọc
+    payload = {
+        "name": "Bộ lọc cá nhân của User 10",
+        "filter_criteria": {"grade": "WARM"},
+    }
+    res_create = client.post("/leads/saved-filters", json=payload, headers=headers_user10)
+    assert res_create.status_code == 201
+    filter_id = res_create.json()["id"]
+
+    # User 20 cố gắng xóa bộ lọc của User 10 -> Không tìm thấy (404)
+    res_del_unauth = client.delete(f"/leads/saved-filters/{filter_id}", headers=headers_user20)
+    assert res_del_unauth.status_code == 404
+
+    # Dọn dẹp: User 10 tự xóa thành công
+    res_del_ok = client.delete(f"/leads/saved-filters/{filter_id}", headers=headers_user10)
+    assert res_del_ok.status_code == 204
+
