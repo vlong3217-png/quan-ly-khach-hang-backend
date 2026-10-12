@@ -7,8 +7,9 @@ S5-07: Cảnh báo cơ hội đình trệ.
 - Service quét (scan) cập nhật cờ cho các cơ hội, có thể chạy hàng ngày.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Optional
+
 
 from app.core.dependencies import DataScope
 from app.services import activity_service, opportunity_service, pipeline_service
@@ -138,7 +139,8 @@ def scan_opportunities(
     Nếu current_user là None (daily job hệ thống) thì quét toàn bộ.
     """
     today = today or date.today()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+
 
     if current_user is None:
         target_ids = {o["id"] for o in opportunity_service.FAKE_OPPORTUNITIES}
