@@ -231,3 +231,34 @@ def test_reassign_nonexistent_new_owner_returns_404():
     res = client.post("/opportunities/reassign", json=payload, headers=manager_headers)
     assert res.status_code == 404
     assert "người dùng" in res.json()["detail"].lower()
+
+
+def test_reassign_to_inactive_user_returns_400():
+    """Không thể phân bổ cơ hội cho người dùng đã bị vô hiệu hóa (is_active=False)."""
+    from app.services.auth_service import fake_users_db
+    # Tìm hoặc tạo user inactive
+    user_inactive = next((u for u in fake_users_db if not u.get("is_active", True)), None)
+    if not user_inactive:
+        fake_users_db.append({
+            "id": 98,
+            "email": "inactive@company.com",
+            "username": "inactive_user",
+            "full_name": "Nhân viên đã nghỉ việc",
+            "role": "USER",
+            "team_id": 1,
+            "is_active": False,
+        })
+        target_id = 98
+    else:
+        target_id = user_inactive["id"]
+
+    manager_headers = get_auth_headers(email="manager@gmail.com", user_id=2, role="MANAGER")
+    payload = {
+        "opportunity_ids": [3],
+        "new_owner_id": target_id,
+        "reason": "Phân bổ nhầm cho nhân viên đã nghỉ",
+    }
+    res = client.post("/opportunities/reassign", json=payload, headers=manager_headers)
+    assert res.status_code == 400
+    assert "vô hiệu hóa" in res.json()["detail"].lower()
+
