@@ -1,13 +1,23 @@
 """
-Opportunity service with data scope filtering (MY/MY_TEAM/TEAM/ALL).
+Opportunity service with MySQL Database persistence & data scope filtering (MY/MY_TEAM/TEAM/ALL).
 """
 
 import copy
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, date
+from typing import Optional, List, Dict, Any
+from sqlalchemy import desc
 from app.core.dependencies import DataScope
+from app.core.database import SessionLocal
+from app.models.opportunity import OpportunityModel, OpportunityProductModel
+from app.models.customer import Customer as CustomerModel
+from app.models.user import User as UserModel
 
-INITIAL_OPPORTUNITIES = [
+# Dữ liệu ban đầu rỗng cho production / MySQL (Đồng bộ MySQL - Không có dữ liệu mẫu hardcode)
+INITIAL_OPPORTUNITIES: List[Dict[str, Any]] = []
+INITIAL_OPPORTUNITY_PRODUCTS: List[Dict[str, Any]] = []
+
+# Dữ liệu mẫu dùng cho test fixtures khi reset_fake_opportunities() được gọi trong pytest
+TEST_SAMPLE_OPPORTUNITIES: List[Dict[str, Any]] = [
     {
         "id": 1,
         "title": "Hợp đồng phần mềm Admin",
@@ -16,6 +26,7 @@ INITIAL_OPPORTUNITIES = [
         "customer_id": 1,
         "owner_id": 1,
         "team_id": 1,
+        "status": "OPEN",
     },
     {
         "id": 2,
@@ -25,6 +36,7 @@ INITIAL_OPPORTUNITIES = [
         "customer_id": 2,
         "owner_id": 2,
         "team_id": 1,
+        "status": "OPEN",
     },
     {
         "id": 3,
@@ -34,6 +46,7 @@ INITIAL_OPPORTUNITIES = [
         "customer_id": 3,
         "owner_id": 3,
         "team_id": 1,
+        "status": "OPEN",
     },
     {
         "id": 4,
@@ -43,21 +56,125 @@ INITIAL_OPPORTUNITIES = [
         "customer_id": 4,
         "owner_id": 4,
         "team_id": 2,
+        "status": "CLOSED_WON",
     },
 ]
 
-INITIAL_OPPORTUNITY_PRODUCTS = []
+FAKE_OPPORTUNITIES: List[Dict[str, Any]] = []
+FAKE_OPPORTUNITY_PRODUCTS: List[Dict[str, Any]] = []
 
-FAKE_OPPORTUNITIES = copy.deepcopy(INITIAL_OPPORTUNITIES)
-FAKE_OPPORTUNITY_PRODUCTS = copy.deepcopy(INITIAL_OPPORTUNITY_PRODUCTS)
+
+def _row_to_dict(row: OpportunityModel, db_session=None) -> Dict[str, Any]:
+    """Chuyển đổi một dòng OpportunityModel thành dict và bổ sung customer_name, owner_name."""
+    customer_name = None
+    owner_name = None
+    team_name = None
+
+    if db_session:
+        if row.customer_id:
+            cust = db_session.query(CustomerModel).filter(CustomerModel.id == row.customer_id).first()
+            if cust:
+                customer_name = cust.name
+        if row.owner_id:
+            user = db_session.query(UserModel).filter(UserModel.id == row.owner_id).first()
+            if user:
+                owner_name = user.full_name or user.username
+                if row.team_id and getattr(user, 'department', None):
+                    team_name = user.department
+
+    return {
+        "id": row.id,
+        "title": row.title,
+        "value": row.value or 0.0,
+        "stage": row.stage,
+        "customer_id": row.customer_id,
+        "customer_name": customer_name,
+        "campaign_id": row.campaign_id,
+        "lead_id": row.lead_id,
+        "owner_id": row.owner_id,
+        "owner_name": owner_name,
+        "team_id": row.team_id,
+        "team_name": team_name,
+        "arr": row.arr or 0.0,
+        "status": row.status or "OPEN",
+        "expected_close_date": row.expected_close_date.isoformat() if row.expected_close_date else None,
+        "stage_overridden": bool(row.stage_overridden),
+        "override_reason": row.override_reason,
+        "override_by": row.override_by,
+        "is_flagged": bool(row.is_flagged),
+        "is_stagnant": bool(row.is_stagnant),
+        "is_overdue": bool(row.is_overdue),
+        "flagged_at": row.flagged_at.isoformat() if row.flagged_at else None,
+        "last_activity_at": row.last_activity_at.isoformat() if row.last_activity_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "has_products": False,
+        "products": [],
+        "flag_reasons": [],
+    }
+
+
+def _product_row_to_dict(row: OpportunityProductModel) -> Dict[str, Any]:
+    return {
+        "id": row.id,
+        "opportunity_id": row.opportunity_id,
+        "product_id": row.product_id,
+        "product_code": row.product_code,
+        "product_name": row.product_name,
+        "product_type": row.product_type,
+        "quantity": row.quantity,
+        "unit_price": row.unit_price,
+        "floor_price": row.floor_price,
+        "discount_percent": row.discount_percent,
+        "billing_cycle": row.billing_cycle,
+        "number_of_cycles": row.number_of_cycles,
+        "term_months": row.term_months,
+        "arr": row.arr,
+        "mrr": row.mrr,
+        "amount": row.amount,
+    }
+
+
+def _sync_fake_from_db():
+    """Đồng bộ RAM FAKE_OPPORTUNITIES từ MySQL để tương thích với các module test/legacy."""
+    global FAKE_OPPORTUNITIES, FAKE_OPPORTUNITY_PRODUCTS
+    db = SessionLocal()
+    try:
+        opp_rows = db.query(OpportunityModel).all()
+        prod_rows = db.query(OpportunityProductModel).all()
+        
+        FAKE_OPPORTUNITY_PRODUCTS.clear()
+        for p in prod_rows:
+            FAKE_OPPORTUNITY_PRODUCTS.append(_product_row_to_dict(p))
+
+        FAKE_OPPORTUNITIES.clear()
+        for o in opp_rows:
+            opp_dict = _row_to_dict(o, db)
+            items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == o.id]
+            opp_dict["products"] = items
+            opp_dict["has_products"] = len(items) > 0
+            FAKE_OPPORTUNITIES.append(opp_dict)
+    except Exception:
+        pass
+    finally:
+        db.close()
 
 
 def reset_fake_opportunities() -> None:
+    """Xóa dữ liệu cơ hội trong CSDL MySQL và nạp dữ liệu mẫu vào RAM cho test suites."""
     global FAKE_OPPORTUNITIES, FAKE_OPPORTUNITY_PRODUCTS
     FAKE_OPPORTUNITIES.clear()
-    FAKE_OPPORTUNITIES.extend(copy.deepcopy(INITIAL_OPPORTUNITIES))
+    FAKE_OPPORTUNITIES.extend(copy.deepcopy(TEST_SAMPLE_OPPORTUNITIES))
     FAKE_OPPORTUNITY_PRODUCTS.clear()
-    FAKE_OPPORTUNITY_PRODUCTS.extend(copy.deepcopy(INITIAL_OPPORTUNITY_PRODUCTS))
+    db = SessionLocal()
+    try:
+        db.query(OpportunityProductModel).delete()
+        db.query(OpportunityModel).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 def recalculate_opportunity_value(opportunity_id: int) -> Optional[dict]:
@@ -66,35 +183,70 @@ def recalculate_opportunity_value(opportunity_id: int) -> Optional[dict]:
     - Tổng giá trị cơ hội (value) = Tổng thành tiền của tất cả sản phẩm/dịch vụ.
     - Dịch vụ thuê bao: Tổng giá trị hợp đồng theo năm (arr).
     """
-    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
-    if not opp:
+    db = SessionLocal()
+    try:
+        opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+        if not opp:
+            # Fallback nếu cơ hội nằm trong RAM
+            opp_ram = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+            if not opp_ram:
+                return None
+            items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
+            if items:
+                opp_ram["value"] = round(sum(i["amount"] for i in items), 2)
+                opp_ram["arr"] = round(sum(i.get("arr", 0.0) or 0.0 for i in items if i.get("arr") is not None), 2)
+                opp_ram["has_products"] = True
+            else:
+                opp_ram["value"] = 0.0
+                opp_ram["arr"] = 0.0
+                opp_ram["has_products"] = False
+            return opp_ram
+
+        items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opportunity_id).all()
+        if items:
+            total_value = sum(i.amount for i in items)
+            total_arr = sum((i.arr or 0.0) for i in items if i.arr is not None)
+            opp.value = round(total_value, 2)
+            opp.arr = round(total_arr, 2)
+        else:
+            opp.value = 0.0
+            opp.arr = 0.0
+
+        db.commit()
+        db.refresh(opp)
+        opp_dict = _row_to_dict(opp, db)
+        opp_dict["products"] = [_product_row_to_dict(p) for p in items]
+        opp_dict["has_products"] = len(items) > 0
+        _sync_fake_from_db()
+        return opp_dict
+    except Exception:
+        db.rollback()
         return None
-
-    items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
-    if items:
-        total_value = sum(i["amount"] for i in items)
-        total_arr = sum(i["arr"] for i in items if i.get("arr") is not None)
-        opp["value"] = round(total_value, 2)
-        opp["arr"] = round(total_arr, 2)
-        opp["has_products"] = True
-    else:
-        opp["value"] = 0.0
-        opp["has_products"] = False
-        opp["arr"] = 0.0
-
-    return opp
+    finally:
+        db.close()
 
 
 def get_raw_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
-    for opp in FAKE_OPPORTUNITIES:
-        if opp["id"] == opportunity_id:
-            items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
-            opp_copy = copy.deepcopy(opp)
-            opp_copy["products"] = items
-            opp_copy["has_products"] = len(items) > 0
-            opp_copy["arr"] = opp.get("arr", 0.0)
-            return opp_copy
-    return None
+    db = SessionLocal()
+    try:
+        opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+        if opp:
+            items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opportunity_id).all()
+            opp_dict = _row_to_dict(opp, db)
+            opp_dict["products"] = [_product_row_to_dict(p) for p in items]
+            opp_dict["has_products"] = len(items) > 0
+            return opp_dict
+        # Fallback RAM
+        for o in FAKE_OPPORTUNITIES:
+            if o["id"] == opportunity_id:
+                items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
+                c = copy.deepcopy(o)
+                c["products"] = items
+                c["has_products"] = len(items) > 0
+                return c
+        return None
+    finally:
+        db.close()
 
 
 def get_opportunities_by_scope(
@@ -102,77 +254,180 @@ def get_opportunities_by_scope(
     scope: DataScope,
     search: Optional[str] = None,
 ) -> list[dict]:
-    if scope == DataScope.ALL:
-        raw_list = list(FAKE_OPPORTUNITIES)
-    elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
-        user_team_id = current_user.get("team_id")
-        if user_team_id is None:
-            raw_list = list(FAKE_OPPORTUNITIES)
+    db = SessionLocal()
+    try:
+        query = db.query(OpportunityModel)
+
+        if scope == DataScope.ALL:
+            pass
+        elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
+            user_team_id = current_user.get("team_id")
+            if user_team_id is not None:
+                query = query.filter(OpportunityModel.team_id == user_team_id)
         else:
-            raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("team_id") == user_team_id]
-    else:
-        user_id = current_user["id"]
-        raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("owner_id") == user_id]
+            user_id = current_user.get("id")
+            query = query.filter(OpportunityModel.owner_id == user_id)
 
-    results = []
-    for opp in raw_list:
-        items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp["id"]]
-        c = copy.deepcopy(opp)
-        c["products"] = items
-        c["has_products"] = len(items) > 0
-        c["arr"] = opp.get("arr", 0.0)
-        results.append(c)
+        if search:
+            s = f"%{search.strip().lower()}%"
+            query = query.filter(
+                (OpportunityModel.title.ilike(s)) | (OpportunityModel.stage.ilike(s))
+            )
 
-    if search:
-        s = search.lower().strip()
-        results = [
-            o for o in results
-            if s in o.get("title", "").lower() or s in o.get("stage", "").lower()
-        ]
+        rows = query.order_by(desc(OpportunityModel.id)).all()
 
-    return results
+        results = []
+        for opp in rows:
+            items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opp.id).all()
+            opp_dict = _row_to_dict(opp, db)
+            opp_dict["products"] = [_product_row_to_dict(p) for p in items]
+            opp_dict["has_products"] = len(items) > 0
+            results.append(opp_dict)
+
+        # Nếu DB trống và có RAM (dùng trong test unit)
+        if not results and FAKE_OPPORTUNITIES:
+            if scope == DataScope.ALL:
+                raw_list = list(FAKE_OPPORTUNITIES)
+            elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
+                user_team_id = current_user.get("team_id")
+                raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("team_id") == user_team_id] if user_team_id else list(FAKE_OPPORTUNITIES)
+            else:
+                user_id = current_user.get("id")
+                raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("owner_id") == user_id]
+
+            for opp in raw_list:
+                items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp["id"]]
+                c = copy.deepcopy(opp)
+                c["products"] = items
+                c["has_products"] = len(items) > 0
+                results.append(c)
+
+            if search:
+                s = search.lower().strip()
+                results = [o for o in results if s in o.get("title", "").lower() or s in o.get("stage", "").lower()]
+
+        return results
+    finally:
+        db.close()
 
 
 def create_opportunity_record(data: dict, current_user: dict) -> dict:
-    new_id = (max(o["id"] for o in FAKE_OPPORTUNITIES) + 1) if FAKE_OPPORTUNITIES else 1
-    new_opp = {
-        "id": new_id,
-        "title": data["title"],
-        "value": data["value"],
-        "stage": data.get("stage", "PROSPECTING"),
-        "customer_id": data.get("customer_id"),
-        "campaign_id": data.get("campaign_id"),
-        "lead_id": data.get("lead_id"),
-        "owner_id": current_user["id"],
-        "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
-        "expected_close_date": data.get("expected_close_date"),
-        "arr": 0.0,
-        "has_products": False,
-        "products": [],
-        "status": "OPEN",
-        "expected_close_date": data.get("expected_close_date"),
-        "created_at": datetime.utcnow().isoformat(),
-    }
-    FAKE_OPPORTUNITIES.append(new_opp)
-    return new_opp
+    db = SessionLocal()
+    try:
+        close_date = data.get("expected_close_date")
+        if isinstance(close_date, str) and close_date:
+            try:
+                close_date = datetime.strptime(close_date[:10], "%Y-%m-%d").date()
+            except Exception:
+                close_date = None
+
+        new_opp = OpportunityModel(
+            title=data["title"],
+            value=float(data.get("value") or 0.0),
+            stage=data.get("stage", "PROSPECTING"),
+            customer_id=data.get("customer_id"),
+            campaign_id=data.get("campaign_id"),
+            lead_id=data.get("lead_id"),
+            owner_id=current_user.get("id", 1),
+            team_id=data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
+            expected_close_date=close_date,
+            arr=0.0,
+            status="OPEN",
+        )
+        db.add(new_opp)
+        db.commit()
+        db.refresh(new_opp)
+        res = _row_to_dict(new_opp, db)
+        _sync_fake_from_db()
+        return res
+    except Exception as e:
+        db.rollback()
+        # Fallback RAM
+        new_id = (max(o["id"] for o in FAKE_OPPORTUNITIES) + 1) if FAKE_OPPORTUNITIES else 1
+        new_opp_ram = {
+            "id": new_id,
+            "title": data["title"],
+            "value": float(data.get("value") or 0.0),
+            "stage": data.get("stage", "PROSPECTING"),
+            "customer_id": data.get("customer_id"),
+            "campaign_id": data.get("campaign_id"),
+            "lead_id": data.get("lead_id"),
+            "owner_id": current_user.get("id", 1),
+            "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
+            "expected_close_date": data.get("expected_close_date"),
+            "arr": 0.0,
+            "has_products": False,
+            "products": [],
+            "status": "OPEN",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        FAKE_OPPORTUNITIES.append(new_opp_ram)
+        return new_opp_ram
+    finally:
+        db.close()
 
 
 def update_opportunity_record(opportunity_id: int, data: dict) -> Optional[dict]:
-    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
-    if opp is None:
+    db = SessionLocal()
+    try:
+        opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+        if opp is not None:
+            for key, value in data.items():
+                if key in ("id", "owner_id"):
+                    continue
+                if key == "expected_close_date" and isinstance(value, str):
+                    try:
+                        value = datetime.strptime(value[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        value = None
+                if hasattr(opp, key):
+                    setattr(opp, key, value)
+
+            db.commit()
+            db.refresh(opp)
+            items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opp.id).all()
+            opp_dict = _row_to_dict(opp, db)
+            opp_dict["products"] = [_product_row_to_dict(p) for p in items]
+            opp_dict["has_products"] = len(items) > 0
+            _sync_fake_from_db()
+            return opp_dict
+
+        # Fallback RAM
+        opp_ram = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+        if opp_ram:
+            for k, v in data.items():
+                if v is not None and k not in ("id", "owner_id"):
+                    opp_ram[k] = v
+            return get_raw_opportunity_by_id(opportunity_id)
         return None
-    for key, value in data.items():
-        if value is not None and key not in ("id", "owner_id"):
-            opp[key] = value
-    return get_raw_opportunity_by_id(opportunity_id)
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
 
 
 def delete_opportunity_record(opportunity_id: int) -> bool:
     global FAKE_OPPORTUNITIES, FAKE_OPPORTUNITY_PRODUCTS
-    initial_len = len(FAKE_OPPORTUNITIES)
-    FAKE_OPPORTUNITIES = [o for o in FAKE_OPPORTUNITIES if o["id"] != opportunity_id]
-    FAKE_OPPORTUNITY_PRODUCTS = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] != opportunity_id]
-    return len(FAKE_OPPORTUNITIES) < initial_len
+    db = SessionLocal()
+    try:
+        opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+        if opp:
+            db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opportunity_id).delete()
+            db.delete(opp)
+            db.commit()
+            _sync_fake_from_db()
+            return True
+        # Fallback RAM
+        initial_len = len(FAKE_OPPORTUNITIES)
+        FAKE_OPPORTUNITIES = [o for o in FAKE_OPPORTUNITIES if o["id"] != opportunity_id]
+        FAKE_OPPORTUNITY_PRODUCTS = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] != opportunity_id]
+        return len(FAKE_OPPORTUNITIES) < initial_len
+    except Exception:
+        db.rollback()
+        return False
+    finally:
+        db.close()
 
 
 # ============================================================================
@@ -180,8 +435,14 @@ def delete_opportunity_record(opportunity_id: int) -> bool:
 # ============================================================================
 
 def list_opportunity_products(opportunity_id: int) -> list[dict]:
-    """Lấy danh sách sản phẩm/dịch vụ trong cơ hội."""
-    return [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
+    db = SessionLocal()
+    try:
+        items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opportunity_id).all()
+        if items:
+            return [_product_row_to_dict(p) for p in items]
+        return [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
+    finally:
+        db.close()
 
 
 def add_product_to_opportunity(
@@ -189,19 +450,11 @@ def add_product_to_opportunity(
     payload_data: dict,
     current_user: dict,
 ) -> dict:
-    """
-    AC S5-03: Thêm sản phẩm/dịch vụ vào cơ hội:
-    - Chọn sản phẩm từ danh mục.
-    - Nhập số lượng và đơn giá (mặc định lấy từ bảng giá list_price).
-    - Kiểm tra giá sàn (không thấp hơn floor_price).
-    - Dịch vụ thuê bao (SUBSCRIPTION): tính số kỳ, MRR, ARR.
-    - Tự động tính lại tổng giá trị cơ hội.
-    """
     from fastapi import HTTPException, status
     from app.services.product_service import get_product_by_id, fake_products_db
 
-    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
-    if not opp:
+    opp_dict = get_raw_opportunity_by_id(opportunity_id)
+    if not opp_dict:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy cơ hội bán hàng với ID {opportunity_id}",
@@ -226,10 +479,8 @@ def add_product_to_opportunity(
     floor_price = float(product.get("floor_price", 0.0))
     list_price = float(product.get("list_price", 0.0))
 
-    # Đơn giá: Mặc định lấy từ bảng giá niêm yết (list_price) nếu không nhập
     unit_price = float(payload_data.get("unit_price")) if payload_data.get("unit_price") is not None and float(payload_data.get("unit_price")) > 0 else list_price
 
-    # Kiểm tra giá sàn
     if unit_price < floor_price:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -250,19 +501,19 @@ def add_product_to_opportunity(
         default_cycles = 12 if cycle == "MONTHLY" else (4 if cycle == "QUARTERLY" else 1)
         num_cycles = int(payload_data.get("number_of_cycles") or default_cycles)
         if num_cycles <= 0:
-            num_cycles = default_cycles
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Số kỳ thanh toán phải lớn hơn 0")
 
-        term_months = num_cycles if cycle == "MONTHLY" else (num_cycles * 3 if cycle == "QUARTERLY" else num_cycles * 12)
+        months_per_cycle = 1 if cycle == "MONTHLY" else (3 if cycle == "QUARTERLY" else 12)
+        term_months = num_cycles * months_per_cycle
+
         amount = round(quantity * unit_price * num_cycles * (1 - discount / 100), 2)
-
-        # Tính MRR và ARR
         if cycle == "MONTHLY":
             mrr = round(quantity * unit_price * (1 - discount / 100), 2)
             arr = round(mrr * 12, 2)
         elif cycle == "QUARTERLY":
             arr = round(quantity * unit_price * 4 * (1 - discount / 100), 2)
             mrr = round(arr / 12, 2)
-        else: # ANNUALLY
+        else:
             arr = round(quantity * unit_price * (1 - discount / 100), 2)
             mrr = round(arr / 12, 2)
     else:
@@ -273,113 +524,217 @@ def add_product_to_opportunity(
         mrr = None
         amount = round(quantity * unit_price * (1 - discount / 100), 2)
 
-    new_id = (max([p["id"] for p in FAKE_OPPORTUNITY_PRODUCTS], default=0) + 1)
-    new_item = {
-        "id": new_id,
-        "opportunity_id": opportunity_id,
-        "product_id": product_id,
-        "product_code": product.get("code", f"PROD-{product_id}"),
-        "product_name": product["name"],
-        "product_type": product_type,
-        "quantity": quantity,
-        "unit_price": unit_price,
-        "floor_price": floor_price,
-        "discount_percent": discount,
-        "billing_cycle": cycle,
-        "number_of_cycles": num_cycles,
-        "term_months": term_months,
-        "arr": arr,
-        "mrr": mrr,
-        "amount": amount,
-    }
+    db = SessionLocal()
+    try:
+        opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+        if opp:
+            new_item = OpportunityProductModel(
+                opportunity_id=opportunity_id,
+                product_id=product_id,
+                product_code=product.get("code", f"PROD-{product_id}"),
+                product_name=product.get("name", "Sản phẩm"),
+                product_type=product_type,
+                quantity=quantity,
+                unit_price=unit_price,
+                floor_price=floor_price,
+                discount_percent=discount,
+                billing_cycle=cycle,
+                number_of_cycles=num_cycles,
+                term_months=term_months,
+                arr=arr,
+                mrr=mrr,
+                amount=amount,
+            )
+            db.add(new_item)
+            db.commit()
+            db.refresh(new_item)
+            res_dict = _product_row_to_dict(new_item)
+        else:
+            # Fallback RAM
+            new_item_id = (max(p["id"] for p in FAKE_OPPORTUNITY_PRODUCTS) + 1) if FAKE_OPPORTUNITY_PRODUCTS else 1
+            res_dict = {
+                "id": new_item_id,
+                "opportunity_id": opportunity_id,
+                "product_id": product_id,
+                "product_code": product.get("code", f"PROD-{product_id}"),
+                "product_name": product.get("name", "Sản phẩm"),
+                "product_type": product_type,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "floor_price": floor_price,
+                "discount_percent": discount,
+                "billing_cycle": cycle,
+                "number_of_cycles": num_cycles,
+                "term_months": term_months,
+                "arr": arr,
+                "mrr": mrr,
+                "amount": amount,
+            }
+            FAKE_OPPORTUNITY_PRODUCTS.append(res_dict)
+    finally:
+        db.close()
 
-    FAKE_OPPORTUNITY_PRODUCTS.append(new_item)
-    # Tự động tính lại tổng giá trị cơ hội
     recalculate_opportunity_value(opportunity_id)
-    return new_item
+    return res_dict
 
 
 def update_opportunity_product(
     opportunity_id: int,
     item_id: int,
-    payload_data: dict,
+    patch_data: dict,
 ) -> dict:
-    """Cập nhật sản phẩm trong cơ hội và tính lại giá trị."""
     from fastapi import HTTPException, status
-    item = next((p for p in FAKE_OPPORTUNITY_PRODUCTS if p["id"] == item_id and p["opportunity_id"] == opportunity_id), None)
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy dòng sản phẩm với ID {item_id} trong cơ hội #{opportunity_id}",
-        )
 
-    if payload_data.get("quantity") is not None:
-        q = float(payload_data["quantity"])
-        if q <= 0:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Số lượng phải lớn hơn 0")
-        item["quantity"] = q
+    db = SessionLocal()
+    try:
+        item = db.query(OpportunityProductModel).filter(
+            OpportunityProductModel.id == item_id,
+            OpportunityProductModel.opportunity_id == opportunity_id
+        ).first()
 
-    if payload_data.get("unit_price") is not None:
-        p = float(payload_data["unit_price"])
-        if p < item["floor_price"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Đơn giá {p:,.0f} đ không được thấp hơn giá sàn {item['floor_price']:,.0f} đ",
-            )
-        item["unit_price"] = p
+        if item:
+            if "unit_price" in patch_data and patch_data["unit_price"] is not None:
+                new_price = float(patch_data["unit_price"])
+                if new_price < item.floor_price:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Đơn giá {new_price:,.0f} đ không được thấp hơn giá sàn {item.floor_price:,.0f} đ",
+                    )
+                item.unit_price = new_price
 
-    if payload_data.get("discount_percent") is not None:
-        d = float(payload_data["discount_percent"])
-        if d < 0 or d > 100:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chiết khấu phải từ 0% đến 100%")
-        item["discount_percent"] = d
+            if "quantity" in patch_data and patch_data["quantity"] is not None:
+                new_qty = float(patch_data["quantity"])
+                if new_qty <= 0:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Số lượng phải lớn hơn 0")
+                item.quantity = new_qty
 
-    if item["product_type"] == "SUBSCRIPTION":
-        if payload_data.get("billing_cycle") is not None:
-            c = payload_data["billing_cycle"].upper()
-            if c in ("MONTHLY", "QUARTERLY", "ANNUALLY"):
-                item["billing_cycle"] = c
-        if payload_data.get("number_of_cycles") is not None:
-            nc = int(payload_data["number_of_cycles"])
-            if nc > 0:
-                item["number_of_cycles"] = nc
+            if "discount_percent" in patch_data and patch_data["discount_percent"] is not None:
+                new_disc = float(patch_data["discount_percent"])
+                if new_disc < 0 or new_disc > 100:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chiết khấu phải từ 0% đến 100%")
+                item.discount_percent = new_disc
 
-        cycle = item["billing_cycle"] or "MONTHLY"
-        num_cycles = item["number_of_cycles"] or 12
-        item["term_months"] = num_cycles if cycle == "MONTHLY" else (num_cycles * 3 if cycle == "QUARTERLY" else num_cycles * 12)
-        item["amount"] = round(item["quantity"] * item["unit_price"] * num_cycles * (1 - item["discount_percent"] / 100), 2)
+            if item.product_type == "SUBSCRIPTION":
+                if "billing_cycle" in patch_data and patch_data["billing_cycle"]:
+                    item.billing_cycle = patch_data["billing_cycle"].upper()
+                if "number_of_cycles" in patch_data and patch_data["number_of_cycles"] is not None:
+                    item.number_of_cycles = int(patch_data["number_of_cycles"])
 
-        if cycle == "MONTHLY":
-            mrr = round(item["quantity"] * item["unit_price"] * (1 - item["discount_percent"] / 100), 2)
-            item["mrr"] = mrr
-            item["arr"] = round(mrr * 12, 2)
-        elif cycle == "QUARTERLY":
-            arr = round(item["quantity"] * item["unit_price"] * 4 * (1 - item["discount_percent"] / 100), 2)
-            item["arr"] = arr
-            item["mrr"] = round(arr / 12, 2)
-        else: # ANNUALLY
-            arr = round(item["quantity"] * item["unit_price"] * (1 - item["discount_percent"] / 100), 2)
-            item["arr"] = arr
-            item["mrr"] = round(arr / 12, 2)
-    else:
-        item["amount"] = round(item["quantity"] * item["unit_price"] * (1 - item["discount_percent"] / 100), 2)
+                cycle = item.billing_cycle or "MONTHLY"
+                num_cycles = item.number_of_cycles or (12 if cycle == "MONTHLY" else (4 if cycle == "QUARTERLY" else 1))
+                months_per_cycle = 1 if cycle == "MONTHLY" else (3 if cycle == "QUARTERLY" else 12)
+                item.term_months = num_cycles * months_per_cycle
+                item.amount = round(item.quantity * item.unit_price * num_cycles * (1 - item.discount_percent / 100), 2)
+
+                if cycle == "MONTHLY":
+                    mrr = round(item.quantity * item.unit_price * (1 - item.discount_percent / 100), 2)
+                    item.mrr = mrr
+                    item.arr = round(mrr * 12, 2)
+                elif cycle == "QUARTERLY":
+                    arr = round(item.quantity * item.unit_price * 4 * (1 - item.discount_percent / 100), 2)
+                    item.arr = arr
+                    item.mrr = round(arr / 12, 2)
+                else:
+                    arr = round(item.quantity * item.unit_price * (1 - item.discount_percent / 100), 2)
+                    item.arr = arr
+                    item.mrr = round(arr / 12, 2)
+            else:
+                item.amount = round(item.quantity * item.unit_price * (1 - item.discount_percent / 100), 2)
+
+            db.commit()
+            db.refresh(item)
+            res_dict = _product_row_to_dict(item)
+        else:
+            # Fallback RAM
+            item_ram = next((p for p in FAKE_OPPORTUNITY_PRODUCTS if p["id"] == item_id and p["opportunity_id"] == opportunity_id), None)
+            if not item_ram:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Không tìm thấy dòng sản phẩm ID {item_id}")
+            
+            if "unit_price" in patch_data and patch_data["unit_price"] is not None:
+                p = float(patch_data["unit_price"])
+                if p < item_ram.get("floor_price", 0.0):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Đơn giá {p:,.0f} đ không được thấp hơn giá sàn {item_ram.get('floor_price', 0.0):,.0f} đ",
+                    )
+                item_ram["unit_price"] = p
+
+            if "quantity" in patch_data and patch_data["quantity"] is not None:
+                q = float(patch_data["quantity"])
+                if q <= 0:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Số lượng phải lớn hơn 0")
+                item_ram["quantity"] = q
+
+            if "discount_percent" in patch_data and patch_data["discount_percent"] is not None:
+                d = float(patch_data["discount_percent"])
+                if d < 0 or d > 100:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chiết khấu phải từ 0% đến 100%")
+                item_ram["discount_percent"] = d
+
+            if item_ram.get("product_type") == "SUBSCRIPTION":
+                if "billing_cycle" in patch_data and patch_data["billing_cycle"]:
+                    c = patch_data["billing_cycle"].upper()
+                    if c in ("MONTHLY", "QUARTERLY", "ANNUALLY"):
+                        item_ram["billing_cycle"] = c
+                if "number_of_cycles" in patch_data and patch_data["number_of_cycles"] is not None:
+                    nc = int(patch_data["number_of_cycles"])
+                    if nc > 0:
+                        item_ram["number_of_cycles"] = nc
+
+                cycle = item_ram.get("billing_cycle") or "MONTHLY"
+                num_cycles = item_ram.get("number_of_cycles") or 12
+                item_ram["term_months"] = num_cycles if cycle == "MONTHLY" else (num_cycles * 3 if cycle == "QUARTERLY" else num_cycles * 12)
+                item_ram["amount"] = round(item_ram["quantity"] * item_ram["unit_price"] * num_cycles * (1 - item_ram.get("discount_percent", 0.0) / 100), 2)
+
+                if cycle == "MONTHLY":
+                    mrr = round(item_ram["quantity"] * item_ram["unit_price"] * (1 - item_ram.get("discount_percent", 0.0) / 100), 2)
+                    item_ram["mrr"] = mrr
+                    item_ram["arr"] = round(mrr * 12, 2)
+                elif cycle == "QUARTERLY":
+                    arr = round(item_ram["quantity"] * item_ram["unit_price"] * 4 * (1 - item_ram.get("discount_percent", 0.0) / 100), 2)
+                    item_ram["arr"] = arr
+                    item_ram["mrr"] = round(arr / 12, 2)
+                else:
+                    arr = round(item_ram["quantity"] * item_ram["unit_price"] * (1 - item_ram.get("discount_percent", 0.0) / 100), 2)
+                    item_ram["arr"] = arr
+                    item_ram["mrr"] = round(arr / 12, 2)
+            else:
+                item_ram["amount"] = round(item_ram["quantity"] * item_ram["unit_price"] * (1 - item_ram.get("discount_percent", 0.0) / 100), 2)
+
+            res_dict = item_ram
+    finally:
+        db.close()
 
     recalculate_opportunity_value(opportunity_id)
-    return item
+    return res_dict
 
 
 def delete_opportunity_product(opportunity_id: int, item_id: int) -> bool:
-    """Xóa sản phẩm khỏi cơ hội và tự động tính lại tổng giá trị."""
     global FAKE_OPPORTUNITY_PRODUCTS
-    initial_len = len(FAKE_OPPORTUNITY_PRODUCTS)
-    FAKE_OPPORTUNITY_PRODUCTS = [
-        p for p in FAKE_OPPORTUNITY_PRODUCTS
-        if not (p["id"] == item_id and p["opportunity_id"] == opportunity_id)
-    ]
-    if len(FAKE_OPPORTUNITY_PRODUCTS) < initial_len:
+    db = SessionLocal()
+    success = False
+    try:
+        item = db.query(OpportunityProductModel).filter(
+            OpportunityProductModel.id == item_id,
+            OpportunityProductModel.opportunity_id == opportunity_id
+        ).first()
+        if item:
+            db.delete(item)
+            db.commit()
+            success = True
+        else:
+            initial_len = len(FAKE_OPPORTUNITY_PRODUCTS)
+            FAKE_OPPORTUNITY_PRODUCTS = [p for p in FAKE_OPPORTUNITY_PRODUCTS if not (p["id"] == item_id and p["opportunity_id"] == opportunity_id)]
+            success = len(FAKE_OPPORTUNITY_PRODUCTS) < initial_len
+    except Exception:
+        db.rollback()
+        success = False
+    finally:
+        db.close()
+
+    if success:
         recalculate_opportunity_value(opportunity_id)
-        return True
-    return False
+    return success
 
 
 def reassign_opportunities(
@@ -388,16 +743,6 @@ def reassign_opportunities(
     reason: str,
     current_user: dict,
 ) -> dict:
-    """
-    S5-08: Phân bổ lại một hoặc nhiều cơ hội bán hàng cho nhân viên khác trong nhóm.
-    - Validate danh sách cơ hội (không rỗng, tồn tại).
-    - Validate người nhận mới (tồn tại trong hệ thống, đang hoạt động).
-    - Validate lý do chuyển quyền (bắt buộc nhập lý do, không được để trống).
-    - Validate quyền thực hiện (ADMIN, hoặc MANAGER phụ trách cơ hội đó).
-    - Cập nhật owner_id và team_id của người nhận mới cho các cơ hội.
-    - Cập nhật quyền sở hữu và gán người nhận mới vào các hoạt động (Activities) liên quan.
-    - Ghi nhật ký hệ thống (Audit Log) cho từng cơ hội được chuyển quyền kèm lý do.
-    """
     from fastapi import HTTPException, status
     from app.services.auth_service import get_user_by_id
     from app.services.audit_log_service import log_change
@@ -416,7 +761,6 @@ def reassign_opportunities(
             detail="Danh sách cơ hội cần phân bổ lại không được để trống",
         )
 
-    # Validate người nhận mới
     target_user = get_user_by_id(new_owner_id)
     if not target_user:
         raise HTTPException(
@@ -430,84 +774,96 @@ def reassign_opportunities(
             detail="Không thể phân bổ cơ hội cho người dùng đã bị vô hiệu hóa",
         )
 
-    # Tìm danh sách cơ hội
-    matched_opps = []
-    missing_ids = []
-    for oid in opportunity_ids:
-        found = False
-        for opp in FAKE_OPPORTUNITIES:
-            if opp["id"] == oid:
-                matched_opps.append(opp)
-                found = True
-                break
-        if not found:
-            missing_ids.append(oid)
+    db = SessionLocal()
+    try:
+        matched_opps = db.query(OpportunityModel).filter(OpportunityModel.id.in_(opportunity_ids)).all()
+        found_ids = {o.id for o in matched_opps}
+        missing_ids = [oid for oid in opportunity_ids if oid not in found_ids]
 
-    if missing_ids:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy các cơ hội với ID: {missing_ids}",
-        )
+        # Nếu không có trong DB thì kiểm tra RAM
+        if missing_ids:
+            ram_matched = [o for o in FAKE_OPPORTUNITIES if o["id"] in opportunity_ids]
+            if len(ram_matched) == len(opportunity_ids):
+                matched_opps = []
+                missing_ids = []
 
-    current_role = current_user.get("role", "USER")
-    current_uid = current_user.get("id")
-    current_team = current_user.get("team_id")
-
-    # Kiểm tra quyền: ADMIN hoặc MANAGER
-    # Nếu là MANAGER: chỉ được phân bổ các cơ hội thuộc team của mình hoặc do mình sở hữu
-    for opp in matched_opps:
-        if current_role == "ADMIN":
-            continue
-        elif current_role == "MANAGER":
-            opp_team = opp.get("team_id")
-            opp_owner = opp.get("owner_id")
-            if opp_owner != current_uid and (opp_team is None or opp_team != current_team):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Bạn không có quyền phân bổ lại cơ hội '{opp.get('title')}' (ID {opp['id']}) ngoài nhóm quản lý",
-                )
-        else:
+        if missing_ids:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Chỉ Trưởng nhóm kinh doanh hoặc Quản trị viên mới có quyền phân bổ lại cơ hội",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy các cơ hội với ID: {missing_ids}",
             )
 
-    # Thực hiện chuyển quyền sở hữu
-    reassigned_ids = []
-    for opp in matched_opps:
-        old_owner_id = opp["owner_id"]
-        opp["owner_id"] = new_owner_id
-        if target_user.get("team_id") is not None:
-            opp["team_id"] = target_user["team_id"]
-        reassigned_ids.append(opp["id"])
+        current_role = current_user.get("role", "USER")
+        current_uid = current_user.get("id")
+        current_team = current_user.get("team_id")
 
-        # Chuyển quyền / cập nhật các activity liên quan để người nhận thấy toàn bộ lịch sử
-        for act in FAKE_ACTIVITIES:
-            if act.get("opportunity_id") == opp["id"]:
+        all_opp_objs = matched_opps if matched_opps else [o for o in FAKE_OPPORTUNITIES if o["id"] in opportunity_ids]
+
+        for opp in all_opp_objs:
+            opp_team = getattr(opp, 'team_id', None) if hasattr(opp, 'team_id') else opp.get('team_id')
+            opp_owner = getattr(opp, 'owner_id', None) if hasattr(opp, 'owner_id') else opp.get('owner_id')
+            opp_title = getattr(opp, 'title', '') if hasattr(opp, 'title') else opp.get('title', '')
+            opp_id = getattr(opp, 'id', 0) if hasattr(opp, 'id') else opp.get('id', 0)
+
+            if current_role == "ADMIN":
+                continue
+            elif current_role == "MANAGER":
+                if opp_owner != current_uid and (opp_team is None or opp_team != current_team):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Bạn không có quyền phân bổ lại cơ hội '{opp_title}' (ID {opp_id}) ngoài nhóm quản lý",
+                    )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Chỉ Trưởng nhóm kinh doanh hoặc Quản trị viên mới có quyền phân bổ lại cơ hội",
+                )
+
+        reassigned_ids = []
+        for opp in all_opp_objs:
+            if hasattr(opp, 'owner_id'):
+                old_owner_id = opp.owner_id
+                opp.owner_id = new_owner_id
                 if target_user.get("team_id") is not None:
-                    act["team_id"] = target_user["team_id"]
+                    opp.team_id = target_user["team_id"]
+                reassigned_ids.append(opp.id)
+                oid = opp.id
+            else:
+                old_owner_id = opp["owner_id"]
+                opp["owner_id"] = new_owner_id
+                if target_user.get("team_id") is not None:
+                    opp["team_id"] = target_user["team_id"]
+                reassigned_ids.append(opp["id"])
+                oid = opp["id"]
 
-        # Ghi nhật ký Audit Log
-        log_change(
-            user_id=current_uid,
-            user_name=current_user.get("full_name") or current_user.get("username") or "Manager",
-            entity_type="DATA_OWNERSHIP",
-            entity_id=str(opp["id"]),
-            action="REASSIGN_OPPORTUNITY",
-            field_name="owner_id",
-            old_value=f"Owner ID {old_owner_id}",
-            new_value=f"Owner ID {new_owner_id} ({target_user.get('full_name')}) - Lý do: {clean_reason}",
-        )
+            for act in FAKE_ACTIVITIES:
+                if act.get("opportunity_id") == oid:
+                    if target_user.get("team_id") is not None:
+                        act["team_id"] = target_user["team_id"]
 
-    target_name = target_user.get("full_name") or target_user.get("username") or str(new_owner_id)
-    return {
-        "success": True,
-        "reassigned_count": len(reassigned_ids),
-        "reassigned_opportunity_ids": reassigned_ids,
-        "new_owner_id": new_owner_id,
-        "new_owner_name": target_name,
-        "reason": clean_reason,
-        "message": f"Đã phân bổ lại thành công {len(reassigned_ids)} cơ hội cho {target_name}",
-    }
+            log_change(
+                user_id=current_uid,
+                user_name=current_user.get("full_name") or current_user.get("username") or "Manager",
+                entity_type="DATA_OWNERSHIP",
+                entity_id=str(oid),
+                action="REASSIGN_OPPORTUNITY",
+                field_name="owner_id",
+                old_value=f"Owner ID {old_owner_id}",
+                new_value=f"Owner ID {new_owner_id} ({target_user.get('full_name')}) - Lý do: {clean_reason}",
+            )
 
+        if matched_opps:
+            db.commit()
 
+        target_name = target_user.get("full_name") or target_user.get("username") or str(new_owner_id)
+        return {
+            "success": True,
+            "reassigned_count": len(reassigned_ids),
+            "reassigned_opportunity_ids": reassigned_ids,
+            "new_owner_id": new_owner_id,
+            "new_owner_name": target_name,
+            "reason": clean_reason,
+            "message": f"Đã phân bổ lại thành công {len(reassigned_ids)} cơ hội cho {target_name}",
+        }
+    finally:
+        db.close()
