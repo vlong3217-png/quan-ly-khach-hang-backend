@@ -98,6 +98,12 @@ def _row_to_dict(row: OpportunityModel, db_session=None) -> Dict[str, Any]:
         "arr": row.arr or 0.0,
         "status": row.status or "OPEN",
         "expected_close_date": row.expected_close_date.isoformat() if row.expected_close_date else None,
+        "contact_person": row.contact_person,
+        "contact_id": row.contact_id,
+        "source": row.source,
+        "win_probability": row.win_probability,
+        "probability_notes": row.probability_notes,
+        "description": row.description,
         "stage_overridden": bool(row.stage_overridden),
         "override_reason": row.override_reason,
         "override_by": row.override_by,
@@ -226,6 +232,61 @@ def recalculate_opportunity_value(opportunity_id: int) -> Optional[dict]:
         db.close()
 
 
+def _enrich_opportunity_record(opp: dict) -> dict:
+    opp_copy = copy.deepcopy(opp)
+    opp_id = opp["id"]
+    items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp_id]
+    opp_copy["products"] = items
+    opp_copy["has_products"] = len(items) > 0
+    opp_copy["arr"] = opp.get("arr", 0.0)
+
+    # 1. Bổ sung customer_name nếu có customer_id
+    if opp.get("customer_id") and not opp_copy.get("customer_name"):
+        try:
+            from app.services import customer_service
+            cust = customer_service.get_customer_by_id(opp["customer_id"])
+            opp_copy["customer_name"] = cust.get("name") if cust else None
+        except Exception:
+            opp_copy["customer_name"] = None
+
+    # 2. Bổ sung win_probability nếu chưa có
+    if opp_copy.get("win_probability") is None:
+        try:
+            from app.services import pipeline_service
+            stage_info = pipeline_service.find_stage(opp.get("stage", "PROSPECTING"))
+            opp_copy["win_probability"] = float(stage_info["win_probability"]) if stage_info and "win_probability" in stage_info else 10.0
+        except Exception:
+            opp_copy["win_probability"] = 10.0
+
+    # 3. Tích hợp cảnh báo đình trệ S5-07 & S5-02
+    is_stagnant = bool(opp.get("is_stagnant"))
+    is_overdue = bool(opp.get("is_overdue"))
+    is_flagged = bool(opp.get("is_flagged"))
+    days_inactive = opp.get("days_inactive")
+    days_overdue = opp.get("days_overdue")
+    threshold = opp.get("stagnant_threshold_days") or 14
+
+    opp_copy["is_stagnant"] = is_stagnant
+    opp_copy["is_overdue"] = is_overdue
+    opp_copy["is_flagged"] = is_flagged
+    opp_copy["flag_reasons"] = opp.get("flag_reasons", [])
+    opp_copy["days_inactive"] = days_inactive
+    opp_copy["days_overdue"] = days_overdue
+    opp_copy["stagnant_threshold_days"] = threshold
+    opp_copy["flagged_at"] = opp.get("flagged_at")
+
+    if is_stagnant:
+        days_str = f" trong {days_inactive} ngày" if days_inactive is not None else ""
+        opp_copy["stagnant_warning"] = f"Cảnh báo đình trệ: không có hoạt động{days_str} (ngưỡng {threshold} ngày)"
+    elif is_overdue:
+        days_str = f" {days_overdue} ngày" if days_overdue is not None else ""
+        opp_copy["stagnant_warning"] = f"Cảnh báo quá hạn: trễ ngày dự kiến chốt{days_str}"
+    else:
+        opp_copy["stagnant_warning"] = None
+
+    return opp_copy
+
+
 def get_raw_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
     db = SessionLocal()
     try:
@@ -235,7 +296,7 @@ def get_raw_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
             opp_dict = _row_to_dict(opp, db)
             opp_dict["products"] = [_product_row_to_dict(p) for p in items]
             opp_dict["has_products"] = len(items) > 0
-            return opp_dict
+            return _enrich_opportunity_record(opp_dict)
         # Fallback RAM
         for o in FAKE_OPPORTUNITIES:
             if o["id"] == opportunity_id:
@@ -243,7 +304,7 @@ def get_raw_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
                 c = copy.deepcopy(o)
                 c["products"] = items
                 c["has_products"] = len(items) > 0
-                return c
+                return _enrich_opportunity_record(c)
         return None
     finally:
         db.close()
@@ -253,6 +314,7 @@ def get_opportunities_by_scope(
     current_user: dict,
     scope: DataScope,
     search: Optional[str] = None,
+    customer_id: Optional[int] = None,
 ) -> list[dict]:
     db = SessionLocal()
     try:
@@ -268,6 +330,9 @@ def get_opportunities_by_scope(
             user_id = current_user.get("id")
             query = query.filter(OpportunityModel.owner_id == user_id)
 
+        if customer_id is not None:
+            query = query.filter(OpportunityModel.customer_id == customer_id)
+
         if search:
             s = f"%{search.strip().lower()}%"
             query = query.filter(
@@ -282,7 +347,7 @@ def get_opportunities_by_scope(
             opp_dict = _row_to_dict(opp, db)
             opp_dict["products"] = [_product_row_to_dict(p) for p in items]
             opp_dict["has_products"] = len(items) > 0
-            results.append(opp_dict)
+            results.append(_enrich_opportunity_record(opp_dict))
 
         # Nếu DB trống và có RAM (dùng trong test unit)
         if not results and FAKE_OPPORTUNITIES:
@@ -295,12 +360,15 @@ def get_opportunities_by_scope(
                 user_id = current_user.get("id")
                 raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("owner_id") == user_id]
 
+            if customer_id is not None:
+                raw_list = [o for o in raw_list if o.get("customer_id") == customer_id]
+
             for opp in raw_list:
                 items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp["id"]]
                 c = copy.deepcopy(opp)
                 c["products"] = items
                 c["has_products"] = len(items) > 0
-                results.append(c)
+                results.append(_enrich_opportunity_record(c))
 
             if search:
                 s = search.lower().strip()
@@ -311,26 +379,211 @@ def get_opportunities_by_scope(
         db.close()
 
 
+def get_kanban_board_data(
+    current_user: dict,
+    scope: DataScope,
+    owner_id: Optional[int] = None,
+    team_id: Optional[int] = None,
+    expected_close_date_from = None,
+    expected_close_date_to = None,
+    search: Optional[str] = None,
+) -> dict:
+    """
+    AC S5-02: Bảng pipeline dạng Kanban:
+    - Mỗi cột là một giai đoạn, hiển thị số cơ hội và tổng giá trị của cột.
+    - Thẻ cơ hội hiển thị tên khách, giá trị, ngày dự kiến chốt và cảnh báo nếu đình trệ.
+    - Lọc theo người sở hữu, nhóm, khoảng ngày chốt; nhân viên mặc định chỉ thấy cơ hội của mình.
+    """
+    from app.services import pipeline_service
+    from datetime import datetime, date
+
+    stages = pipeline_service.get_all_stages()
+    opps = get_opportunities_by_scope(current_user, scope, search=search)
+
+    # 1. Lọc theo người sở hữu (owner_id)
+    if owner_id is not None:
+        opps = [o for o in opps if o.get("owner_id") == owner_id]
+
+    # 2. Lọc theo nhóm (team_id)
+    if team_id is not None:
+        opps = [o for o in opps if o.get("team_id") == team_id]
+
+    # 3. Lọc theo khoảng ngày dự kiến chốt
+    from_date_obj = None
+    to_date_obj = None
+    if expected_close_date_from:
+        if isinstance(expected_close_date_from, str):
+            try:
+                from_date_obj = datetime.strptime(expected_close_date_from[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
+        elif isinstance(expected_close_date_from, date):
+            from_date_obj = expected_close_date_from
+
+    if expected_close_date_to:
+        if isinstance(expected_close_date_to, str):
+            try:
+                to_date_obj = datetime.strptime(expected_close_date_to[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
+        elif isinstance(expected_close_date_to, date):
+            to_date_obj = expected_close_date_to
+
+    filtered_opps = []
+    for o in opps:
+        close_date_str = o.get("expected_close_date")
+        close_date_obj = None
+        if close_date_str:
+            try:
+                close_date_obj = datetime.strptime(str(close_date_str)[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
+
+        if from_date_obj and (not close_date_obj or close_date_obj < from_date_obj):
+            continue
+        if to_date_obj and (not close_date_obj or close_date_obj > to_date_obj):
+            continue
+        filtered_opps.append(o)
+
+    # 4. Gom nhóm cơ hội vào từng cột giai đoạn
+    columns = []
+    for stg in stages:
+        stg_code = stg["code"]
+        stg_id = stg["id"]
+        col_opps = [o for o in filtered_opps if o.get("stage") == stg_code or o.get("stage") == str(stg_id)]
+        col_val = round(sum(o.get("value", 0.0) for o in col_opps), 2)
+        columns.append({
+            "stage_id": stg_id,
+            "stage_code": stg_code,
+            "stage_name": stg["name"],
+            "order_index": stg.get("order_index", 0),
+            "default_win_probability": float(stg.get("win_probability", 0.0)),
+            "count": len(col_opps),
+            "total_value": col_val,
+            "opportunities": col_opps,
+        })
+
+    total_count = sum(c["count"] for c in columns)
+    total_val = round(sum(c["total_value"] for c in columns), 2)
+
+    return {
+        "scope": scope.value if hasattr(scope, "value") else str(scope),
+        "total_opportunities": total_count,
+        "total_pipeline_value": total_val,
+        "columns": columns,
+    }
+
+
+def move_opportunity_kanban_stage(
+    opportunity_id: int,
+    new_stage_identifier: str,
+    current_user: dict,
+    probability: Optional[float] = None,
+    probability_notes: Optional[str] = None,
+) -> dict:
+    """
+    AC S5-02: Kéo thả để chuyển giai đoạn cơ hội bán hàng.
+    """
+    from app.services import pipeline_service
+    from fastapi import HTTPException, status
+
+    opp = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+    if not opp:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy cơ hội bán hàng",
+        )
+
+    target_stage = pipeline_service.find_stage(new_stage_identifier)
+    if not target_stage:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy giai đoạn '{new_stage_identifier}'",
+        )
+
+    opp["stage"] = target_stage["code"]
+
+    if probability is not None:
+        opp["win_probability"] = float(probability)
+        opp["probability_notes"] = probability_notes
+    else:
+        opp["win_probability"] = float(target_stage.get("win_probability", 10.0))
+
+    return get_raw_opportunity_by_id(opportunity_id)
+
+
 def create_opportunity_record(data: dict, current_user: dict) -> dict:
+    from app.services import pipeline_service, customer_service
+    from fastapi import HTTPException, status
+    from datetime import date
+
+    # AC S5-01: Đối với Nhân viên kinh doanh, ngày dự kiến chốt không được ở quá khứ khi tạo mới
+    user_role = (current_user.get("role") or "").upper()
+    close_date_raw = data.get("expected_close_date")
+    close_date_obj = None
+    if close_date_raw:
+        if isinstance(close_date_raw, str) and close_date_raw.strip():
+            try:
+                close_date_obj = datetime.strptime(close_date_raw[:10], "%Y-%m-%d").date()
+            except Exception:
+                close_date_obj = None
+        elif isinstance(close_date_raw, date):
+            close_date_obj = close_date_raw
+
+    if user_role not in ("ADMIN", "MANAGER"):
+        if close_date_obj and close_date_obj < date.today():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ngày dự kiến chốt không được ở quá khứ khi tạo mới",
+            )
+
+    # AC S5-01: Xác suất thắng lấy mặc định theo giai đoạn, sửa tay được kèm ghi chú
+    stage = data.get("stage", "PROSPECTING")
+    stage_info = pipeline_service.find_stage(stage)
+    default_prob = float(stage_info["win_probability"]) if stage_info and "win_probability" in stage_info else 10.0
+
+    prob_notes = (data.get("probability_notes") or "").strip()
+    if data.get("win_probability") is not None:
+        user_prob = float(data["win_probability"])
+        if abs(user_prob - default_prob) > 1e-4:
+            if not prob_notes:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Sửa tay xác suất thắng khác mặc định của giai đoạn bắt buộc phải có ghi chú giải trình",
+                )
+            final_prob = user_prob
+            final_notes = prob_notes
+        else:
+            final_prob = user_prob
+            final_notes = prob_notes or None
+    else:
+        final_prob = default_prob
+        final_notes = prob_notes or None
+
+    customer_name = None
+    if data.get("customer_id"):
+        cust = customer_service.get_customer_by_id(data["customer_id"])
+        if cust:
+            customer_name = cust.get("name")
+
     db = SessionLocal()
     try:
-        close_date = data.get("expected_close_date")
-        if isinstance(close_date, str) and close_date:
-            try:
-                close_date = datetime.strptime(close_date[:10], "%Y-%m-%d").date()
-            except Exception:
-                close_date = None
-
         new_opp = OpportunityModel(
             title=data["title"],
             value=float(data.get("value") or 0.0),
-            stage=data.get("stage", "PROSPECTING"),
+            stage=stage,
             customer_id=data.get("customer_id"),
             campaign_id=data.get("campaign_id"),
             lead_id=data.get("lead_id"),
             owner_id=current_user.get("id", 1),
             team_id=data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
-            expected_close_date=close_date,
+            expected_close_date=close_date_obj,
+            contact_person=data.get("contact_person"),
+            contact_id=data.get("contact_id"),
+            source=data.get("source"),
+            win_probability=final_prob,
+            probability_notes=final_notes,
+            description=data.get("description"),
             arr=0.0,
             status="OPEN",
         )
@@ -339,7 +592,7 @@ def create_opportunity_record(data: dict, current_user: dict) -> dict:
         db.refresh(new_opp)
         res = _row_to_dict(new_opp, db)
         _sync_fake_from_db()
-        return res
+        return _enrich_opportunity_record(res)
     except Exception as e:
         db.rollback()
         # Fallback RAM
@@ -347,14 +600,21 @@ def create_opportunity_record(data: dict, current_user: dict) -> dict:
         new_opp_ram = {
             "id": new_id,
             "title": data["title"],
-            "value": float(data.get("value") or 0.0),
-            "stage": data.get("stage", "PROSPECTING"),
+            "value": float(data.get("value", 0.0)),
+            "stage": stage,
             "customer_id": data.get("customer_id"),
+            "customer_name": customer_name,
+            "contact_person": data.get("contact_person"),
+            "contact_id": data.get("contact_id"),
+            "source": data.get("source"),
+            "expected_close_date": str(close_date_obj) if close_date_obj else None,
+            "win_probability": final_prob,
+            "probability_notes": final_notes,
+            "description": data.get("description"),
             "campaign_id": data.get("campaign_id"),
             "lead_id": data.get("lead_id"),
             "owner_id": current_user.get("id", 1),
             "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
-            "expected_close_date": data.get("expected_close_date"),
             "arr": 0.0,
             "has_products": False,
             "products": [],
@@ -362,26 +622,67 @@ def create_opportunity_record(data: dict, current_user: dict) -> dict:
             "created_at": datetime.utcnow().isoformat(),
         }
         FAKE_OPPORTUNITIES.append(new_opp_ram)
-        return new_opp_ram
+        return _enrich_opportunity_record(new_opp_ram)
     finally:
         db.close()
 
 
-def update_opportunity_record(opportunity_id: int, data: dict) -> Optional[dict]:
+def update_opportunity_record(opportunity_id: int, data: dict, current_user: Optional[dict] = None) -> Optional[dict]:
+    from app.services import pipeline_service, customer_service
+    from fastapi import HTTPException, status
+    from datetime import date
+
     db = SessionLocal()
     try:
         opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+        opp_ram = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
+        
+        current_stage = opp.stage if opp else (opp_ram.get("stage", "PROSPECTING") if opp_ram else "PROSPECTING")
+        current_prob = opp.win_probability if opp else (opp_ram.get("win_probability") if opp_ram else 10.0)
+        current_notes = opp.probability_notes if opp else (opp_ram.get("probability_notes") if opp_ram else None)
+
+        new_stage = data.get("stage")
+        stage_to_check = new_stage or current_stage
+        stage_info = pipeline_service.find_stage(stage_to_check)
+        default_prob = float(stage_info["win_probability"]) if stage_info and "win_probability" in stage_info else 10.0
+
+        final_prob = current_prob
+        final_notes = current_notes
+        if data.get("win_probability") is not None:
+            user_prob = float(data["win_probability"])
+            prob_notes = (data.get("probability_notes") or current_notes or "").strip()
+            if abs(user_prob - default_prob) > 1e-4:
+                if not prob_notes:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Sửa tay xác suất thắng khác mặc định của giai đoạn bắt buộc phải có ghi chú giải trình",
+                    )
+                final_prob = user_prob
+                final_notes = prob_notes
+            else:
+                final_prob = user_prob
+                if data.get("probability_notes") is not None:
+                    final_notes = (data.get("probability_notes") or "").strip() or None
+        elif new_stage and new_stage != current_stage:
+            final_prob = default_prob
+
         if opp is not None:
             for key, value in data.items():
-                if key in ("id", "owner_id"):
+                if key in ("id", "owner_id", "win_probability", "probability_notes"):
                     continue
-                if key == "expected_close_date" and isinstance(value, str):
-                    try:
-                        value = datetime.strptime(value[:10], "%Y-%m-%d").date()
-                    except Exception:
+                if key == "expected_close_date":
+                    if isinstance(value, str) and value.strip():
+                        try:
+                            value = datetime.strptime(value[:10], "%Y-%m-%d").date()
+                        except Exception:
+                            value = None
+                    elif not isinstance(value, date):
                         value = None
                 if hasattr(opp, key):
                     setattr(opp, key, value)
+
+            opp.win_probability = final_prob
+            opp.probability_notes = final_notes
 
             db.commit()
             db.refresh(opp)
@@ -390,16 +691,27 @@ def update_opportunity_record(opportunity_id: int, data: dict) -> Optional[dict]
             opp_dict["products"] = [_product_row_to_dict(p) for p in items]
             opp_dict["has_products"] = len(items) > 0
             _sync_fake_from_db()
-            return opp_dict
+            return _enrich_opportunity_record(opp_dict)
 
         # Fallback RAM
-        opp_ram = next((o for o in FAKE_OPPORTUNITIES if o["id"] == opportunity_id), None)
         if opp_ram:
             for k, v in data.items():
-                if v is not None and k not in ("id", "owner_id"):
-                    opp_ram[k] = v
+                if v is not None and k not in ("id", "owner_id", "win_probability", "probability_notes"):
+                    if k == "expected_close_date":
+                        opp_ram[k] = str(v)
+                    else:
+                        opp_ram[k] = v
+            opp_ram["win_probability"] = final_prob
+            opp_ram["probability_notes"] = final_notes
+            if data.get("customer_id"):
+                cust = customer_service.get_customer_by_id(data["customer_id"])
+                if cust:
+                    opp_ram["customer_name"] = cust.get("name")
             return get_raw_opportunity_by_id(opportunity_id)
         return None
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise e
