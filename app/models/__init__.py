@@ -6,8 +6,12 @@ from app.models.opportunity import (
     OpportunityProduct,
     OpportunityModel,
     OpportunityProductModel,
+    OpportunityHistoryModel,
+    OpportunitySavedFilterModel,
+    OpportunityShareModel,
+    OpportunityAttachmentModel,
 )
-from app.models.activity import Activity
+from app.models.activity import Activity, ActivityModel, TaskModel, NotificationModel
 from app.models.quote import Quote
 from app.models.audit_log import AuditLog
 from app.models.product import Product
@@ -30,7 +34,16 @@ __all__ = [
     "CustomerMergeHistory",
     "Opportunity",
     "OpportunityProduct",
+    "OpportunityModel",
+    "OpportunityProductModel",
+    "OpportunityHistoryModel",
+    "OpportunitySavedFilterModel",
+    "OpportunityShareModel",
+    "OpportunityAttachmentModel",
     "Activity",
+    "ActivityModel",
+    "TaskModel",
+    "NotificationModel",
     "Quote",
     "AuditLog",
     "Product",
