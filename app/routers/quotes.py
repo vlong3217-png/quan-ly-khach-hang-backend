@@ -20,6 +20,9 @@ from app.schemas.quote import (
     QuoteListResponse,
     QuoteResponse,
     QuoteUpdate,
+    QuoteApprovalRequest,
+    QuoteApprovalHistoryItem,
+    QuoteApprovalHistoryListResponse,
 )
 from app.services.quote_service import (
     create_quote_record,
@@ -28,6 +31,12 @@ from app.services.quote_service import (
     get_raw_quote_by_id,
     update_quote_record,
     submit_quote_record,
+    approve_quote_record,
+    reject_quote_record,
+    return_quote_record,
+    send_quote_to_customer_record,
+    get_quote_approval_history,
+    get_pending_approvals_by_scope,
 )
 
 router = APIRouter(
@@ -43,6 +52,7 @@ def list_quotes(
         description="Data scope filter: MY, MY_TEAM, TEAM, or ALL. Defaults based on role.",
     ),
     opportunity_id: Optional[int] = Query(None, description="Lọc theo mã cơ hội"),
+    status: Optional[str] = Query(None, description="Lọc theo trạng thái báo giá (DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, RETURNED, SENT...)"),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
     page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
@@ -59,6 +69,7 @@ def list_quotes(
         effective_scope,
         search=search_query,
         opportunity_id=opportunity_id,
+        status=status,
     )
     total = len(all_quotes)
 
@@ -74,6 +85,44 @@ def list_quotes(
         effective_page = 1
 
     paged_items = all_quotes[effective_skip : effective_skip + effective_limit]
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
+
+    return {
+        "scope": effective_scope.value,
+        "total": total,
+        "quotes": paged_items,
+        "page": effective_page,
+        "limit": effective_limit,
+        "skip": effective_skip,
+        "total_pages": total_pages,
+    }
+
+
+@router.get("/pending-approvals", response_model=QuoteListResponse)
+def list_pending_approvals(
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mỗi trang"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu"),
+    current_user: dict = Depends(require_roles(["ADMIN", "DIRECTOR", "MANAGER"])),
+):
+    """Lấy danh sách các báo giá đang chờ phê duyệt (S7-02)."""
+    import math
+    effective_scope = resolve_scope(current_user, None)
+    pending_quotes = get_pending_approvals_by_scope(current_user, effective_scope)
+    total = len(pending_quotes)
+
+    effective_limit = limit if limit is not None else 20
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        effective_skip = 0
+        effective_page = 1
+
+    paged_items = pending_quotes[effective_skip : effective_skip + effective_limit]
     total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
 
     return {
@@ -304,8 +353,13 @@ def update_quote(
 def submit_quote(
     quote_id: int,
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    """Chuyển bản nháp sang chính thức / gửi duyệt (AC 5)."""
+    """
+    Chuyển bản nháp sang chính thức / gửi duyệt (S7-01 & S7-02):
+    - AC 1: Chiết khấu dưới ngưỡng 1 (<10% và không dưới giá sàn) thì tự động thông qua (AUTO_APPROVED).
+    - AC 2: Vượt ngưỡng thì chuyển PENDING_APPROVAL.
+    """
     q_item = get_raw_quote_by_id(quote_id)
     if q_item is None:
         raise HTTPException(
@@ -319,8 +373,139 @@ def submit_quote(
             detail="Không có quyền gửi duyệt báo giá này",
         )
 
-    submitted = submit_quote_record(quote_id)
+    submitted = submit_quote_record(quote_id, current_user=current_user, db=db)
     return submitted
+
+
+@router.post("/{quote_id}/approve", response_model=QuoteResponse)
+def approve_quote(
+    quote_id: int,
+    payload: Optional[QuoteApprovalRequest] = None,
+    current_user: dict = Depends(require_roles(["ADMIN", "DIRECTOR", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    Phê duyệt báo giá (S7-02 AC 2 & AC 3):
+    - Trưởng nhóm (MANAGER), Giám đốc (DIRECTOR) hoặc Admin duyệt.
+    - Nếu báo giá yêu cầu cấp DIRECTOR mà người duyệt là MANAGER -> Bị từ chối HTTP 403 Forbidden.
+    """
+    comments = payload.comments if payload else None
+    return approve_quote_record(quote_id, current_user=current_user, comments=comments, db=db)
+
+
+@router.post("/{quote_id}/reject", response_model=QuoteResponse)
+def reject_quote(
+    quote_id: int,
+    payload: QuoteApprovalRequest,
+    current_user: dict = Depends(require_roles(["ADMIN", "DIRECTOR", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    Từ chối duyệt báo giá (S7-02 AC 3):
+    - Bắt buộc phải có lý do/ý kiến từ chối (nếu không trả về HTTP 400 Bad Request).
+    """
+    if not payload or not payload.comments or not payload.comments.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bắt buộc nhập ý kiến khi từ chối duyệt báo giá (S7-02 AC)",
+        )
+    return reject_quote_record(quote_id, current_user=current_user, comments=payload.comments, db=db)
+
+
+@router.post("/{quote_id}/return", response_model=QuoteResponse)
+def return_quote(
+    quote_id: int,
+    payload: QuoteApprovalRequest,
+    current_user: dict = Depends(require_roles(["ADMIN", "DIRECTOR", "MANAGER"])),
+    db: Session = Depends(get_db),
+):
+    """
+    Trả lại báo giá để nhân viên sửa lại (S7-02 AC 3):
+    - Bắt buộc phải có ý kiến yêu cầu chỉnh sửa (nếu không trả về HTTP 400 Bad Request).
+    - Chuyển trạng thái sang RETURNED và mở lại is_draft = True để sửa tiếp.
+    """
+    if not payload or not payload.comments or not payload.comments.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bắt buộc nhập ý kiến khi trả lại báo giá yêu cầu sửa (S7-02 AC)",
+        )
+    return return_quote_record(quote_id, current_user=current_user, comments=payload.comments, db=db)
+
+
+@router.post("/{quote_id}/send", response_model=QuoteResponse)
+def send_quote(
+    quote_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Gửi báo giá cho khách hàng (S7-02 AC 4):
+    - Chỉ báo giá đã được phê duyệt (status == APPROVED) mới được phép gửi cho khách.
+    - Nếu chưa duyệt (DRAFT, PENDING_APPROVAL, REJECTED, RETURNED) -> Báo lỗi HTTP 400 Bad Request.
+    """
+    q_item = get_raw_quote_by_id(quote_id)
+    if q_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy báo giá",
+        )
+
+    if not check_scope_access(current_user, q_item["owner_id"], q_item.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền gửi báo giá này",
+        )
+
+    return send_quote_to_customer_record(quote_id, current_user=current_user, db=db)
+
+
+@router.get("/{quote_id}/approval-history", response_model=QuoteApprovalHistoryListResponse)
+def get_quote_history(
+    quote_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Lấy lịch sử xét duyệt báo giá (S7-02 AC 5):
+    - Lịch sử duyệt là bất biến (immutable), không thể sửa và không thể xoá.
+    """
+    q_item = get_raw_quote_by_id(quote_id)
+    if q_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy báo giá",
+        )
+
+    if not check_scope_access(current_user, q_item["owner_id"], q_item.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền xem lịch sử báo giá này",
+        )
+
+    history = get_quote_approval_history(quote_id)
+    return {
+        "quote_id": quote_id,
+        "quote_number": q_item.get("quote_number"),
+        "total": len(history),
+        "history": history,
+    }
+
+
+@router.delete("/{quote_id}/approval-history")
+def block_delete_approval_history(quote_id: int):
+    """S7-02 AC 5: Lịch sử duyệt không xoá được."""
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail="Lịch sử phê duyệt là bất biến, không thể xoá (S7-02 AC 5)",
+    )
+
+
+@router.put("/{quote_id}/approval-history")
+def block_update_approval_history(quote_id: int):
+    """S7-02 AC 5: Lịch sử duyệt không sửa được."""
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail="Lịch sử phê duyệt là bất biến, không thể sửa (S7-02 AC 5)",
+    )
 
 
 @router.delete(
