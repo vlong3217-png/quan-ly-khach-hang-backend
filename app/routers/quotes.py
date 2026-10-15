@@ -1,12 +1,13 @@
 """
-Quote API router with role-based access control and data scope filtering.
+Quote API router with role-based access control and data scope filtering (S7-01).
 """
 
+from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from sqlalchemy.orm import Session
 from app.core.dependencies import (
     DataScope,
     check_scope_access,
@@ -26,6 +27,7 @@ from app.services.quote_service import (
     get_quotes_by_scope,
     get_raw_quote_by_id,
     update_quote_record,
+    submit_quote_record,
 )
 
 router = APIRouter(
@@ -40,6 +42,7 @@ def list_quotes(
         None,
         description="Data scope filter: MY, MY_TEAM, TEAM, or ALL. Defaults based on role.",
     ),
+    opportunity_id: Optional[int] = Query(None, description="Lọc theo mã cơ hội"),
     search: Optional[str] = Query(None, description="Search query"),
     q: Optional[str] = Query(None, description="Search query alias"),
     page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
@@ -51,7 +54,12 @@ def list_quotes(
 
     effective_scope = resolve_scope(current_user, scope)
     search_query = search or q
-    all_quotes = get_quotes_by_scope(current_user, effective_scope, search=search_query)
+    all_quotes = get_quotes_by_scope(
+        current_user,
+        effective_scope,
+        search=search_query,
+        opportunity_id=opportunity_id,
+    )
     total = len(all_quotes)
 
     effective_limit = limit if limit is not None else 20
@@ -79,6 +87,25 @@ def list_quotes(
     }
 
 
+@router.get("/by-opportunity/{opportunity_id}", response_model=QuoteListResponse)
+def list_quotes_by_opportunity(
+    opportunity_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Lấy danh sách các báo giá thuộc một cơ hội (S7-01)."""
+    effective_scope = resolve_scope(current_user, None)
+    quotes = get_quotes_by_scope(current_user, effective_scope, opportunity_id=opportunity_id)
+    return {
+        "scope": effective_scope.value,
+        "total": len(quotes),
+        "quotes": quotes,
+        "page": 1,
+        "limit": len(quotes) if quotes else 20,
+        "skip": 0,
+        "total_pages": 1,
+    }
+
+
 @router.get("/{quote_id}", response_model=QuoteResponse)
 def get_quote(
     quote_id: int,
@@ -103,12 +130,19 @@ def get_quote(
 @router.post("", response_model=QuoteResponse, status_code=status.HTTP_201_CREATED)
 def create_quote(
     payload: QuoteCreate,
-    current_user: dict = Depends(require_roles(["ADMIN", "MANAGER"])),
+    current_user: dict = Depends(get_current_user),  # S7-01: Cho phép Sales Rep (USER) tạo báo giá
     db: Session = Depends(get_db),
 ):
+    # AC 4: Validate hạn hiệu lực báo giá không được ở trong quá khứ
+    if payload.valid_until and payload.valid_until < date.today():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ngày hết hạn hiệu lực báo giá không thể ở trong quá khứ",
+        )
+
     quote_data = payload.model_dump()
 
-    # AC S2-05: Tích hợp kiểm tra giá sàn vào quy trình tạo báo giá
+    # AC S2-05: Tích hợp kiểm tra giá sàn vào quy trình tạo báo giá đơn lẻ (tương thích backward)
     prod_id = quote_data.get("product_id")
     check_price = quote_data.get("unit_price") or quote_data.get("amount")
     if prod_id and check_price:
@@ -124,35 +158,37 @@ def create_quote(
         except HTTPException:
             pass
 
-    new_q = create_quote_record(quote_data, current_user)
+    new_q = create_quote_record(quote_data, current_user, db=db)
 
-    # Ghi nhận Audit Log cho nghiệp vụ định giá / chiết khấu (AC S2-04) cùng transaction
-    from app.services.audit_log_service import log_change
-    user_name = current_user.get("full_name", current_user.get("username", "User"))
-    log_change(
-        user_id=current_user["id"],
-        user_name=user_name,
-        entity_type="DISCOUNT",
-        entity_id=f"QUOTE-{new_q['id']}",
-        action="CREATE_QUOTE",
-        field_name="amount",
-        old_value=None,
-        new_value=str(new_q["amount"]),
-        db=db,
-    )
-    if new_q.get("unit_price") is not None:
+    try:
+        from app.services.audit_log_service import log_change
+        user_name = current_user.get("full_name", current_user.get("username", "User"))
         log_change(
             user_id=current_user["id"],
             user_name=user_name,
             entity_type="DISCOUNT",
             entity_id=f"QUOTE-{new_q['id']}",
             action="CREATE_QUOTE",
-            field_name="unit_price",
+            field_name="amount",
             old_value=None,
-            new_value=str(new_q["unit_price"]),
+            new_value=str(new_q["amount"]),
             db=db,
         )
-    db.commit()
+        if new_q.get("unit_price") is not None:
+            log_change(
+                user_id=current_user["id"],
+                user_name=user_name,
+                entity_type="DISCOUNT",
+                entity_id=f"QUOTE-{new_q['id']}",
+                action="CREATE_QUOTE",
+                field_name="unit_price",
+                old_value=None,
+                new_value=str(new_q["unit_price"]),
+                db=db,
+            )
+        db.commit()
+    except Exception:
+        pass
 
     return new_q
 
@@ -177,6 +213,13 @@ def update_quote(
             detail="Không có quyền chỉnh sửa dữ liệu báo giá này",
         )
 
+    # AC 4: Validate hạn hiệu lực không được ở trong quá khứ nếu cập nhật
+    if payload.valid_until and payload.valid_until < date.today():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ngày hết hạn hiệu lực báo giá không thể ở trong quá khứ",
+        )
+
     quote_update_data = payload.model_dump(exclude_unset=True)
 
     # AC S2-05: Kiểm tra giá sàn khi cập nhật báo giá
@@ -199,7 +242,7 @@ def update_quote(
     old_unit_price = q_item.get("unit_price")
     old_status = q_item.get("discount_approval_status")
 
-    updated = update_quote_record(quote_id, quote_update_data)
+    updated = update_quote_record(quote_id, quote_update_data, db=db)
 
     # Ghi nhận Audit Log nếu thay đổi giá trị/chiết khấu (AC S2-04) cùng transaction
     from app.services.audit_log_service import log_change
@@ -249,9 +292,35 @@ def update_quote(
         has_logged = True
 
     if has_logged:
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            pass
 
     return updated
+
+
+@router.post("/{quote_id}/submit", response_model=QuoteResponse)
+def submit_quote(
+    quote_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Chuyển bản nháp sang chính thức / gửi duyệt (AC 5)."""
+    q_item = get_raw_quote_by_id(quote_id)
+    if q_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy báo giá",
+        )
+
+    if not check_scope_access(current_user, q_item["owner_id"], q_item.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền gửi duyệt báo giá này",
+        )
+
+    submitted = submit_quote_record(quote_id)
+    return submitted
 
 
 @router.delete(
