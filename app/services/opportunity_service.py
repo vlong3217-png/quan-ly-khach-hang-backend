@@ -4,11 +4,19 @@ Opportunity service with MySQL Database persistence & data scope filtering (MY/M
 
 import copy
 from datetime import datetime, date
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
+from fastapi import HTTPException, status
 from sqlalchemy import desc
 from app.core.dependencies import DataScope
 from app.core.database import SessionLocal
-from app.models.opportunity import OpportunityModel, OpportunityProductModel
+from app.models.opportunity import (
+    OpportunityModel,
+    OpportunityProductModel,
+    OpportunityHistoryModel,
+    OpportunitySavedFilterModel,
+    OpportunityShareModel,
+    OpportunityAttachmentModel,
+)
 from app.models.customer import Customer as CustomerModel
 from app.models.user import User as UserModel
 
@@ -168,12 +176,20 @@ def _sync_fake_from_db():
 
 def reset_fake_opportunities() -> None:
     """Xóa dữ liệu cơ hội trong CSDL MySQL và nạp dữ liệu mẫu vào RAM cho test suites."""
-    global FAKE_OPPORTUNITIES, FAKE_OPPORTUNITY_PRODUCTS
+    global FAKE_OPPORTUNITIES, FAKE_OPPORTUNITY_PRODUCTS, FAKE_OPPORTUNITY_HISTORIES, FAKE_OPPORTUNITY_SAVED_FILTERS, FAKE_OPPORTUNITY_SHARES, FAKE_OPPORTUNITY_ATTACHMENTS
     FAKE_OPPORTUNITIES.clear()
     FAKE_OPPORTUNITIES.extend(copy.deepcopy(TEST_SAMPLE_OPPORTUNITIES))
     FAKE_OPPORTUNITY_PRODUCTS.clear()
+    FAKE_OPPORTUNITY_HISTORIES.clear()
+    FAKE_OPPORTUNITY_SAVED_FILTERS.clear()
+    FAKE_OPPORTUNITY_SHARES.clear()
+    FAKE_OPPORTUNITY_ATTACHMENTS.clear()
     db = SessionLocal()
     try:
+        db.query(OpportunityAttachmentModel).delete()
+        db.query(OpportunityShareModel).delete()
+        db.query(OpportunitySavedFilterModel).delete()
+        db.query(OpportunityHistoryModel).delete()
         db.query(OpportunityProductModel).delete()
         db.query(OpportunityModel).delete()
         db.commit()
@@ -666,6 +682,12 @@ def update_opportunity_record(opportunity_id: int, data: dict, current_user: Opt
         elif new_stage and new_stage != current_stage:
             final_prob = default_prob
 
+        # S6-01: Ghi nhận lịch sử trước và sau khi update
+        old_stage = opp.stage if opp else (opp_ram.get("stage") if opp_ram else None)
+        old_val = opp.value if opp else (opp_ram.get("value") if opp_ram else None)
+        old_close = str(opp.expected_close_date) if (opp and opp.expected_close_date) else (str(opp_ram.get("expected_close_date")) if (opp_ram and opp_ram.get("expected_close_date")) else None)
+        old_owner = opp.owner_id if opp else (opp_ram.get("owner_id") if opp_ram else None)
+
         if opp is not None:
             for key, value in data.items():
                 if key in ("id", "owner_id", "win_probability", "probability_notes"):
@@ -684,6 +706,18 @@ def update_opportunity_record(opportunity_id: int, data: dict, current_user: Opt
             opp.win_probability = final_prob
             opp.probability_notes = final_notes
 
+            # Ghi nhận lịch sử S6-01 cho các trường thay đổi
+            performer_id = current_user.get("id", 1) if current_user else 1
+            performer_name = (current_user.get("full_name") or current_user.get("username") or f"User {performer_id}") if current_user else "System"
+
+            if new_stage and new_stage != old_stage:
+                record_opportunity_history(opportunity_id, "stage", old_stage, new_stage, performer_id, performer_name, db=db)
+            if data.get("value") is not None and float(data["value"]) != float(old_val or 0.0):
+                record_opportunity_history(opportunity_id, "value", str(old_val), str(data["value"]), performer_id, performer_name, db=db)
+            new_close_str = str(data.get("expected_close_date")) if data.get("expected_close_date") else None
+            if "expected_close_date" in data and new_close_str != old_close:
+                record_opportunity_history(opportunity_id, "expected_close_date", old_close, new_close_str, performer_id, performer_name, db=db)
+
             db.commit()
             db.refresh(opp)
             items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opp.id).all()
@@ -695,6 +729,17 @@ def update_opportunity_record(opportunity_id: int, data: dict, current_user: Opt
 
         # Fallback RAM
         if opp_ram:
+            performer_id = current_user.get("id", 1) if current_user else 1
+            performer_name = (current_user.get("full_name") or current_user.get("username") or f"User {performer_id}") if current_user else "System"
+
+            if new_stage and new_stage != old_stage:
+                record_opportunity_history(opportunity_id, "stage", old_stage, new_stage, performer_id, performer_name)
+            if data.get("value") is not None and float(data["value"]) != float(old_val or 0.0):
+                record_opportunity_history(opportunity_id, "value", str(old_val), str(data["value"]), performer_id, performer_name)
+            new_close_str = str(data.get("expected_close_date")) if data.get("expected_close_date") else None
+            if "expected_close_date" in data and new_close_str != old_close:
+                record_opportunity_history(opportunity_id, "expected_close_date", old_close, new_close_str, performer_id, performer_name)
+
             for k, v in data.items():
                 if v is not None and k not in ("id", "owner_id", "win_probability", "probability_notes"):
                     if k == "expected_close_date":
@@ -1179,3 +1224,870 @@ def reassign_opportunities(
         }
     finally:
         db.close()
+
+
+# ============================================================================
+# SPRINT 6: S6-01, S6-02, S6-03, S6-04 IMPLEMENTATIONS
+# ============================================================================
+
+FAKE_OPPORTUNITY_HISTORIES: List[Dict[str, Any]] = []
+FAKE_OPPORTUNITY_SAVED_FILTERS: List[Dict[str, Any]] = []
+FAKE_OPPORTUNITY_SHARES: List[Dict[str, Any]] = []
+FAKE_OPPORTUNITY_ATTACHMENTS: List[Dict[str, Any]] = []
+
+
+def record_opportunity_history(
+    opportunity_id: int,
+    field_name: str,
+    old_value: Any,
+    new_value: Any,
+    performer_id: int,
+    performer_name: Optional[str] = None,
+    db: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """S6-01: Ghi nhận lịch sử thay đổi trường cơ hội (chỉ ghi khi thực sự thay đổi)."""
+    if str(old_value) == str(new_value):
+        return {}
+
+    now = datetime.now()
+    entry = {
+        "opportunity_id": opportunity_id,
+        "field_name": field_name,
+        "old_value": str(old_value) if old_value is not None else None,
+        "new_value": str(new_value) if new_value is not None else None,
+        "performed_by": performer_id,
+        "performer_name": performer_name or f"User {performer_id}",
+        "created_at": now,
+    }
+
+    local_db = None
+    if db is None:
+        local_db = SessionLocal()
+        session = local_db
+    else:
+        session = db
+
+    try:
+        model = OpportunityHistoryModel(
+            opportunity_id=opportunity_id,
+            field_name=field_name,
+            old_value=entry["old_value"],
+            new_value=entry["new_value"],
+            performed_by=performer_id,
+            performer_name=entry["performer_name"],
+            created_at=now,
+        )
+        session.add(model)
+        if local_db is not None:
+            session.commit()
+            session.refresh(model)
+            entry["id"] = model.id
+        else:
+            session.flush()
+            entry["id"] = model.id
+    except Exception:
+        if local_db is not None:
+            session.rollback()
+        new_id = (max([h["id"] for h in FAKE_OPPORTUNITY_HISTORIES], default=0) + 1)
+        entry["id"] = new_id
+    finally:
+        if local_db is not None:
+            local_db.close()
+
+    FAKE_OPPORTUNITY_HISTORIES.append(entry)
+    return entry
+
+
+def list_opportunity_histories(opportunity_id: int, skip: int = 0, limit: int = 20) -> Tuple[List[Dict[str, Any]], int]:
+    """S6-01: Lấy lịch sử thay đổi của cơ hội, sắp xếp mới nhất trước, có phân trang."""
+    db = SessionLocal()
+    try:
+        query = db.query(OpportunityHistoryModel).filter(OpportunityHistoryModel.opportunity_id == opportunity_id)
+        total = query.count()
+        rows = query.order_by(OpportunityHistoryModel.created_at.desc(), OpportunityHistoryModel.id.desc()).offset(skip).limit(limit).all()
+        if total > 0 or rows:
+            items = []
+            for r in rows:
+                items.append({
+                    "id": r.id,
+                    "opportunity_id": r.opportunity_id,
+                    "field_name": r.field_name,
+                    "old_value": r.old_value,
+                    "new_value": r.new_value,
+                    "performed_by": r.performed_by,
+                    "performer_name": r.performer_name,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                })
+            return items, total
+
+        # Fallback RAM
+        ram_items = [h for h in FAKE_OPPORTUNITY_HISTORIES if h["opportunity_id"] == opportunity_id]
+        ram_items.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+        total_ram = len(ram_items)
+        paged = ram_items[skip : skip + limit]
+        return paged, total_ram
+    finally:
+        db.close()
+
+
+def check_opportunity_access_permission(
+    opportunity: dict,
+    current_user: dict,
+    require_write: bool = False,
+) -> bool:
+    """
+    S6-03: Kiểm tra quyền xem hoặc thao tác trên cơ hội:
+    - ADMIN: Toàn quyền.
+    - MANAGER: Trong cùng nhóm quản lý, hoặc được chia sẻ.
+    - OWNER: Toàn quyền với cơ hội mình sở hữu.
+    - SHARED MEMBER: Quyền theo share (READ hoặc READ_WRITE).
+    """
+    user_id = current_user.get("id")
+    role = current_user.get("role", "USER")
+
+    if role == "ADMIN":
+        return True
+
+    owner_id = opportunity.get("owner_id")
+    if owner_id == user_id:
+        return True
+
+    # Kiểm tra quyền chia sẻ S6-03
+    opp_id = opportunity.get("id")
+    shares = list_opportunity_shares(opp_id)
+    user_share = next((s for s in shares if s["user_id"] == user_id), None)
+    if user_share:
+        if require_write:
+            return user_share.get("permission") == "READ_WRITE"
+        return True
+
+    # MANAGER theo team
+    if role == "MANAGER":
+        team_id = opportunity.get("team_id")
+        user_team = current_user.get("team_id")
+        if user_team is not None and user_team == team_id:
+            return True
+
+    return False
+
+
+def get_shared_opportunity_ids_for_user(user_id: int) -> List[int]:
+    """Lấy danh sách ID các cơ hội được chia sẻ cho user_id."""
+    db = SessionLocal()
+    try:
+        rows = db.query(OpportunityShareModel.opportunity_id).filter(OpportunityShareModel.user_id == user_id).all()
+        db_ids = [r[0] for r in rows]
+        ram_ids = [s["opportunity_id"] for s in FAKE_OPPORTUNITY_SHARES if s["user_id"] == user_id]
+        return list(set(db_ids + ram_ids))
+    finally:
+        db.close()
+
+
+def list_opportunity_shares(opportunity_id: int) -> List[Dict[str, Any]]:
+    """S6-03: Lấy danh sách thành viên được chia sẻ của một cơ hội."""
+    db = SessionLocal()
+    try:
+        rows = db.query(OpportunityShareModel).filter(OpportunityShareModel.opportunity_id == opportunity_id).all()
+        results = []
+        for r in rows:
+            u = db.query(UserModel).filter(UserModel.id == r.user_id).first()
+            sb = db.query(UserModel).filter(UserModel.id == r.shared_by).first()
+            results.append({
+                "id": r.id,
+                "opportunity_id": r.opportunity_id,
+                "user_id": r.user_id,
+                "user_name": (u.full_name or u.username) if u else f"User {r.user_id}",
+                "user_email": u.email if u else None,
+                "permission": r.permission,
+                "shared_by": r.shared_by,
+                "shared_by_name": (sb.full_name or sb.username) if sb else f"User {r.shared_by}",
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        if results:
+            return results
+
+        # Fallback RAM
+        ram_list = [s for s in FAKE_OPPORTUNITY_SHARES if s["opportunity_id"] == opportunity_id]
+        from app.services import auth_service
+        enriched = []
+        for s in ram_list:
+            u = auth_service.get_user_by_id(s["user_id"])
+            sb = auth_service.get_user_by_id(s["shared_by"])
+            c = copy.deepcopy(s)
+            c["user_name"] = (u.get("full_name") or u.get("username")) if u else f"User {s['user_id']}"
+            c["user_email"] = u.get("email") if u else None
+            c["shared_by_name"] = (sb.get("full_name") or sb.get("username")) if sb else f"User {s['shared_by']}"
+            enriched.append(c)
+        return enriched
+    finally:
+        db.close()
+
+
+def add_opportunity_share(
+    opportunity_id: int,
+    user_id: int,
+    permission: str,
+    current_user: dict,
+) -> Dict[str, Any]:
+    """S6-03: Thêm thành viên được chia sẻ (chặn trùng lặp, chặn chia sẻ cho chính owner)."""
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if not opp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy cơ hội bán hàng")
+
+    # Chỉ owner hoặc ADMIN/MANAGER có quyền chia sẻ
+    current_uid = current_user.get("id")
+    role = current_user.get("role", "USER")
+    is_owner = (opp.get("owner_id") == current_uid)
+    is_admin = (role == "ADMIN")
+    is_manager = (role == "MANAGER" and opp.get("team_id") == current_user.get("team_id"))
+
+    if not (is_owner or is_admin or is_manager):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền chia sẻ cơ hội này. Chỉ người sở hữu hoặc cấp quản lý mới có quyền.",
+        )
+
+    if user_id == opp.get("owner_id"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Người dùng này đã là người sở hữu chính của cơ hội",
+        )
+
+    # Chặn thành viên trùng lặp
+    existing = list_opportunity_shares(opportunity_id)
+    if any(s["user_id"] == user_id for s in existing):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Thành viên này đã được chia sẻ cơ hội trước đó",
+        )
+
+    from app.services import auth_service
+    target_user = auth_service.get_user_by_id(user_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy người dùng với ID {user_id}",
+        )
+
+    db = SessionLocal()
+    now = datetime.now()
+    new_entry = {
+        "opportunity_id": opportunity_id,
+        "user_id": user_id,
+        "permission": permission if permission in ("READ", "READ_WRITE") else "READ_WRITE",
+        "shared_by": current_uid,
+        "created_at": now.isoformat(),
+    }
+
+    try:
+        m = OpportunityShareModel(
+            opportunity_id=opportunity_id,
+            user_id=user_id,
+            permission=new_entry["permission"],
+            shared_by=current_uid,
+            created_at=now,
+        )
+        db.add(m)
+        db.commit()
+        db.refresh(m)
+        new_entry["id"] = m.id
+    except Exception:
+        db.rollback()
+        new_id = (max([s["id"] for s in FAKE_OPPORTUNITY_SHARES], default=0) + 1)
+        new_entry["id"] = new_id
+    finally:
+        db.close()
+
+    FAKE_OPPORTUNITY_SHARES.append(new_entry)
+    new_entry["user_name"] = target_user.get("full_name") or target_user.get("username")
+    new_entry["user_email"] = target_user.get("email")
+    new_entry["shared_by_name"] = current_user.get("full_name") or current_user.get("username")
+    return new_entry
+
+
+def remove_opportunity_share(opportunity_id: int, user_id: int, current_user: dict) -> bool:
+    """S6-03: Gỡ thành viên được chia sẻ."""
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if not opp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy cơ hội bán hàng")
+
+    current_uid = current_user.get("id")
+    role = current_user.get("role", "USER")
+    is_owner = (opp.get("owner_id") == current_uid)
+    is_admin = (role == "ADMIN")
+    is_manager = (role == "MANAGER" and opp.get("team_id") == current_user.get("team_id"))
+
+    if not (is_owner or is_admin or is_manager):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền gỡ thành viên khỏi cơ hội này",
+        )
+
+    db = SessionLocal()
+    found = False
+    try:
+        row = db.query(OpportunityShareModel).filter(
+            OpportunityShareModel.opportunity_id == opportunity_id,
+            OpportunityShareModel.user_id == user_id,
+        ).first()
+        if row:
+            db.delete(row)
+            db.commit()
+            found = True
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    global FAKE_OPPORTUNITY_SHARES
+    initial_len = len(FAKE_OPPORTUNITY_SHARES)
+    FAKE_OPPORTUNITY_SHARES = [
+        s for s in FAKE_OPPORTUNITY_SHARES
+        if not (s["opportunity_id"] == opportunity_id and s["user_id"] == user_id)
+    ]
+    if len(FAKE_OPPORTUNITY_SHARES) < initial_len:
+        found = True
+
+    return found
+
+
+def transfer_opportunity_ownership(
+    opportunity_id: int,
+    new_owner_id: int,
+    reason: str,
+    current_user: dict,
+) -> Dict[str, Any]:
+    """
+    S6-03: Chuyển quyền sở hữu cơ hội và ghi nhật ký đầy đủ:
+    người sở hữu trước, người sở hữu mới, người thực hiện, thời điểm và lý do.
+    """
+    opp = get_raw_opportunity_by_id(opportunity_id)
+    if not opp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy cơ hội bán hàng")
+
+    current_uid = current_user.get("id")
+    role = current_user.get("role", "USER")
+    is_owner = (opp.get("owner_id") == current_uid)
+    is_admin = (role == "ADMIN")
+    is_manager = (role == "MANAGER" and opp.get("team_id") == current_user.get("team_id"))
+
+    # Thành viên được chia sẻ KHÔNG được tự ý chuyển người sở hữu
+    if not (is_owner or is_admin or is_manager):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Thành viên được chia sẻ không có quyền thay đổi người sở hữu cơ hội",
+        )
+
+    old_owner_id = opp["owner_id"]
+    if old_owner_id == new_owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Người sở hữu mới trùng với người sở hữu hiện tại",
+        )
+
+    from app.services import auth_service
+    target_user = auth_service.get_user_by_id(new_owner_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy người dùng với ID {new_owner_id}",
+        )
+
+    db = SessionLocal()
+    try:
+        db_opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+        if db_opp:
+            db_opp.owner_id = new_owner_id
+            if target_user.get("team_id") is not None:
+                db_opp.team_id = target_user["team_id"]
+            db.commit()
+
+        # Update RAM fallback
+        for o in FAKE_OPPORTUNITIES:
+            if o["id"] == opportunity_id:
+                o["owner_id"] = new_owner_id
+                if target_user.get("team_id") is not None:
+                    o["team_id"] = target_user["team_id"]
+
+        # Ghi lịch sử cơ hội (S6-01)
+        record_opportunity_history(
+            opportunity_id=opportunity_id,
+            field_name="owner_id",
+            old_value=str(old_owner_id),
+            new_value=str(new_owner_id),
+            performer_id=current_uid,
+            performer_name=current_user.get("full_name") or current_user.get("username"),
+            db=db,
+        )
+
+        # Ghi audit log hệ thống (S2-04)
+        from app.services.audit_log_service import log_change
+        log_change(
+            user_id=current_uid,
+            user_name=current_user.get("full_name") or current_user.get("username") or "Manager",
+            entity_type="DATA_OWNERSHIP",
+            entity_id=str(opportunity_id),
+            action="TRANSFER_OWNERSHIP",
+            field_name="owner_id",
+            old_value=f"Owner ID {old_owner_id}",
+            new_value=f"Owner ID {new_owner_id} ({target_user.get('full_name')}) - Lý do: {reason}",
+            db=db,
+        )
+
+        return {
+            "success": True,
+            "opportunity_id": opportunity_id,
+            "old_owner_id": old_owner_id,
+            "new_owner_id": new_owner_id,
+            "new_owner_name": target_user.get("full_name") or target_user.get("username"),
+            "performed_by": current_uid,
+            "reason": reason,
+            "message": f"Chuyển quyền sở hữu thành công cho {target_user.get('full_name') or target_user.get('username')}",
+        }
+    finally:
+        db.close()
+
+
+# S6-02: Bộ lọc cơ hội đã lưu (Opportunity Saved Filters)
+def list_opportunity_saved_filters(user_id: int) -> List[Dict[str, Any]]:
+    """S6-02: Lấy danh sách bộ lọc cơ hội của riêng người dùng."""
+    import json
+    db = SessionLocal()
+    try:
+        rows = db.query(OpportunitySavedFilterModel).filter(OpportunitySavedFilterModel.user_id == user_id).order_by(OpportunitySavedFilterModel.id.desc()).all()
+        results = []
+        for r in rows:
+            criteria = {}
+            try:
+                criteria = json.loads(r.filter_criteria) if isinstance(r.filter_criteria, str) else r.filter_criteria
+            except Exception:
+                criteria = {}
+            results.append({
+                "id": r.id,
+                "user_id": r.user_id,
+                "name": r.name,
+                "filter_criteria": criteria,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            })
+        if results:
+            return results
+
+        # Fallback RAM
+        ram_list = [f for f in FAKE_OPPORTUNITY_SAVED_FILTERS if f["user_id"] == user_id]
+        return ram_list
+    finally:
+        db.close()
+
+
+def get_opportunity_saved_filter_by_id(filter_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    import json
+    db = SessionLocal()
+    try:
+        r = db.query(OpportunitySavedFilterModel).filter(
+            OpportunitySavedFilterModel.id == filter_id,
+            OpportunitySavedFilterModel.user_id == user_id,
+        ).first()
+        if r:
+            criteria = {}
+            try:
+                criteria = json.loads(r.filter_criteria) if isinstance(r.filter_criteria, str) else r.filter_criteria
+            except Exception:
+                criteria = {}
+            return {
+                "id": r.id,
+                "user_id": r.user_id,
+                "name": r.name,
+                "filter_criteria": criteria,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+
+        # Fallback RAM
+        for f in FAKE_OPPORTUNITY_SAVED_FILTERS:
+            if f["id"] == filter_id and f["user_id"] == user_id:
+                return f
+        return None
+    finally:
+        db.close()
+
+
+def create_opportunity_saved_filter(user_id: int, name: str, filter_criteria: dict) -> Dict[str, Any]:
+    import json
+    db = SessionLocal()
+    now = datetime.now()
+    crit_str = json.dumps(filter_criteria, ensure_ascii=False)
+    entry = {
+        "user_id": user_id,
+        "name": name,
+        "filter_criteria": filter_criteria,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    try:
+        m = OpportunitySavedFilterModel(
+            user_id=user_id,
+            name=name,
+            filter_criteria=crit_str,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(m)
+        db.commit()
+        db.refresh(m)
+        entry["id"] = m.id
+    except Exception:
+        db.rollback()
+        new_id = (max([f["id"] for f in FAKE_OPPORTUNITY_SAVED_FILTERS], default=0) + 1)
+        entry["id"] = new_id
+    finally:
+        db.close()
+
+    FAKE_OPPORTUNITY_SAVED_FILTERS.append(entry)
+    return entry
+
+
+def update_opportunity_saved_filter(filter_id: int, user_id: int, name: Optional[str] = None, filter_criteria: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+    import json
+    db = SessionLocal()
+    now = datetime.now()
+    try:
+        r = db.query(OpportunitySavedFilterModel).filter(
+            OpportunitySavedFilterModel.id == filter_id,
+            OpportunitySavedFilterModel.user_id == user_id,
+        ).first()
+        if r:
+            if name is not None:
+                r.name = name
+            if filter_criteria is not None:
+                r.filter_criteria = json.dumps(filter_criteria, ensure_ascii=False)
+            r.updated_at = now
+            db.commit()
+            db.refresh(r)
+            criteria = json.loads(r.filter_criteria) if isinstance(r.filter_criteria, str) else r.filter_criteria
+            res = {
+                "id": r.id,
+                "user_id": r.user_id,
+                "name": r.name,
+                "filter_criteria": criteria,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            # Update RAM
+            for f in FAKE_OPPORTUNITY_SAVED_FILTERS:
+                if f["id"] == filter_id and f["user_id"] == user_id:
+                    if name is not None:
+                        f["name"] = name
+                    if filter_criteria is not None:
+                        f["filter_criteria"] = filter_criteria
+                    f["updated_at"] = now.isoformat()
+            return res
+
+        # Fallback RAM
+        for f in FAKE_OPPORTUNITY_SAVED_FILTERS:
+            if f["id"] == filter_id and f["user_id"] == user_id:
+                if name is not None:
+                    f["name"] = name
+                if filter_criteria is not None:
+                    f["filter_criteria"] = filter_criteria
+                f["updated_at"] = now.isoformat()
+                return f
+        return None
+    finally:
+        db.close()
+
+
+def delete_opportunity_saved_filter(filter_id: int, user_id: int) -> bool:
+    db = SessionLocal()
+    found = False
+    try:
+        r = db.query(OpportunitySavedFilterModel).filter(
+            OpportunitySavedFilterModel.id == filter_id,
+            OpportunitySavedFilterModel.user_id == user_id,
+        ).first()
+        if r:
+            db.delete(r)
+            db.commit()
+            found = True
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    global FAKE_OPPORTUNITY_SAVED_FILTERS
+    initial_len = len(FAKE_OPPORTUNITY_SAVED_FILTERS)
+    FAKE_OPPORTUNITY_SAVED_FILTERS = [
+        f for f in FAKE_OPPORTUNITY_SAVED_FILTERS
+        if not (f["id"] == filter_id and f["user_id"] == user_id)
+    ]
+    if len(FAKE_OPPORTUNITY_SAVED_FILTERS) < initial_len:
+        found = True
+
+    return found
+
+
+# S6-02: Tìm kiếm và lọc cơ hội nâng cao kết hợp nhiều điều kiện
+def filter_opportunities_advanced(
+    current_user: dict,
+    scope: DataScope,
+    stage: Optional[str] = None,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+    expected_close_date_from: Optional[str] = None,
+    expected_close_date_to: Optional[str] = None,
+    product_id: Optional[int] = None,
+    owner_id: Optional[int] = None,
+    search: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 20,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    S6-02: Tìm kiếm, lọc cơ hội kết hợp:
+    - Giai đoạn (stage)
+    - Khoảng giá trị (min_value, max_value)
+    - Khoảng ngày chốt dự kiến (from/to)
+    - Sản phẩm liên kết (product_id)
+    - Người sở hữu (owner_id)
+    - Bao gồm cơ hội được chia sẻ cho người dùng
+    """
+    if min_value is not None and max_value is not None and min_value > max_value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Giá trị tối thiểu không được lớn hơn giá trị tối đa",
+        )
+
+    # Lấy danh sách cơ hội cơ sở theo quyền và các cơ hội được chia sẻ
+    all_opps = get_opportunities_by_scope(current_user, scope, search=search)
+    
+    # Bổ sung cơ hội được chia sẻ nếu chưa có trong danh sách
+    user_id = current_user.get("id")
+    shared_opp_ids = get_shared_opportunity_ids_for_user(user_id)
+    existing_ids = {o["id"] for o in all_opps}
+    for so_id in shared_opp_ids:
+        if so_id not in existing_ids:
+            so_opp = get_raw_opportunity_by_id(so_id)
+            if so_opp:
+                all_opps.append(so_opp)
+                existing_ids.add(so_id)
+
+    # 1. Lọc theo stage
+    if stage and stage.strip():
+        st_clean = stage.strip().upper()
+        all_opps = [o for o in all_opps if (o.get("stage") or "").upper() == st_clean]
+
+    # 2. Lọc theo giá trị min/max
+    if min_value is not None:
+        all_opps = [o for o in all_opps if float(o.get("value") or 0.0) >= min_value]
+    if max_value is not None:
+        all_opps = [o for o in all_opps if float(o.get("value") or 0.0) <= max_value]
+
+    # 3. Lọc theo khoảng ngày chốt dự kiến
+    from_date_obj = None
+    to_date_obj = None
+    if expected_close_date_from:
+        try:
+            from_date_obj = datetime.strptime(expected_close_date_from[:10], "%Y-%m-%d").date()
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Định dạng from_date không hợp lệ (YYYY-MM-DD)")
+
+    if expected_close_date_to:
+        try:
+            to_date_obj = datetime.strptime(expected_close_date_to[:10], "%Y-%m-%d").date()
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Định dạng to_date không hợp lệ (YYYY-MM-DD)")
+
+    if from_date_obj and to_date_obj and from_date_obj > to_date_obj:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ngày bắt đầu không được lớn hơn ngày kết thúc")
+
+    if from_date_obj or to_date_obj:
+        date_filtered = []
+        for o in all_opps:
+            cd = o.get("expected_close_date")
+            if not cd:
+                continue
+            try:
+                cd_obj = datetime.strptime(str(cd)[:10], "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if from_date_obj and cd_obj < from_date_obj:
+                continue
+            if to_date_obj and cd_obj > to_date_obj:
+                continue
+            date_filtered.append(o)
+        all_opps = date_filtered
+
+    # 4. Lọc theo người sở hữu
+    if owner_id is not None:
+        all_opps = [o for o in all_opps if o.get("owner_id") == owner_id]
+
+    # 5. Lọc theo sản phẩm liên kết
+    if product_id is not None:
+        prod_filtered = []
+        for o in all_opps:
+            opp_prods = list_opportunity_products(o["id"])
+            if any(p.get("product_id") == product_id for p in opp_prods):
+                prod_filtered.append(o)
+        all_opps = prod_filtered
+
+    total = len(all_opps)
+    paged = all_opps[skip : skip + limit]
+    return paged, total
+
+
+# S6-04: Đính kèm tài liệu vào cơ hội (Opportunity Attachments)
+def list_opportunity_attachments(opportunity_id: int) -> List[Dict[str, Any]]:
+    """S6-04: Lấy danh sách metadata tệp đính kèm của cơ hội."""
+    db = SessionLocal()
+    try:
+        rows = db.query(OpportunityAttachmentModel).filter(OpportunityAttachmentModel.opportunity_id == opportunity_id).all()
+        results = []
+        for r in rows:
+            results.append({
+                "id": r.id,
+                "opportunity_id": r.opportunity_id,
+                "filename": r.filename,
+                "original_name": r.original_name,
+                "file_path": r.file_path,
+                "file_size_bytes": r.file_size_bytes,
+                "content_type": r.content_type,
+                "uploaded_by": r.uploaded_by,
+                "uploader_name": r.uploader_name,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "download_url": f"/opportunities/{r.opportunity_id}/attachments/{r.id}/download",
+            })
+        if results:
+            return results
+
+        # Fallback RAM
+        ram_list = [a for a in FAKE_OPPORTUNITY_ATTACHMENTS if a["opportunity_id"] == opportunity_id]
+        for a in ram_list:
+            if "download_url" not in a:
+                a["download_url"] = f"/opportunities/{a['opportunity_id']}/attachments/{a['id']}/download"
+        return ram_list
+    finally:
+        db.close()
+
+
+def add_opportunity_attachment(
+    opportunity_id: int,
+    filename: str,
+    original_name: str,
+    file_path: str,
+    file_size_bytes: int,
+    content_type: Optional[str],
+    current_user: dict,
+) -> Dict[str, Any]:
+    """S6-04: Lưu metadata tệp đính kèm vào database."""
+    uploader_name = current_user.get("full_name") or current_user.get("username") or f"User {current_user.get('id')}"
+    now = datetime.now()
+    entry = {
+        "opportunity_id": opportunity_id,
+        "filename": filename,
+        "original_name": original_name,
+        "file_path": file_path,
+        "file_size_bytes": file_size_bytes,
+        "content_type": content_type,
+        "uploaded_by": current_user.get("id", 1),
+        "uploader_name": uploader_name,
+        "created_at": now.isoformat(),
+        "download_url": "",
+    }
+
+    db = SessionLocal()
+    try:
+        m = OpportunityAttachmentModel(
+            opportunity_id=opportunity_id,
+            filename=filename,
+            original_name=original_name,
+            file_path=file_path,
+            file_size_bytes=file_size_bytes,
+            content_type=content_type,
+            uploaded_by=current_user.get("id", 1),
+            uploader_name=uploader_name,
+            created_at=now,
+        )
+        db.add(m)
+        db.commit()
+        db.refresh(m)
+        entry["id"] = m.id
+    except Exception:
+        db.rollback()
+        new_id = (max([a["id"] for a in FAKE_OPPORTUNITY_ATTACHMENTS], default=0) + 1)
+        entry["id"] = new_id
+    finally:
+        db.close()
+
+    entry["download_url"] = f"/opportunities/{opportunity_id}/attachments/{entry['id']}/download"
+    FAKE_OPPORTUNITY_ATTACHMENTS.append(entry)
+    return entry
+
+
+def get_opportunity_attachment_by_id(opportunity_id: int, attachment_id: int) -> Optional[Dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        r = db.query(OpportunityAttachmentModel).filter(
+            OpportunityAttachmentModel.opportunity_id == opportunity_id,
+            OpportunityAttachmentModel.id == attachment_id,
+        ).first()
+        if r:
+            return {
+                "id": r.id,
+                "opportunity_id": r.opportunity_id,
+                "filename": r.filename,
+                "original_name": r.original_name,
+                "file_path": r.file_path,
+                "file_size_bytes": r.file_size_bytes,
+                "content_type": r.content_type,
+                "uploaded_by": r.uploaded_by,
+                "uploader_name": r.uploader_name,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "download_url": f"/opportunities/{r.opportunity_id}/attachments/{r.id}/download",
+            }
+
+        # Fallback RAM
+        for a in FAKE_OPPORTUNITY_ATTACHMENTS:
+            if a["id"] == attachment_id and a["opportunity_id"] == opportunity_id:
+                if "download_url" not in a:
+                    a["download_url"] = f"/opportunities/{a['opportunity_id']}/attachments/{a['id']}/download"
+                return a
+        return None
+    finally:
+        db.close()
+
+
+def delete_opportunity_attachment_record(opportunity_id: int, attachment_id: int) -> Optional[Dict[str, Any]]:
+    """S6-04: Xóa metadata tệp đính kèm."""
+    db = SessionLocal()
+    deleted_item = None
+    try:
+        r = db.query(OpportunityAttachmentModel).filter(
+            OpportunityAttachmentModel.opportunity_id == opportunity_id,
+            OpportunityAttachmentModel.id == attachment_id,
+        ).first()
+        if r:
+            deleted_item = {
+                "id": r.id,
+                "opportunity_id": r.opportunity_id,
+                "filename": r.filename,
+                "original_name": r.original_name,
+                "file_path": r.file_path,
+            }
+            db.delete(r)
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    global FAKE_OPPORTUNITY_ATTACHMENTS
+    for a in FAKE_OPPORTUNITY_ATTACHMENTS:
+        if a["id"] == attachment_id and a["opportunity_id"] == opportunity_id:
+            deleted_item = copy.deepcopy(a)
+            break
+    FAKE_OPPORTUNITY_ATTACHMENTS = [
+        a for a in FAKE_OPPORTUNITY_ATTACHMENTS
+        if not (a["id"] == attachment_id and a["opportunity_id"] == opportunity_id)
+    ]
+
+    return deleted_item
+
