@@ -18,6 +18,9 @@ INITIAL_QUOTES = [
     {
         "id": 1,
         "quote_number": "BG-20261015-001",
+        "version": 1,
+        "is_active_version": True,
+        "parent_quote_id": None,
         "opportunity_id": 1,
         "opportunity_title": "Hợp đồng phần mềm Admin",
         "title": "Báo giá phần mềm Admin",
@@ -76,6 +79,9 @@ INITIAL_QUOTES = [
     {
         "id": 2,
         "quote_number": "BG-20261015-002",
+        "version": 1,
+        "is_active_version": True,
+        "parent_quote_id": None,
         "opportunity_id": 2,
         "opportunity_title": "Hợp đồng dịch vụ Manager",
         "title": "Báo giá dịch vụ Manager",
@@ -123,6 +129,9 @@ INITIAL_QUOTES = [
     {
         "id": 3,
         "quote_number": "BG-20261015-003",
+        "version": 1,
+        "is_active_version": True,
+        "parent_quote_id": None,
         "opportunity_id": 3,
         "opportunity_title": "Cung cấp thiết bị User1",
         "title": "Báo giá thiết bị User1",
@@ -158,6 +167,9 @@ INITIAL_QUOTES = [
     {
         "id": 4,
         "quote_number": "BG-20261015-004",
+        "version": 1,
+        "is_active_version": True,
+        "parent_quote_id": None,
         "opportunity_id": 4,
         "opportunity_title": "Bảo trì hệ thống User2",
         "title": "Báo giá bảo trì User2",
@@ -591,6 +603,9 @@ def create_quote_record(data: dict, current_user: dict, db=None) -> dict:
         "approval_level": approval_level,
         "approval_reason": approval_reason,
         "discount_approval_status": data.get("discount_approval_status") or approval_status,
+        "version": int(data.get("version") or 1),
+        "is_active_version": bool(data.get("is_active_version", True) if data.get("is_active_version") is not None else True),
+        "parent_quote_id": data.get("parent_quote_id"),
         "sent_at": None,
         "approval_history": initial_history,
         "created_at": now_iso,
@@ -601,14 +616,24 @@ def create_quote_record(data: dict, current_user: dict, db=None) -> dict:
     return new_quote
 
 
-def update_quote_record(quote_id: int, data: dict, db=None) -> Optional[dict]:
+def update_quote_record(quote_id: int, data: dict, current_user: Optional[dict] = None, db=None) -> Optional[dict]:
     """
     Cập nhật báo giá (AC 5: Sửa nháp hoặc cập nhật chiết khấu):
     Tính toán lại tài chính và ngưỡng phê duyệt tương ứng.
+    S7-03 AC 1: Không sửa trực tiếp báo giá đã gửi (SENT), yêu cầu tạo phiên bản mới.
     """
     q = get_raw_quote_by_id(quote_id)
     if q is None:
         return None
+
+    # S7-03 AC 1: Mỗi lần sửa sau khi đã gửi tạo phiên bản mới, phiên bản cũ được giữ nguyên
+    # Quản trị viên (ADMIN) hoặc cờ force=True được phép cập nhật trực tiếp cho mục đích quản trị hệ thống
+    user_role = current_user.get("role") if current_user else None
+    if q.get("status") in ("SENT", "ACCEPTED", "DECLINED") and not data.get("force", False) and user_role != "ADMIN":
+        raise HTTPException(
+            status_code=400,
+            detail="Báo giá đã gửi cho khách hàng không thể chỉnh sửa trực tiếp. Vui lòng tạo phiên bản mới (S7-03 AC 1).",
+        )
 
     # Cập nhật danh sách items nếu có
     current_items = data.get("items") if data.get("items") is not None else q.get("items", [])
@@ -1106,3 +1131,394 @@ def delete_quote_record(quote_id: int) -> bool:
     initial_len = len(FAKE_QUOTES)
     FAKE_QUOTES = [q for q in FAKE_QUOTES if q["id"] != quote_id]
     return len(FAKE_QUOTES) < initial_len
+
+
+def create_new_quote_version(
+    quote_id: int,
+    data: Optional[dict] = None,
+    current_user: Optional[dict] = None,
+    reason: Optional[str] = None,
+    db=None,
+) -> dict:
+    """
+    Tạo phiên bản sửa đổi mới từ báo giá hiện có (S7-03 AC 1 & AC 3):
+    - Kế thừa: quote_number, parent_quote_id = quote_id
+    - version = max(version hiện có cùng quote_number) + 1
+    - Sao chép danh sách dòng sản phẩm độc lập (gán ID mới)
+    - status = "DRAFT", is_draft = True
+    - Đặt is_active_version = True cho bản mới, tắt is_active_version = False cho các bản cũ
+    - Bản cũ được giữ nguyên trạng thái, lịch sử và nội dung
+    """
+    parent_quote = get_raw_quote_by_id(quote_id)
+    if parent_quote is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy báo giá để tạo phiên bản mới",
+        )
+
+    quote_number = parent_quote.get("quote_number")
+    related_versions = [q for q in FAKE_QUOTES if q.get("quote_number") == quote_number]
+    max_version = max((q.get("version") or 1) for q in related_versions) if related_versions else 1
+    next_version = max_version + 1
+
+    payload_data = data or {}
+    set_active = payload_data.get("set_active", True)
+    if set_active:
+        for old_q in related_versions:
+            old_q["is_active_version"] = False
+
+    new_id = (max(q["id"] for q in FAKE_QUOTES) + 1) if FAKE_QUOTES else 1
+
+    # Dòng sản phẩm
+    if payload_data.get("items") is not None:
+        raw_items = payload_data["items"]
+    else:
+        raw_items = []
+        for idx, it in enumerate(parent_quote.get("items", [])):
+            cloned = copy.deepcopy(it)
+            cloned["id"] = f"q-it-{new_id}-{idx + 1}"
+            raw_items.append(cloned)
+
+    overall_type = payload_data.get("overall_discount_type") or parent_quote.get("overall_discount_type", "PERCENT")
+    overall_val = float(
+        payload_data.get("overall_discount_value")
+        if payload_data.get("overall_discount_value") is not None
+        else parent_quote.get("overall_discount_value", 0.0)
+    )
+
+    financials = calculate_quote_financials(raw_items, overall_type, overall_val)
+
+    now_iso = datetime.now().isoformat()
+    valid_until = payload_data.get("valid_until") or parent_quote.get("valid_until")
+    if isinstance(valid_until, (date, datetime)):
+        valid_until = valid_until.isoformat()
+
+    new_quote = {
+        "id": new_id,
+        "quote_number": quote_number,
+        "version": next_version,
+        "is_active_version": set_active,
+        "parent_quote_id": parent_quote["id"],
+        "opportunity_id": parent_quote.get("opportunity_id"),
+        "opportunity_title": parent_quote.get("opportunity_title"),
+        "title": payload_data.get("title") or parent_quote.get("title"),
+        "amount": financials["grand_total"],
+        "status": "DRAFT",
+        "is_draft": True,
+        "customer_id": parent_quote.get("customer_id"),
+        "owner_id": current_user["id"] if current_user else parent_quote["owner_id"],
+        "team_id": parent_quote.get("team_id"),
+        "product_id": parent_quote.get("product_id"),
+        "unit_price": parent_quote.get("unit_price"),
+        "items": financials["calculated_items"],
+        "overall_discount_type": overall_type,
+        "overall_discount_value": overall_val,
+        "subtotal": financials["subtotal"],
+        "total_line_discount": financials["total_line_discount"],
+        "overall_discount_amount": financials["overall_discount_amount"],
+        "total_discount_amount": financials["total_discount_amount"],
+        "discount_percentage": financials["discount_percentage"],
+        "vat_amount": financials["vat_amount"],
+        "grand_total": financials["grand_total"],
+        "valid_until": str(valid_until) if valid_until else None,
+        "payment_terms": payload_data.get("payment_terms") or parent_quote.get("payment_terms"),
+        "delivery_terms": payload_data.get("delivery_terms") or parent_quote.get("delivery_terms"),
+        "notes": payload_data.get("notes") or parent_quote.get("notes") or "",
+        "requires_discount_approval": financials["requires_approval"],
+        "approval_level": financials["approval_level"],
+        "approval_reason": financials["approval_reason"],
+        "discount_approval_status": "DRAFT",
+        "sent_at": None,
+        "approval_history": [
+            {
+                "id": f"hist-ver-{int(datetime.now().timestamp() * 1000)}",
+                "action": "SUBMITTED",
+                "performed_by_id": current_user.get("id") if current_user else None,
+                "performed_by_name": current_user.get("full_name") or current_user.get("username", "Nhân viên kinh doanh") if current_user else "Nhân viên kinh doanh",
+                "performed_by_role": current_user.get("role", "USER") if current_user else "USER",
+                "comments": f"Khởi tạo phiên bản sửa đổi mới v{next_version} từ phiên bản v{parent_quote.get('version', 1)}: {reason}" if reason else f"Khởi tạo phiên bản sửa đổi mới v{next_version} từ phiên bản v{parent_quote.get('version', 1)}. Bản cũ được lưu giữ nguyên trạng.",
+                "previous_status": None,
+                "new_status": "DRAFT",
+                "timestamp": now_iso,
+            }
+        ],
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    FAKE_QUOTES.append(new_quote)
+
+    _safe_log_audit(
+        user_id=current_user.get("id", 0) if current_user else 1,
+        user_name=current_user.get("full_name") or current_user.get("username", "User") if current_user else "System",
+        entity_id=f"QUOTE-{new_id}",
+        action="CREATE_VERSION",
+        field_name="version",
+        old_value=str(parent_quote.get("version", 1)),
+        new_value=str(next_version),
+        db=db,
+    )
+
+    return new_quote
+
+
+def set_active_quote_version(
+    quote_id: int,
+    current_user: Optional[dict] = None,
+    db=None,
+) -> dict:
+    """
+    Đặt một phiên bản làm phiên bản hiệu lực duy nhất của báo giá (S7-03 AC 3):
+    - Đặt is_active_version = True cho bản ghi quote_id
+    - Tự động tắt is_active_version = False cho tất cả các phiên bản khác cùng quote_number
+    """
+    target = get_raw_quote_by_id(quote_id)
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy báo giá để đặt làm phiên bản hiệu lực",
+        )
+
+    quote_number = target.get("quote_number")
+    for q in FAKE_QUOTES:
+        if q.get("quote_number") == quote_number:
+            q["is_active_version"] = (q["id"] == quote_id)
+
+    target["is_active_version"] = True
+    now_iso = datetime.now().isoformat()
+    target["updated_at"] = now_iso
+
+    hist_item = {
+        "id": f"hist-act-{int(datetime.now().timestamp() * 1000)}",
+        "action": "SET_ACTIVE",
+        "performed_by_id": current_user.get("id") if current_user else None,
+        "performed_by_name": current_user.get("full_name") or current_user.get("username", "Nhân viên kinh doanh") if current_user else "Nhân viên kinh doanh",
+        "performed_by_role": current_user.get("role", "USER") if current_user else "USER",
+        "comments": f"Đặt phiên bản v{target.get('version', 1)} làm phiên bản hiệu lực duy nhất của báo giá {quote_number}.",
+        "previous_status": target.get("status"),
+        "new_status": target.get("status"),
+        "timestamp": now_iso,
+    }
+    target.setdefault("approval_history", []).append(hist_item)
+
+    _safe_log_audit(
+        user_id=current_user.get("id", 0) if current_user else 1,
+        user_name=current_user.get("full_name") or current_user.get("username", "User") if current_user else "System",
+        entity_id=f"QUOTE-{quote_id}",
+        action="SET_ACTIVE_VERSION",
+        field_name="is_active_version",
+        old_value="False",
+        new_value="True",
+        db=db,
+    )
+
+    return target
+
+
+def get_all_quote_versions(quote_id_or_number: Any) -> Tuple[str, List[dict], Optional[int]]:
+    """
+    Lấy danh sách tất cả các phiên bản của báo giá (S7-03 AC 3):
+    - Trả về danh sách sắp xếp theo version giảm dần (v3 -> v2 -> v1)
+    - Kèm mã báo giá và ID phiên bản đang hiệu lực
+    """
+    quote_num = None
+    if isinstance(quote_id_or_number, int) or (isinstance(quote_id_or_number, str) and quote_id_or_number.isdigit()):
+        q_item = get_raw_quote_by_id(int(quote_id_or_number))
+        if q_item is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Không tìm thấy báo giá",
+            )
+        quote_num = q_item.get("quote_number")
+    else:
+        quote_num = str(quote_id_or_number)
+
+    versions = [q for q in FAKE_QUOTES if q.get("quote_number") == quote_num]
+    if not versions:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Không tìm thấy phiên bản nào cho số báo giá '{quote_num}'",
+        )
+
+    # Sắp xếp version giảm dần
+    versions.sort(key=lambda x: (x.get("version") or 1), reverse=True)
+    active_id = None
+    for v in versions:
+        if v.get("is_active_version"):
+            active_id = v["id"]
+            break
+
+    return {
+        "quote_number": quote_num,
+        "total_versions": len(versions),
+        "active_version_id": active_id,
+        "versions": versions,
+    }
+
+
+def compare_quote_versions(version_a_id: int, version_b_id: int) -> dict:
+    """
+    So sánh cạnh nhau hai phiên bản của báo giá (S7-03 AC 2):
+    - Tài chính: delta_subtotal, delta_discount_amount, delta_discount_percentage, delta_vat, delta_grand_total
+    - Dòng sản phẩm: ADDED, REMOVED, MODIFIED, UNCHANGED
+    - Điều khoản: valid_until, payment_terms, delivery_terms, notes
+    """
+    quote_a = get_raw_quote_by_id(version_a_id)
+    quote_b = get_raw_quote_by_id(version_b_id)
+
+    if not quote_a or not quote_b:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy phiên bản báo giá để so sánh",
+        )
+
+    # 1. So sánh tài chính
+    financials_diff = {
+        "subtotal_a": quote_a.get("subtotal", 0.0),
+        "subtotal_b": quote_b.get("subtotal", 0.0),
+        "delta_subtotal": round(quote_b.get("subtotal", 0.0) - quote_a.get("subtotal", 0.0), 2),
+        "discount_amount_a": quote_a.get("total_discount_amount", 0.0),
+        "discount_amount_b": quote_b.get("total_discount_amount", 0.0),
+        "delta_discount_amount": round(quote_b.get("total_discount_amount", 0.0) - quote_a.get("total_discount_amount", 0.0), 2),
+        "discount_percentage_a": quote_a.get("discount_percentage", 0.0),
+        "discount_percentage_b": quote_b.get("discount_percentage", 0.0),
+        "delta_discount_percentage": round(quote_b.get("discount_percentage", 0.0) - quote_a.get("discount_percentage", 0.0), 1),
+        "vat_amount_a": quote_a.get("vat_amount", 0.0),
+        "vat_amount_b": quote_b.get("vat_amount", 0.0),
+        "delta_vat_amount": round(quote_b.get("vat_amount", 0.0) - quote_a.get("vat_amount", 0.0), 2),
+        "grand_total_a": quote_a.get("grand_total", 0.0),
+        "grand_total_b": quote_b.get("grand_total", 0.0),
+        "delta_grand_total": round(quote_b.get("grand_total", 0.0) - quote_a.get("grand_total", 0.0), 2),
+    }
+
+    # 2. So sánh từng dòng sản phẩm (Row-by-row Item Matching)
+    items_a = quote_a.get("items", [])
+    items_b = quote_b.get("items", [])
+
+    def _get_key(it):
+        return (it.get("product_code") or str(it.get("product_id") or "") or it.get("product_name", "")).strip().lower()
+
+    map_a = {}
+    for it in items_a:
+        key = _get_key(it)
+        map_a[key] = it
+
+    map_b = {}
+    for it in items_b:
+        key = _get_key(it)
+        map_b[key] = it
+
+    all_keys = list(dict.fromkeys(list(map_a.keys()) + list(map_b.keys())))
+    items_diff = []
+
+    for k in all_keys:
+        it_a = map_a.get(k)
+        it_b = map_b.get(k)
+
+        if it_a and not it_b:
+            p_name = it_a.get("product_name", "")
+            p_code = it_a.get("product_code")
+            unit = it_a.get("unit")
+            items_diff.append({
+                "key": k,
+                "product_code": p_code,
+                "product_name": p_name,
+                "unit": unit,
+                "status": "REMOVED",
+                "item_a": it_a,
+                "item_b": None,
+                "qty_diff": -int(it_a.get("quantity") or 1),
+                "price_diff": -float(it_a.get("unit_price") or 0.0),
+                "discount_diff": -float(it_a.get("line_discount_amount") or 0.0),
+                "total_diff": -float(it_a.get("line_total") or 0.0),
+            })
+        elif not it_a and it_b:
+            p_name = it_b.get("product_name", "")
+            p_code = it_b.get("product_code")
+            unit = it_b.get("unit")
+            items_diff.append({
+                "key": k,
+                "product_code": p_code,
+                "product_name": p_name,
+                "unit": unit,
+                "status": "ADDED",
+                "item_a": None,
+                "item_b": it_b,
+                "qty_diff": int(it_b.get("quantity") or 1),
+                "price_diff": float(it_b.get("unit_price") or 0.0),
+                "discount_diff": float(it_b.get("line_discount_amount") or 0.0),
+                "total_diff": float(it_b.get("line_total") or 0.0),
+            })
+        else:
+            p_name = it_b.get("product_name", it_a.get("product_name", ""))
+            p_code = it_b.get("product_code", it_a.get("product_code"))
+            unit = it_b.get("unit", it_a.get("unit"))
+
+            qty_a = int(it_a.get("quantity") or 1)
+            qty_b = int(it_b.get("quantity") or 1)
+            price_a = float(it_a.get("unit_price") or 0.0)
+            price_b = float(it_b.get("unit_price") or 0.0)
+            disc_val_a = float(it_a.get("discount_value") or 0.0)
+            disc_val_b = float(it_b.get("discount_value") or 0.0)
+            disc_type_a = str(it_a.get("discount_type") or "PERCENT").upper()
+            disc_type_b = str(it_b.get("discount_type") or "PERCENT").upper()
+            line_total_a = float(it_a.get("line_total") or 0.0)
+            line_total_b = float(it_b.get("line_total") or 0.0)
+            line_disc_a = float(it_a.get("line_discount_amount") or 0.0)
+            line_disc_b = float(it_b.get("line_discount_amount") or 0.0)
+
+            is_modified = (
+                qty_a != qty_b
+                or price_a != price_b
+                or disc_val_a != disc_val_b
+                or disc_type_a != disc_type_b
+            )
+
+            items_diff.append({
+                "key": k,
+                "product_code": p_code,
+                "product_name": p_name,
+                "unit": unit,
+                "status": "MODIFIED" if is_modified else "UNCHANGED",
+                "item_a": it_a,
+                "item_b": it_b,
+                "qty_diff": qty_b - qty_a,
+                "price_diff": round(price_b - price_a, 2),
+                "discount_diff": round(line_disc_b - line_disc_a, 2),
+                "total_diff": round(line_total_b - line_total_a, 2),
+            })
+
+    # 3. So sánh điều khoản & thời hạn
+    terms_diff = {
+        "valid_until": {
+            "value_a": str(quote_a.get("valid_until") or ""),
+            "value_b": str(quote_b.get("valid_until") or ""),
+            "has_changed": str(quote_a.get("valid_until") or "") != str(quote_b.get("valid_until") or ""),
+        },
+        "payment_terms": {
+            "value_a": str(quote_a.get("payment_terms") or ""),
+            "value_b": str(quote_b.get("payment_terms") or ""),
+            "has_changed": str(quote_a.get("payment_terms") or "") != str(quote_b.get("payment_terms") or ""),
+        },
+        "delivery_terms": {
+            "value_a": str(quote_a.get("delivery_terms") or ""),
+            "value_b": str(quote_b.get("delivery_terms") or ""),
+            "has_changed": str(quote_a.get("delivery_terms") or "") != str(quote_b.get("delivery_terms") or ""),
+        },
+        "notes": {
+            "value_a": str(quote_a.get("notes") or ""),
+            "value_b": str(quote_b.get("notes") or ""),
+            "has_changed": str(quote_a.get("notes") or "") != str(quote_b.get("notes") or ""),
+        },
+    }
+
+    return {
+        "quote_number": quote_b.get("quote_number") or quote_a.get("quote_number"),
+        "version_a_id": quote_a["id"],
+        "version_b_id": quote_b["id"],
+        "quote_a": quote_a,
+        "quote_b": quote_b,
+        "financials": financials_diff,
+        "items": items_diff,
+        "terms": terms_diff,
+    }

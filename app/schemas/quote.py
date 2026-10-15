@@ -1,7 +1,7 @@
 """Quote Schemas."""
 from datetime import date
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 
 
@@ -29,6 +29,36 @@ class QuoteItemResponse(QuoteItemCreate):
     line_total: float = 0.0
 
 
+class QuoteApprovalAction(str, Enum):
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+    RETURN = "RETURN"
+    SUBMITTED = "SUBMITTED"
+    AUTO_APPROVED = "AUTO_APPROVED"
+    SEND = "SEND"
+
+
+class QuoteApprovalRequest(BaseModel):
+    comments: Optional[str] = None
+
+
+class QuoteApprovalActionRequest(BaseModel):
+    action: QuoteApprovalAction
+    comments: Optional[str] = None
+
+
+class QuoteApprovalHistoryItem(BaseModel):
+    id: str
+    action: str
+    performed_by_id: Optional[int] = None
+    performed_by_name: str
+    performed_by_role: str
+    comments: Optional[str] = None
+    previous_status: Optional[str] = None
+    new_status: Optional[str] = None
+    timestamp: str
+
+
 class QuoteCreate(BaseModel):
     opportunity_id: Optional[int] = None
     title: Optional[str] = None
@@ -48,6 +78,9 @@ class QuoteCreate(BaseModel):
     is_draft: bool = True
     requires_discount_approval: Optional[bool] = False
     discount_approval_status: Optional[str] = None
+    version: Optional[int] = 1
+    is_active_version: Optional[bool] = True
+    parent_quote_id: Optional[int] = None
 
 
 class QuoteUpdate(BaseModel):
@@ -67,11 +100,17 @@ class QuoteUpdate(BaseModel):
     is_draft: Optional[bool] = None
     requires_discount_approval: Optional[bool] = None
     discount_approval_status: Optional[str] = None
+    version: Optional[int] = None
+    is_active_version: Optional[bool] = None
+    parent_quote_id: Optional[int] = None
 
 
 class QuoteResponse(BaseModel):
     id: int
     quote_number: Optional[str] = None
+    version: int = 1
+    is_active_version: bool = True
+    parent_quote_id: Optional[int] = None
     opportunity_id: Optional[int] = None
     opportunity_title: Optional[str] = None
     title: str
@@ -107,7 +146,7 @@ class QuoteResponse(BaseModel):
     approval_level: Optional[str] = "NONE"
     approval_reason: Optional[str] = None
     discount_approval_status: Optional[str] = None
-    approval_history: List["QuoteApprovalHistoryItem"] = []
+    approval_history: List[QuoteApprovalHistoryItem] = []
 
     # Dispatch / Sending (S7-02 AC 4)
     sent_at: Optional[str] = None
@@ -116,41 +155,81 @@ class QuoteResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
-class QuoteApprovalAction(str, Enum):
-    APPROVE = "APPROVE"
-    REJECT = "REJECT"
-    RETURN = "RETURN"
-    SUBMITTED = "SUBMITTED"
-    AUTO_APPROVED = "AUTO_APPROVED"
-    SEND = "SEND"
-
-
-class QuoteApprovalRequest(BaseModel):
-    comments: Optional[str] = None
-
-
-class QuoteApprovalActionRequest(BaseModel):
-    action: QuoteApprovalAction
-    comments: Optional[str] = None
-
-
-class QuoteApprovalHistoryItem(BaseModel):
-    id: str
-    action: str
-    performed_by_id: Optional[int] = None
-    performed_by_name: str
-    performed_by_role: str
-    comments: Optional[str] = None
-    previous_status: Optional[str] = None
-    new_status: Optional[str] = None
-    timestamp: str
-
-
 class QuoteApprovalHistoryListResponse(BaseModel):
     quote_id: int
     quote_number: Optional[str] = None
     total: int
     history: List[QuoteApprovalHistoryItem]
+
+
+# Schemas for S7-03 Versioning & Comparison
+class QuoteVersionCreateRequest(BaseModel):
+    title: Optional[str] = None
+    reason: Optional[str] = None
+    items: Optional[List[QuoteItemCreate]] = None
+    overall_discount_type: Optional[DiscountType] = None
+    overall_discount_value: Optional[float] = None
+    valid_until: Optional[date] = None
+    payment_terms: Optional[str] = None
+    delivery_terms: Optional[str] = None
+    notes: Optional[str] = None
+    set_active: bool = True
+
+
+class QuoteVersionListResponse(BaseModel):
+    quote_number: str
+    total_versions: int
+    active_version_id: Optional[int] = None
+    versions: List[QuoteResponse]
+
+
+class ItemComparisonDiff(BaseModel):
+    key: str
+    product_code: Optional[str] = None
+    product_name: str
+    unit: Optional[str] = None
+    status: str  # ADDED, REMOVED, MODIFIED, UNCHANGED
+    item_a: Optional[QuoteItemResponse] = None
+    item_b: Optional[QuoteItemResponse] = None
+    qty_diff: int = 0
+    price_diff: float = 0.0
+    discount_diff: float = 0.0
+    total_diff: float = 0.0
+
+
+class FinancialComparisonDiff(BaseModel):
+    subtotal_a: float
+    subtotal_b: float
+    delta_subtotal: float
+    discount_amount_a: float
+    discount_amount_b: float
+    delta_discount_amount: float
+    discount_percentage_a: float
+    discount_percentage_b: float
+    delta_discount_percentage: float
+    vat_amount_a: float
+    vat_amount_b: float
+    delta_vat_amount: float
+    grand_total_a: float
+    grand_total_b: float
+    delta_grand_total: float
+
+
+class TermsFieldDiff(BaseModel):
+    value_a: Optional[str] = None
+    value_b: Optional[str] = None
+    has_changed: bool = False
+
+
+class QuoteComparisonResponse(BaseModel):
+    quote_number: Optional[str] = None
+    version_a_id: int
+    version_b_id: int
+    quote_a: QuoteResponse
+    quote_b: QuoteResponse
+    financials: FinancialComparisonDiff
+    items: List[ItemComparisonDiff]
+    terms: Dict[str, TermsFieldDiff]
 
 
 class QuoteListResponse(BaseModel):
