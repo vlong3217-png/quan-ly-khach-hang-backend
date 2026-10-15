@@ -102,14 +102,55 @@ class QuoteResponse(BaseModel):
     delivery_terms: Optional[str] = None
     notes: Optional[str] = None
 
-    # Approval
+    # Approval (S7-01 & S7-02)
     requires_discount_approval: Optional[bool] = False
     approval_level: Optional[str] = "NONE"
     approval_reason: Optional[str] = None
     discount_approval_status: Optional[str] = None
+    approval_history: List["QuoteApprovalHistoryItem"] = []
+
+    # Dispatch / Sending (S7-02 AC 4)
+    sent_at: Optional[str] = None
 
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+class QuoteApprovalAction(str, Enum):
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+    RETURN = "RETURN"
+    SUBMITTED = "SUBMITTED"
+    AUTO_APPROVED = "AUTO_APPROVED"
+    SEND = "SEND"
+
+
+class QuoteApprovalRequest(BaseModel):
+    comments: Optional[str] = None
+
+
+class QuoteApprovalActionRequest(BaseModel):
+    action: QuoteApprovalAction
+    comments: Optional[str] = None
+
+
+class QuoteApprovalHistoryItem(BaseModel):
+    id: str
+    action: str
+    performed_by_id: Optional[int] = None
+    performed_by_name: str
+    performed_by_role: str
+    comments: Optional[str] = None
+    previous_status: Optional[str] = None
+    new_status: Optional[str] = None
+    timestamp: str
+
+
+class QuoteApprovalHistoryListResponse(BaseModel):
+    quote_id: int
+    quote_number: Optional[str] = None
+    total: int
+    history: List[QuoteApprovalHistoryItem]
 
 
 class QuoteListResponse(BaseModel):
