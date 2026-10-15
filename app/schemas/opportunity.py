@@ -95,7 +95,9 @@ class OpportunityResponse(BaseModel):
     campaign_id: Optional[int] = None
     lead_id: Optional[int] = None
     owner_id: int
+    owner_name: Optional[str] = None
     team_id: Optional[int] = None
+    team_name: Optional[str] = None
     arr: Optional[float] = 0.0
     has_products: Optional[bool] = False
     products: Optional[List[OpportunityProductResponse]] = []
