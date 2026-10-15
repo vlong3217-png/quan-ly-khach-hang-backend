@@ -23,6 +23,9 @@ from app.schemas.quote import (
     QuoteApprovalRequest,
     QuoteApprovalHistoryItem,
     QuoteApprovalHistoryListResponse,
+    QuoteVersionCreateRequest,
+    QuoteVersionListResponse,
+    QuoteComparisonResponse,
 )
 from app.services.quote_service import (
     create_quote_record,
@@ -37,6 +40,10 @@ from app.services.quote_service import (
     send_quote_to_customer_record,
     get_quote_approval_history,
     get_pending_approvals_by_scope,
+    create_new_quote_version,
+    set_active_quote_version,
+    get_all_quote_versions,
+    compare_quote_versions,
 )
 
 router = APIRouter(
@@ -153,6 +160,34 @@ def list_quotes_by_opportunity(
         "skip": 0,
         "total_pages": 1,
     }
+
+
+@router.get("/compare", response_model=QuoteComparisonResponse)
+def compare_quotes_query(
+    version_a_id: int = Query(..., description="ID của phiên bản thứ nhất (hoặc phiên bản gốc)"),
+    version_b_id: int = Query(..., description="ID của phiên bản thứ hai (hoặc phiên bản mới)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    So sánh song song (side-by-side) 2 phiên bản báo giá bất kỳ (S7-03 AC 2):
+    - Tài chính: delta subtotal, discount, vat, grand total.
+    - Hàng hóa: row-by-row matching theo product_id/item_id (ADDED, REMOVED, MODIFIED, UNCHANGED).
+    - Điều khoản: valid_until, payment_terms, delivery_terms, notes.
+    """
+    qa = get_raw_quote_by_id(version_a_id)
+    qb = get_raw_quote_by_id(version_b_id)
+    if qa is None or qb is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy một trong hai phiên bản báo giá để so sánh",
+        )
+    if not check_scope_access(current_user, qa["owner_id"], qa.get("team_id")) or not check_scope_access(current_user, qb["owner_id"], qb.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập dữ liệu một trong hai báo giá này",
+        )
+
+    return compare_quote_versions(version_a_id, version_b_id)
 
 
 @router.get("/{quote_id}", response_model=QuoteResponse)
@@ -291,7 +326,7 @@ def update_quote(
     old_unit_price = q_item.get("unit_price")
     old_status = q_item.get("discount_approval_status")
 
-    updated = update_quote_record(quote_id, quote_update_data, db=db)
+    updated = update_quote_record(quote_id, quote_update_data, current_user=current_user, db=db)
 
     # Ghi nhận Audit Log nếu thay đổi giá trị/chiết khấu (AC S2-04) cùng transaction
     from app.services.audit_log_service import log_change
@@ -520,3 +555,119 @@ def delete_quote(quote_id: int):
             detail="Không tìm thấy báo giá để xóa",
         )
     return {"message": f"Đã xóa báo giá ID {quote_id}"}
+
+
+# ============================================================================
+# S7-03: Quote Versioning and Side-by-Side Comparison Endpoints
+# ============================================================================
+
+@router.get("/{quote_id}/compare/{target_quote_id}", response_model=QuoteComparisonResponse)
+def compare_quotes_path(
+    quote_id: int,
+    target_quote_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    So sánh song song 2 phiên bản báo giá qua path param (S7-03 AC 2):
+    - Tài chính: delta subtotal, discount, vat, grand total.
+    - Hàng hóa: row-by-row matching theo product_id/item_id (ADDED, REMOVED, MODIFIED, UNCHANGED).
+    - Điều khoản: valid_until, payment_terms, delivery_terms, notes.
+    """
+    qa = get_raw_quote_by_id(quote_id)
+    qb = get_raw_quote_by_id(target_quote_id)
+    if qa is None or qb is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy một trong hai phiên bản báo giá để so sánh",
+        )
+    if not check_scope_access(current_user, qa["owner_id"], qa.get("team_id")) or not check_scope_access(current_user, qb["owner_id"], qb.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập dữ liệu một trong hai báo giá này",
+        )
+
+    return compare_quote_versions(quote_id, target_quote_id)
+
+
+@router.get("/{quote_id}/versions", response_model=QuoteVersionListResponse)
+def get_quote_versions_endpoint(
+    quote_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Lấy danh sách tất cả các phiên bản của một báo giá (S7-03 AC 3):
+    - Trả về danh sách các phiên bản sắp xếp giảm dần theo số phiên bản.
+    - Hiển thị rõ phiên bản nào đang là active.
+    """
+    q_item = get_raw_quote_by_id(quote_id)
+    if q_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy báo giá",
+        )
+
+    if not check_scope_access(current_user, q_item["owner_id"], q_item.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền xem danh sách phiên bản của báo giá này",
+        )
+
+    return get_all_quote_versions(quote_id)
+
+
+@router.post("/{quote_id}/versions", response_model=QuoteResponse, status_code=status.HTTP_201_CREATED)
+def create_quote_version_endpoint(
+    quote_id: int,
+    payload: Optional[QuoteVersionCreateRequest] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Tạo phiên bản mới (v[N+1]) từ báo giá hiện tại (S7-03 AC 1):
+    - Sao chép toàn bộ dữ liệu, độc lập dòng hàng.
+    - Phiên bản cũ giữ nguyên trạng thái và dữ liệu lịch sử.
+    - Phiên bản mới tự động thành active version (is_active_version=True) và ở trạng thái DRAFT.
+    """
+    q_item = get_raw_quote_by_id(quote_id)
+    if q_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy báo giá gốc để tạo phiên bản mới",
+        )
+
+    if not check_scope_access(current_user, q_item["owner_id"], q_item.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền tạo phiên bản mới cho báo giá này",
+        )
+
+    reason = payload.reason if payload else None
+    return create_new_quote_version(quote_id, current_user=current_user, reason=reason, db=db)
+
+
+@router.post("/{quote_id}/set-active", response_model=QuoteResponse)
+def set_active_version_endpoint(
+    quote_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Thiết lập một phiên bản làm Active Version duy nhất (S7-03 AC 3):
+    - Đặt is_active_version = True cho phiên bản chỉ định.
+    - Đặt is_active_version = False cho tất cả các phiên bản khác cùng quote_number.
+    - Ghi nhận lịch sử thay đổi phiên bản active.
+    """
+    q_item = get_raw_quote_by_id(quote_id)
+    if q_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy phiên bản báo giá",
+        )
+
+    if not check_scope_access(current_user, q_item["owner_id"], q_item.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền thao tác trên báo giá này",
+        )
+
+    return set_active_quote_version(quote_id, current_user=current_user, db=db)
