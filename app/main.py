@@ -126,3 +126,7 @@ app.include_router(sales_forecast_router)
 from app.routers.email_marketing import router as email_marketing_router
 app.include_router(email_marketing_router)
 
+
+from app.routers.notification_preferences import router as notification_preferences_router
+app.include_router(notification_preferences_router)
+
