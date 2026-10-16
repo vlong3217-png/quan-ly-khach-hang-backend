@@ -127,4 +127,7 @@ app.include_router(contracts_router)
 from app.routers.pdf_templates import router as pdf_templates_router
 app.include_router(pdf_templates_router)
 
+from app.routers.public_quotes import router as public_quotes_router
+app.include_router(public_quotes_router)
+
 
