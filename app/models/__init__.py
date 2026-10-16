@@ -46,3 +46,5 @@ __all__ = [
     "LeadSavedFilter",
     "Campaign",
 ]
+
+from app.models.email_marketing import EmailTemplate, EmailLog
