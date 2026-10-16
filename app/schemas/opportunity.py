@@ -116,6 +116,10 @@ class OpportunityResponse(BaseModel):
     stagnant_threshold_days: Optional[int] = None
     days_overdue: Optional[int] = None
     flagged_at: Optional[str] = None
+    # S7-07: Cơ hội gia hạn từ hợp đồng
+    is_renewal: Optional[bool] = False
+    original_contract_id: Optional[int] = None
+    original_contract_number: Optional[str] = None
 
     model_config = ConfigDict(extra="allow")
 

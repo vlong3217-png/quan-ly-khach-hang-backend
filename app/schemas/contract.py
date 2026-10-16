@@ -50,10 +50,19 @@ class ContractResponse(BaseModel):
     team_id: Optional[int] = None
     status: str = "ACTIVE"
     
-    # Dates & Terms (AC 2)
+    # Dates & Terms (S7-04 & S7-07 AC 1)
     signed_date: str
     effective_date: str
     expiration_date: str
+    days_remaining: int = 0
+    validity_status: str = "ACTIVE"  # ACTIVE, EXPIRING_SOON, EXPIRED, RENEWED, TERMINATED
+    is_expiring_soon: bool = False
+    is_expired: bool = False
+
+    # Renewal tracking (S7-07 AC 3)
+    renewal_opportunity_id: Optional[int] = None
+    is_renewal_created: bool = False
+
     payment_terms: Optional[str] = None
     delivery_terms: Optional[str] = None
     notes: Optional[str] = None
@@ -88,3 +97,60 @@ class ContractListResponse(BaseModel):
 class ContractGenerateNumberResponse(BaseModel):
     """Mã số hợp đồng gợi ý tự sinh (AC 4)."""
     suggested_contract_number: str
+
+
+# ============================================================================
+# S7-07: Contract Expiration Tracking, Alerts & Renewal Opportunity Schemas
+# ============================================================================
+
+class ContractRenewalSettingsResponse(BaseModel):
+    """Cấu hình ngưỡng cảnh báo hợp đồng sắp hết hạn (S7-07 AC 2)."""
+    threshold_days: int
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class ContractRenewalSettingsUpdate(BaseModel):
+    """Cập nhật ngưỡng cảnh báo hợp đồng sắp hết hạn (S7-07 AC 2)."""
+    threshold_days: int = Field(default=30, ge=1, le=365, description="Số ngày trước khi hết hạn để kích hoạt cảnh báo (1 - 365 ngày)")
+
+
+class ExpiringContractItem(ContractResponse):
+    """Hợp đồng trong danh sách cảnh báo sắp hết hạn kèm mức độ khẩn cấp."""
+    urgency_level: str = "MEDIUM"  # CRITICAL (<= 7 ngày), HIGH (8 - 15 ngày), MEDIUM (16 - threshold ngày)
+
+
+class ContractExpiringAlertResponse(BaseModel):
+    """Báo cáo tổng hợp cảnh báo hợp đồng sắp hết hạn (S7-07 AC 2)."""
+    threshold_days: int
+    total_expiring: int
+    total_revenue_at_risk: float
+    critical_count: int
+    high_count: int
+    medium_count: int
+    contracts: List[ExpiringContractItem]
+
+
+class ContractRenewalOpportunityRequest(BaseModel):
+    """Yêu cầu tạo cơ hội gia hạn từ một hợp đồng sắp hết hạn (S7-07 AC 3)."""
+    title: Optional[str] = Field(None, description="Tiêu đề cơ hội gia hạn (mặc định tự sinh từ hợp đồng)")
+    expected_close_date: Optional[date] = Field(None, description="Ngày dự kiến chốt (mặc định lấy ngày hết hạn hợp đồng)")
+    value: Optional[float] = Field(None, ge=0.0, description="Giá trị cơ hội gia hạn (mặc định kế thừa giá trị hợp đồng)")
+    owner_id: Optional[int] = Field(None, description="Nhân viên phụ trách cơ hội (mặc định lấy người phụ trách hợp đồng)")
+    stage: Optional[str] = Field("PROPOSAL", description="Giai đoạn bán hàng của cơ hội gia hạn")
+    notes: Optional[str] = Field(None, description="Ghi chú về việc gia hạn")
+
+
+class ContractRenewalOpportunityResponse(BaseModel):
+    """Kết quả tạo cơ hội gia hạn từ hợp đồng (S7-07 AC 3)."""
+    contract_id: int
+    contract_number: str
+    opportunity_id: int
+    opportunity_title: str
+    customer_id: int
+    value: float
+    stage: str
+    expected_close_date: str
+    is_renewal: bool = True
+    message: str
+

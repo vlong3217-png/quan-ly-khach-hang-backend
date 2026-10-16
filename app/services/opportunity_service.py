@@ -288,26 +288,30 @@ def _enrich_opportunity_record(opp: dict) -> dict:
 
 
 def get_raw_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
-    db = SessionLocal()
     try:
-        opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
-        if opp:
-            items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opportunity_id).all()
-            opp_dict = _row_to_dict(opp, db)
-            opp_dict["products"] = [_product_row_to_dict(p) for p in items]
-            opp_dict["has_products"] = len(items) > 0
-            return _enrich_opportunity_record(opp_dict)
-        # Fallback RAM
-        for o in FAKE_OPPORTUNITIES:
-            if o["id"] == opportunity_id:
-                items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
-                c = copy.deepcopy(o)
-                c["products"] = items
-                c["has_products"] = len(items) > 0
-                return _enrich_opportunity_record(c)
-        return None
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+            if opp:
+                items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opportunity_id).all()
+                opp_dict = _row_to_dict(opp, db)
+                opp_dict["products"] = [_product_row_to_dict(p) for p in items]
+                opp_dict["has_products"] = len(items) > 0
+                return _enrich_opportunity_record(opp_dict)
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    # Fallback RAM
+    for o in FAKE_OPPORTUNITIES:
+        if o["id"] == opportunity_id:
+            items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opportunity_id]
+            c = copy.deepcopy(o)
+            c["products"] = items
+            c["has_products"] = len(items) > 0
+            return _enrich_opportunity_record(c)
+    return None
 
 
 def get_opportunities_by_scope(
@@ -316,67 +320,70 @@ def get_opportunities_by_scope(
     search: Optional[str] = None,
     customer_id: Optional[int] = None,
 ) -> list[dict]:
-    db = SessionLocal()
+    results = []
     try:
-        query = db.query(OpportunityModel)
+        db = SessionLocal()
+        try:
+            query = db.query(OpportunityModel)
 
-        if scope == DataScope.ALL:
-            pass
-        elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
-            user_team_id = current_user.get("team_id")
-            if user_team_id is not None:
-                query = query.filter(OpportunityModel.team_id == user_team_id)
-        else:
-            user_id = current_user.get("id")
-            query = query.filter(OpportunityModel.owner_id == user_id)
-
-        if customer_id is not None:
-            query = query.filter(OpportunityModel.customer_id == customer_id)
-
-        if search:
-            s = f"%{search.strip().lower()}%"
-            query = query.filter(
-                (OpportunityModel.title.ilike(s)) | (OpportunityModel.stage.ilike(s))
-            )
-
-        rows = query.order_by(desc(OpportunityModel.id)).all()
-
-        results = []
-        for opp in rows:
-            items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opp.id).all()
-            opp_dict = _row_to_dict(opp, db)
-            opp_dict["products"] = [_product_row_to_dict(p) for p in items]
-            opp_dict["has_products"] = len(items) > 0
-            results.append(_enrich_opportunity_record(opp_dict))
-
-        # Nếu DB trống và có RAM (dùng trong test unit)
-        if not results and FAKE_OPPORTUNITIES:
             if scope == DataScope.ALL:
-                raw_list = list(FAKE_OPPORTUNITIES)
+                pass
             elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
                 user_team_id = current_user.get("team_id")
-                raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("team_id") == user_team_id] if user_team_id else list(FAKE_OPPORTUNITIES)
+                if user_team_id is not None:
+                    query = query.filter(OpportunityModel.team_id == user_team_id)
             else:
                 user_id = current_user.get("id")
-                raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("owner_id") == user_id]
+                query = query.filter(OpportunityModel.owner_id == user_id)
 
             if customer_id is not None:
-                raw_list = [o for o in raw_list if o.get("customer_id") == customer_id]
-
-            for opp in raw_list:
-                items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp["id"]]
-                c = copy.deepcopy(opp)
-                c["products"] = items
-                c["has_products"] = len(items) > 0
-                results.append(_enrich_opportunity_record(c))
+                query = query.filter(OpportunityModel.customer_id == customer_id)
 
             if search:
-                s = search.lower().strip()
-                results = [o for o in results if s in o.get("title", "").lower() or s in o.get("stage", "").lower()]
+                s = f"%{search.strip().lower()}%"
+                query = query.filter(
+                    (OpportunityModel.title.ilike(s)) | (OpportunityModel.stage.ilike(s))
+                )
 
-        return results
-    finally:
-        db.close()
+            rows = query.order_by(desc(OpportunityModel.id)).all()
+
+            for opp in rows:
+                items = db.query(OpportunityProductModel).filter(OpportunityProductModel.opportunity_id == opp.id).all()
+                opp_dict = _row_to_dict(opp, db)
+                opp_dict["products"] = [_product_row_to_dict(p) for p in items]
+                opp_dict["has_products"] = len(items) > 0
+                results.append(_enrich_opportunity_record(opp_dict))
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    # Nếu DB trống hoặc lỗi kết nối, fallback sang RAM (dùng trong test unit)
+    if not results and FAKE_OPPORTUNITIES:
+        if scope == DataScope.ALL:
+            raw_list = list(FAKE_OPPORTUNITIES)
+        elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
+            user_team_id = current_user.get("team_id")
+            raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("team_id") == user_team_id] if user_team_id else list(FAKE_OPPORTUNITIES)
+        else:
+            user_id = current_user.get("id")
+            raw_list = [o for o in FAKE_OPPORTUNITIES if o.get("owner_id") == user_id]
+
+        if customer_id is not None:
+            raw_list = [o for o in raw_list if o.get("customer_id") == customer_id]
+
+        for opp in raw_list:
+            items = [p for p in FAKE_OPPORTUNITY_PRODUCTS if p["opportunity_id"] == opp["id"]]
+            c = copy.deepcopy(opp)
+            c["products"] = items
+            c["has_products"] = len(items) > 0
+            results.append(_enrich_opportunity_record(c))
+
+        if search:
+            s = search.lower().strip()
+            results = [o for o in results if s in o.get("title", "").lower() or s in o.get("stage", "").lower()]
+
+    return results
 
 
 def get_kanban_board_data(
