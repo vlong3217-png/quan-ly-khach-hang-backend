@@ -1,4 +1,4 @@
-"""
+﻿"""
 Activity, Task, Calendar, Timeline, and Notification service for Sprint 6.
 Supports SQLite / MySQL persistence with RAM fallback for high-performance unit tests.
 """
@@ -25,7 +25,7 @@ INITIAL_ACTIVITIES = [
         "description": "Họp trao đổi yêu cầu với Admin",
         "customer_id": 1,
         "contact_id": 1,
-        "opportunity_id": 1,
+        "opportunity_id": None,
         "duration_minutes": 60,
         "occurred_at": datetime(2026, 1, 15, 10, 0, 0),
         "owner_id": 1,
@@ -39,7 +39,7 @@ INITIAL_ACTIVITIES = [
         "description": "Gọi điện giới thiệu tính năng",
         "customer_id": 2,
         "contact_id": 2,
-        "opportunity_id": 2,
+        "opportunity_id": None,
         "duration_minutes": 15,
         "occurred_at": datetime(2026, 1, 16, 14, 30, 0),
         "owner_id": 2,
@@ -53,7 +53,7 @@ INITIAL_ACTIVITIES = [
         "description": "Gửi email kèm file báo giá",
         "customer_id": 3,
         "contact_id": None,
-        "opportunity_id": 3,
+        "opportunity_id": None,
         "duration_minutes": 10,
         "occurred_at": datetime(2026, 1, 17, 9, 15, 0),
         "owner_id": 3,
@@ -67,7 +67,7 @@ INITIAL_ACTIVITIES = [
         "description": "Ghi chú theo dõi hợp đồng",
         "customer_id": 4,
         "contact_id": None,
-        "opportunity_id": 4,
+        "opportunity_id": None,
         "duration_minutes": 5,
         "occurred_at": datetime(2026, 1, 18, 16, 0, 0),
         "owner_id": 4,
