@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for Sprint 4 - Task S4-09: Lead Filters & Saved Filters Backend
 "Là Nhân viên kinh doanh, tôi muốn xem danh sách lead với bộ lọc và bộ lọc lưu sẵn, để mở máy buổi sáng là biết ngay hôm nay cần gọi ai."
 
@@ -18,6 +18,7 @@ from app.core.database import SessionLocal, engine
 from app.core.security import create_access_token
 from app.models import Base
 from app.models.lead import Lead, LeadSavedFilter
+from app.services.auth_service import FAKE_USERS, hash_password
 
 client = TestClient(app)
 
@@ -33,6 +34,25 @@ def get_auth_headers(email: str = "sales@crm.vn", user_id: int = 10, role: str =
 
 @pytest.fixture(autouse=True)
 def clean_db():
+    Base.metadata.create_all(bind=engine)
+    # Ensure test users exist in FAKE_USERS for auth validation
+    test_user_ids = [u['id'] for u in FAKE_USERS]
+    for uid, uemail, urole, uteam in [
+        (10, 'sales@crm.vn', 'USER', 1),
+        (20, 'sales20@crm.vn', 'USER', 2),
+    ]:
+        if uid not in test_user_ids:
+            FAKE_USERS.append({
+                'id': uid,
+                'email': uemail,
+                'username': f'user{uid}',
+                'full_name': f'Sales {uid}',
+                'role': urole,
+                'is_active': True,
+                'status': 'ACTIVE',
+                'hashed_password': hash_password('123456'),
+                'team_id': uteam,
+            })
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
