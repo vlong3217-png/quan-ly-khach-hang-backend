@@ -122,3 +122,7 @@ from app.routers.sales_forecast import router as sales_forecast_router
 app.include_router(sales_forecast_router)
 
 
+
+from app.routers.email_marketing import router as email_marketing_router
+app.include_router(email_marketing_router)
+
