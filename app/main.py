@@ -134,3 +134,7 @@ app.include_router(notification_preferences_router)
 from app.routers.sales_quotas import router as sales_quotas_router
 app.include_router(sales_quotas_router)
 
+
+from app.routers.sales_dashboard import router as sales_dashboard_router
+app.include_router(sales_dashboard_router)
+
