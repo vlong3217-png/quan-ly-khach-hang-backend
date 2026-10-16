@@ -154,3 +154,7 @@ app.include_router(team_activity_sla_router)
 from app.routers.team_leaderboard import router as team_leaderboard_router
 app.include_router(team_leaderboard_router)
 
+
+from app.routers.lead_source_report import router as lead_source_report_router
+app.include_router(lead_source_report_router)
+
