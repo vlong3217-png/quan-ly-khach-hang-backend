@@ -130,4 +130,7 @@ app.include_router(pdf_templates_router)
 from app.routers.public_quotes import router as public_quotes_router
 app.include_router(public_quotes_router)
 
+from app.routers.notifications import router as notifications_router
+app.include_router(notifications_router)
+
 

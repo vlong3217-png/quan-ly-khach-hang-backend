@@ -712,6 +712,18 @@ def allocate_single_lead(lead: Lead, db: Session, commit: bool = True) -> LeadAl
             if commit:
                 db.commit()
                 db.refresh(lead)
+            try:
+                from app.services import notification_service
+                lead_name = getattr(lead, "full_name", None) or getattr(lead, "name", None) or f"Lead #{lead.id}"
+                notification_service.notify_lead_assigned(
+                    lead_id=lead.id,
+                    lead_name=lead_name,
+                    assigned_to_id=assigned_user_id,
+                    assigner_user={"id": 1, "full_name": "Hệ thống phân bổ"},
+                    db=db,
+                )
+            except Exception:
+                pass
             return log
 
     lead.owner_id = None
@@ -773,6 +785,20 @@ def manual_assign_lead(lead_id: int, owner_id: int, note: Optional[str], current
     db.add(log)
     db.commit()
     db.refresh(lead)
+
+    try:
+        from app.services import notification_service
+        lead_name = getattr(lead, "full_name", None) or getattr(lead, "name", None) or f"Lead #{lead.id}"
+        notification_service.notify_lead_assigned(
+            lead_id=lead.id,
+            lead_name=lead_name,
+            assigned_to_id=owner_id,
+            assigner_user=current_user,
+            db=db,
+        )
+    except Exception:
+        pass
+
     return lead
 
 
