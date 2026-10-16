@@ -27,6 +27,8 @@ from app.schemas.quote import (
     QuoteVersionListResponse,
     QuoteComparisonResponse,
 )
+from app.schemas.contract import ContractConvertRequest, ContractResponse
+from app.services.contract_service import convert_quote_to_contract
 from app.services.quote_service import (
     create_quote_record,
     delete_quote_record,
@@ -671,3 +673,25 @@ def set_active_version_endpoint(
         )
 
     return set_active_quote_version(quote_id, current_user=current_user, db=db)
+
+
+@router.post("/{quote_id}/convert-to-contract", response_model=ContractResponse, status_code=status.HTTP_201_CREATED)
+def convert_quote_to_contract_quote_endpoint(
+    quote_id: int,
+    payload: ContractConvertRequest,
+    current_user: dict = Depends(require_roles(["ADMIN", "ACCOUNTANT", "DIRECTOR", "MANAGER"], detail="Chỉ Kế toán, Giám đốc hoặc Quản trị viên mới có quyền chuyển báo giá thành hợp đồng (S7-04)")),
+    db: Session = Depends(get_db),
+):
+    """
+    Chuyển một báo giá được chấp nhận thành hợp đồng (S7-04):
+    - AC 1: Kế thừa 100% dòng sản phẩm và các giá trị tài chính đã chốt.
+    - AC 2: Khai báo số hợp đồng, ngày ký, ngày hiệu lực, ngày hết hạn, điều khoản thanh toán.
+    - AC 3: Tự động chuyển cơ hội tương ứng sang Đóng thắng (CLOSED_WON) với giá trị bằng đúng giá trị hợp đồng.
+    - AC 4: Kiểm tra tính duy nhất của số hợp đồng.
+    """
+    return convert_quote_to_contract(
+        quote_id=quote_id,
+        data=payload.model_dump(),
+        current_user=current_user,
+        db=db,
+    )

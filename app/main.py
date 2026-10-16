@@ -121,4 +121,7 @@ app.include_router(campaigns_router)
 from app.routers.sales_forecast import router as sales_forecast_router
 app.include_router(sales_forecast_router)
 
+from app.routers.contracts import router as contracts_router
+app.include_router(contracts_router)
+
 

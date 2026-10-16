@@ -23,6 +23,7 @@ from app.models.lead import (
     LeadSavedFilter,
 )
 from app.models.campaign import Campaign
+from app.models.contract import Contract, ContractModel, ContractItemModel
 __all__ = [
     "Base",
     "User",
@@ -45,4 +46,7 @@ __all__ = [
     "LeadMergeHistory",
     "LeadSavedFilter",
     "Campaign",
+    "Contract",
+    "ContractModel",
+    "ContractItemModel",
 ]
