@@ -36,6 +36,7 @@ class DataScope(str, Enum):
 ROLE_SCOPE_MAP: dict[str, list[DataScope]] = {
     "ADMIN": [DataScope.ALL, DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
     "DIRECTOR": [DataScope.ALL, DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
+    "ACCOUNTANT": [DataScope.ALL, DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
     "MANAGER": [DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
     "USER": [DataScope.MY],
 }
@@ -44,6 +45,7 @@ ROLE_SCOPE_MAP: dict[str, list[DataScope]] = {
 ROLE_DEFAULT_SCOPE: dict[str, DataScope] = {
     "ADMIN": DataScope.ALL,
     "DIRECTOR": DataScope.ALL,
+    "ACCOUNTANT": DataScope.ALL,
     "MANAGER": DataScope.TEAM,
     "USER": DataScope.MY,
 }
@@ -285,7 +287,7 @@ def check_scope_access(
     - USER: access ONLY to records owned by this USER (MY scope)
     """
     role = current_user.get("role", "USER")
-    if role == "ADMIN":
+    if role in ("ADMIN", "DIRECTOR", "ACCOUNTANT"):
         return True
     if role == "MANAGER":
         user_team = current_user.get("team_id")
