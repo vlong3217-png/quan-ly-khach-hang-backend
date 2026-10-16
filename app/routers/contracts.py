@@ -23,6 +23,11 @@ from app.schemas.contract import (
     ContractGenerateNumberResponse,
     ContractListResponse,
     ContractResponse,
+    ContractRenewalSettingsResponse,
+    ContractRenewalSettingsUpdate,
+    ContractExpiringAlertResponse,
+    ContractRenewalOpportunityRequest,
+    ContractRenewalOpportunityResponse,
 )
 from app.services.contract_service import (
     convert_quote_to_contract,
@@ -30,6 +35,10 @@ from app.services.contract_service import (
     get_contract_by_id,
     get_contract_by_quote_id,
     get_contracts_by_scope,
+    get_renewal_threshold_setting,
+    update_renewal_threshold_setting,
+    get_expiring_soon_contracts,
+    create_renewal_opportunity_from_contract,
 )
 
 router = APIRouter(
@@ -49,6 +58,46 @@ def get_suggested_contract_number(
     """
     suggested = generate_unique_contract_number(db=db)
     return {"suggested_contract_number": suggested}
+
+
+@router.get("/settings/renewal-threshold", response_model=ContractRenewalSettingsResponse)
+def get_renewal_threshold_endpoint(
+    current_user: dict = Depends(get_current_user),
+):
+    """Lấy cấu hình ngưỡng cảnh báo hợp đồng sắp hết hạn hiện tại (S7-07 AC 2)."""
+    return get_renewal_threshold_setting()
+
+
+@router.put("/settings/renewal-threshold", response_model=ContractRenewalSettingsResponse)
+def update_renewal_threshold_endpoint(
+    payload: ContractRenewalSettingsUpdate,
+    current_user: dict = Depends(require_roles(["ADMIN", "ACCOUNTANT", "DIRECTOR", "MANAGER"])),
+):
+    """Cập nhật ngưỡng cảnh báo hợp đồng sắp hết hạn (S7-07 AC 2)."""
+    return update_renewal_threshold_setting(payload.threshold_days, current_user=current_user)
+
+
+@router.get("/expiring-soon", response_model=ContractExpiringAlertResponse)
+def get_expiring_soon_contracts_endpoint(
+    threshold_days: Optional[int] = Query(None, ge=1, le=365, description="Số ngày trước khi hết hạn để cảnh báo (mặc định lấy cấu hình hệ thống)"),
+    scope: Optional[str] = Query(None, description="Data scope filter: MY, MY_TEAM, TEAM, hoặc ALL"),
+    customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Cảnh báo hợp đồng sắp hết hạn theo ngưỡng cấu hình được (S7-07 AC 2):
+    - Tổng hợp số hợp đồng sắp hết hạn và tổng doanh thu có nguy cơ mất nếu không gia hạn.
+    - Phân nhóm theo các cấp độ khẩn cấp: CRITICAL (<= 7 ngày), HIGH (8 - 15 ngày), MEDIUM (> 15 ngày).
+    """
+    effective_scope = resolve_scope(current_user, scope)
+    return get_expiring_soon_contracts(
+        threshold_days=threshold_days,
+        current_user=current_user,
+        scope=effective_scope,
+        customer_id=customer_id,
+        db=db,
+    )
 
 
 @router.post("/from-quote/{quote_id}", response_model=ContractResponse, status_code=status.HTTP_201_CREATED)
@@ -93,7 +142,11 @@ def get_contract_by_quote(
 def list_contracts(
     scope: Optional[str] = Query(None, description="Data scope filter: MY, MY_TEAM, TEAM, hoặc ALL"),
     customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
-    status: Optional[str] = Query(None, description="Lọc theo trạng thái hợp đồng (ACTIVE, EXPIRED, TERMINATED)"),
+    status: Optional[str] = Query(None, description="Lọc theo trạng thái hợp đồng (ACTIVE, EXPIRED, TERMINATED, RENEWED)"),
+    is_expiring_soon: Optional[bool] = Query(None, description="Lọc hợp đồng sắp hết hạn theo ngưỡng cảnh báo (S7-07 AC 1)"),
+    expiring_within_days: Optional[int] = Query(None, ge=0, description="Lọc hợp đồng hết hạn trong vòng N ngày tới (S7-07 AC 1)"),
+    validity_status: Optional[str] = Query(None, description="Lọc theo trạng thái hiệu lực: ACTIVE, EXPIRING_SOON, EXPIRED, RENEWED"),
+    threshold_days: Optional[int] = Query(None, ge=1, le=365, description="Ngưỡng ngày cảnh báo áp dụng"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm (số HĐ, tiêu đề, khách hàng)"),
     page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng hợp đồng mỗi trang (mặc định 20)"),
@@ -101,7 +154,7 @@ def list_contracts(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Lấy danh sách hợp đồng theo quyền hạn (DataScope) và phân trang."""
+    """Lấy danh sách hợp đồng theo quyền hạn (DataScope) kèm thông tin ngày hết hạn và số ngày còn lại (S7-07 AC 1)."""
     effective_scope = resolve_scope(current_user, scope)
     all_contracts = get_contracts_by_scope(
         current_user=current_user,
@@ -109,6 +162,10 @@ def list_contracts(
         search=search,
         customer_id=customer_id,
         status_filter=status,
+        is_expiring_soon=is_expiring_soon,
+        expiring_within_days=expiring_within_days,
+        validity_status=validity_status,
+        threshold_days=threshold_days,
         db=db,
     )
     total = len(all_contracts)
@@ -159,6 +216,42 @@ def get_contract(
         )
 
     return contract
+
+
+@router.post("/{contract_id}/create-renewal-opportunity", response_model=ContractRenewalOpportunityResponse, status_code=status.HTTP_201_CREATED)
+def create_renewal_opportunity_endpoint(
+    contract_id: int,
+    payload: Optional[ContractRenewalOpportunityRequest] = None,
+    current_user: dict = Depends(require_roles(["ADMIN", "ACCOUNTANT", "DIRECTOR", "MANAGER", "USER"], detail="Không có quyền tạo cơ hội gia hạn")),
+    db: Session = Depends(get_db),
+):
+    """
+    Tạo cơ hội gia hạn từ một hợp đồng sắp hết hạn (S7-07 AC 3):
+    - Tự động kế thừa khách hàng và 100% dòng sản phẩm từ hợp đồng cũ.
+    - Đánh dấu cơ hội là gia hạn (is_renewal = True).
+    - Cập nhật hợp đồng gốc sang trạng thái RENEWED và lưu renewal_opportunity_id.
+    - Ghi nhận Activity vào dòng thời gian Cơ hội và Hợp đồng.
+    """
+    contract = get_contract_by_id(contract_id, db=db)
+    if not contract:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy hợp đồng để tạo cơ hội gia hạn (S7-07 AC 3)",
+        )
+
+    if not check_scope_access(current_user, contract["owner_id"], contract.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền thao tác trên hợp đồng này",
+        )
+
+    data = payload.model_dump(exclude_unset=True) if payload else {}
+    return create_renewal_opportunity_from_contract(
+        contract_id=contract_id,
+        data=data,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.get("/{contract_id}/export-pdf")

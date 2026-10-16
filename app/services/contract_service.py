@@ -20,10 +20,103 @@ from app.services.quote_service import get_raw_quote_by_id, FAKE_QUOTES
 INITIAL_CONTRACTS: List[Dict[str, Any]] = []
 FAKE_CONTRACTS: List[Dict[str, Any]] = copy.deepcopy(INITIAL_CONTRACTS)
 
+DEFAULT_RENEWAL_THRESHOLD = 30
+CURRENT_RENEWAL_SETTINGS = {
+    "threshold_days": 30,
+    "updated_at": None,
+    "updated_by": "Hệ thống mặc định",
+}
+
 
 def reset_fake_contracts() -> None:
-    global FAKE_CONTRACTS
-    FAKE_CONTRACTS = copy.deepcopy(INITIAL_CONTRACTS)
+    global FAKE_CONTRACTS, CURRENT_RENEWAL_SETTINGS
+    FAKE_CONTRACTS.clear()
+    FAKE_CONTRACTS.extend(copy.deepcopy(INITIAL_CONTRACTS))
+    CURRENT_RENEWAL_SETTINGS["threshold_days"] = 30
+    CURRENT_RENEWAL_SETTINGS["updated_at"] = None
+    CURRENT_RENEWAL_SETTINGS["updated_by"] = "Hệ thống mặc định"
+
+
+def get_renewal_threshold_setting() -> dict:
+    """Lấy cấu hình ngưỡng cảnh báo hợp đồng sắp hết hạn hiện tại (S7-07 AC 2)."""
+    return dict(CURRENT_RENEWAL_SETTINGS)
+
+
+def update_renewal_threshold_setting(new_threshold: int, current_user: Optional[dict] = None) -> dict:
+    """Cập nhật ngưỡng cảnh báo hợp đồng sắp hết hạn (S7-07 AC 2)."""
+    if new_threshold < 1 or new_threshold > 365:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ngưỡng cảnh báo hết hạn phải từ 1 đến 365 ngày (S7-07 AC 2)",
+        )
+    user_name = "Quản trị viên"
+    if current_user:
+        user_name = current_user.get("full_name") or current_user.get("username", "Quản trị viên")
+    now_iso = datetime.now().isoformat()
+    CURRENT_RENEWAL_SETTINGS["threshold_days"] = int(new_threshold)
+    CURRENT_RENEWAL_SETTINGS["updated_at"] = now_iso
+    CURRENT_RENEWAL_SETTINGS["updated_by"] = user_name
+    return dict(CURRENT_RENEWAL_SETTINGS)
+
+
+def _enrich_contract_expiration_info(c: dict, threshold_days: Optional[int] = None) -> dict:
+    """
+    Bổ sung thông tin hiệu lực và thời hạn cho hợp đồng (S7-07 AC 1 & AC 2):
+    - days_remaining: Số ngày còn lại đến hạn hết hạn (tính từ date.today()).
+    - validity_status: ACTIVE, EXPIRING_SOON, EXPIRED, RENEWED, TERMINATED.
+    - is_expiring_soon: True nếu 0 <= days_remaining <= threshold_days và chưa tạo cơ hội gia hạn.
+    - is_expired: True nếu days_remaining < 0.
+    - urgency_level: CRITICAL (<= 7 ngày), HIGH (8 - 15 ngày), MEDIUM (> 15 ngày).
+    """
+    threshold = threshold_days if threshold_days is not None else CURRENT_RENEWAL_SETTINGS["threshold_days"]
+    today = date.today()
+    exp_raw = c.get("expiration_date")
+
+    days_remaining = 365
+    is_expired = False
+    urgency_level = "MEDIUM"
+
+    if exp_raw:
+        try:
+            exp_str = str(exp_raw)[:10]
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            days_remaining = (exp_date - today).days
+            is_expired = days_remaining < 0
+        except Exception:
+            days_remaining = 365
+
+    is_renewal_created = bool(c.get("is_renewal_created", False))
+    is_expiring_soon = (0 <= days_remaining <= threshold) and not is_renewal_created
+
+    # Xác định mức độ khẩn cấp (AC 2)
+    if days_remaining <= 7:
+        urgency_level = "CRITICAL"
+    elif days_remaining <= 15:
+        urgency_level = "HIGH"
+    else:
+        urgency_level = "MEDIUM"
+
+    # Xác định trạng thái hiệu lực (AC 1)
+    status_upper = str(c.get("status", "")).upper()
+    if is_renewal_created or status_upper == "RENEWED":
+        validity_status = "RENEWED"
+    elif status_upper in ("TERMINATED", "CANCELLED"):
+        validity_status = "TERMINATED"
+    elif is_expired:
+        validity_status = "EXPIRED"
+    elif is_expiring_soon:
+        validity_status = "EXPIRING_SOON"
+    else:
+        validity_status = "ACTIVE"
+
+    c["days_remaining"] = days_remaining
+    c["is_expired"] = is_expired
+    c["is_expiring_soon"] = is_expiring_soon
+    c["validity_status"] = validity_status
+    c["urgency_level"] = urgency_level
+    c.setdefault("is_renewal_created", is_renewal_created)
+    c.setdefault("renewal_opportunity_id", c.get("renewal_opportunity_id"))
+    return c
 
 
 def _safe_log_audit(
@@ -99,11 +192,15 @@ def get_contracts_by_scope(
     search: Optional[str] = None,
     customer_id: Optional[int] = None,
     status_filter: Optional[str] = None,
+    is_expiring_soon: Optional[bool] = None,
+    expiring_within_days: Optional[int] = None,
+    validity_status: Optional[str] = None,
+    threshold_days: Optional[int] = None,
     db: Optional[Session] = None,
 ) -> List[Dict[str, Any]]:
-    """Lấy danh sách hợp đồng theo quyền hạn (DataScope) và bộ lọc."""
-    # Lấy từ RAM
-    results = list(FAKE_CONTRACTS)
+    """Lấy danh sách hợp đồng theo quyền hạn (DataScope) và bộ lọc kèm thông tin thời hạn."""
+    # Lấy từ RAM và làm giàu thông tin thời hạn (S7-07 AC 1)
+    results = [_enrich_contract_expiration_info(c, threshold_days=threshold_days) for c in list(FAKE_CONTRACTS)]
 
     # Lọc theo DataScope
     if scope == DataScope.ALL:
@@ -125,6 +222,19 @@ def get_contracts_by_scope(
         sf = status_filter.upper().strip()
         results = [c for c in results if str(c.get("status", "")).upper() == sf]
 
+    # Lọc theo hợp đồng sắp hết hạn (S7-07 AC 1)
+    if is_expiring_soon is not None:
+        results = [c for c in results if c.get("is_expiring_soon") == is_expiring_soon]
+
+    # Lọc theo số ngày còn lại (S7-07 AC 1)
+    if expiring_within_days is not None:
+        results = [c for c in results if 0 <= c.get("days_remaining", 9999) <= expiring_within_days]
+
+    # Lọc theo trạng thái hiệu lực (ACTIVE, EXPIRING_SOON, EXPIRED, RENEWED)
+    if validity_status:
+        vs = validity_status.upper().strip()
+        results = [c for c in results if str(c.get("validity_status", "")).upper() == vs]
+
     # Tìm kiếm
     if search and search.strip():
         kw = search.lower().strip()
@@ -142,18 +252,18 @@ def get_contracts_by_scope(
 
 
 def get_contract_by_id(contract_id: int, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
-    """Lấy chi tiết một hợp đồng theo ID."""
+    """Lấy chi tiết một hợp đồng theo ID kèm thông tin thời hạn (S7-07 AC 1)."""
     for c in FAKE_CONTRACTS:
         if c.get("id") == contract_id:
-            return c
+            return _enrich_contract_expiration_info(c)
     return None
 
 
 def get_contract_by_quote_id(quote_id: int, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
-    """Tra cứu hợp đồng được sinh từ một báo giá."""
+    """Tra cứu hợp đồng được sinh từ một báo giá kèm thông tin thời hạn."""
     for c in FAKE_CONTRACTS:
         if c.get("quote_id") == quote_id:
-            return c
+            return _enrich_contract_expiration_info(c)
     return None
 
 
@@ -457,3 +567,217 @@ def _close_opportunity_as_won(
         new_value="CLOSED_WON",
         db=db,
     )
+
+
+# ============================================================================
+# S7-07: Expiring Alerts & Renewal Opportunity Creation Functions
+# ============================================================================
+
+def get_expiring_soon_contracts(
+    threshold_days: Optional[int] = None,
+    current_user: Optional[dict] = None,
+    scope: Optional[DataScope] = None,
+    customer_id: Optional[int] = None,
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    """
+    Cảnh báo hợp đồng sắp hết hạn theo ngưỡng cấu hình được (S7-07 AC 2):
+    - Tổng hợp số hợp đồng sắp hết hạn (0 <= days_remaining <= threshold_days)
+    - Tính tổng doanh thu có nguy cơ mất nếu không gia hạn (total_revenue_at_risk)
+    - Phân nhóm mức độ khẩn cấp (critical: <= 7 ngày, high: 8-15 ngày, medium: 16-threshold ngày)
+    - Danh sách chi tiết hợp đồng sắp hết hạn
+    """
+    eff_threshold = threshold_days if threshold_days is not None else CURRENT_RENEWAL_SETTINGS["threshold_days"]
+
+    user = current_user or {"id": 1, "role": "ADMIN", "team_id": None}
+    eff_scope = scope or DataScope.ALL
+
+    all_contracts = get_contracts_by_scope(
+        current_user=user,
+        scope=eff_scope,
+        customer_id=customer_id,
+        threshold_days=eff_threshold,
+        db=db,
+    )
+
+    # Lọc các hợp đồng sắp hết hạn (chưa được tạo cơ hội gia hạn và chưa bị thanh lý)
+    expiring_list = [
+        c for c in all_contracts
+        if c.get("is_expiring_soon") and not c.get("is_renewal_created") and c.get("validity_status") != "TERMINATED"
+    ]
+
+    # Sắp xếp theo số ngày còn lại tăng dần (gần hết hạn nhất lên đầu)
+    expiring_list.sort(key=lambda x: x.get("days_remaining", 0))
+
+    critical_count = len([c for c in expiring_list if c.get("days_remaining", 0) <= 7])
+    high_count = len([c for c in expiring_list if 8 <= c.get("days_remaining", 0) <= 15])
+    medium_count = len([c for c in expiring_list if c.get("days_remaining", 0) > 15])
+    total_rev_risk = sum(float(c.get("grand_total") or 0.0) for c in expiring_list)
+
+    return {
+        "threshold_days": eff_threshold,
+        "total_expiring": len(expiring_list),
+        "total_revenue_at_risk": round(total_rev_risk, 2),
+        "critical_count": critical_count,
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "contracts": expiring_list,
+    }
+
+
+def create_renewal_opportunity_from_contract(
+    contract_id: int,
+    data: Optional[dict] = None,
+    current_user: Optional[dict] = None,
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    """
+    Tạo cơ hội gia hạn từ một hợp đồng sắp hết hạn (S7-07 AC 3):
+    - Kiểm tra hợp đồng tồn tại
+    - Chặn tạo trùng lặp nếu hợp đồng đã có cơ hội gia hạn
+    - Kế thừa toàn bộ dòng sản phẩm từ hợp đồng cũ sang cơ hội gia hạn mới
+    - Kế thừa giá trị hợp đồng, ngày hết hạn làm ngày dự kiến chốt
+    - Cập nhật hợp đồng: renewal_opportunity_id, is_renewal_created = True, status = "RENEWED"
+    - Ghi nhận Activity vào dòng thời gian Cơ hội và Hợp đồng
+    - Ghi nhận Audit Log
+    """
+    contract = get_contract_by_id(contract_id, db=db)
+    if not contract:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy hợp đồng để tạo cơ hội gia hạn (S7-07 AC 3)",
+        )
+
+    _enrich_contract_expiration_info(contract)
+
+    if contract.get("is_renewal_created"):
+        opp_id = contract.get("renewal_opportunity_id")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Hợp đồng số '{contract.get('contract_number')}' đã được tạo cơ hội gia hạn #{opp_id} trước đó (S7-07 AC 3).",
+        )
+
+    payload = data or {}
+    user = current_user or {"id": contract.get("owner_id", 1), "role": "ACCOUNTANT", "full_name": "Kế toán"}
+    user_id = user.get("id", 1)
+
+    opp_title = (payload.get("title") or "").strip() or f"Gia hạn hợp đồng {contract.get('contract_number')} - {contract.get('title')}"
+    opp_value = float(payload.get("value") if payload.get("value") is not None else (contract.get("grand_total") or 0.0))
+    exp_date_str = str(payload.get("expected_close_date") or contract.get("expiration_date"))[:10]
+    opp_owner = payload.get("owner_id") or contract.get("owner_id") or user_id
+    opp_stage = payload.get("stage") or "PROPOSAL"
+    opp_notes = payload.get("notes") or f"Cơ hội gia hạn tự động khởi tạo từ hợp đồng {contract.get('contract_number')} (S7-07 AC 3)."
+
+    from app.services.opportunity_service import create_opportunity_record, FAKE_OPPORTUNITY_PRODUCTS, FAKE_OPPORTUNITIES
+    opp_create_payload = {
+        "title": opp_title,
+        "value": opp_value,
+        "stage": opp_stage,
+        "customer_id": contract.get("customer_id"),
+        "expected_close_date": exp_date_str,
+        "owner_id": opp_owner,
+        "description": opp_notes,
+    }
+
+    actor_for_opp = {
+        "id": opp_owner,
+        "role": user.get("role", "ACCOUNTANT"),
+        "full_name": user.get("full_name", "Kế toán"),
+        "team_id": contract.get("team_id"),
+    }
+    new_opp = create_opportunity_record(opp_create_payload, current_user=actor_for_opp)
+    new_opp_id = new_opp["id"]
+
+    # Kế thừa toàn bộ dòng sản phẩm từ hợp đồng cũ sang cơ hội gia hạn (AC 3)
+    inherited_products = []
+    max_prod_id = max([p["id"] for p in FAKE_OPPORTUNITY_PRODUCTS if isinstance(p.get("id"), int)], default=0)
+    for idx, item in enumerate(contract.get("items", [])):
+        max_prod_id += 1
+        unit_price = float(item.get("unit_price") or 0.0)
+        floor_price = float(item.get("floor_price") or 0.0) if item.get("floor_price") is not None else 0.0
+        prod_dict = {
+            "id": max_prod_id,
+            "opportunity_id": new_opp_id,
+            "product_id": int(item.get("product_id") or 1),
+            "product_code": item.get("product_code", ""),
+            "product_name": item.get("product_name", ""),
+            "product_type": "SUBSCRIPTION" if "bảo trì" in item.get("product_name", "").lower() or "cloud" in item.get("product_name", "").lower() else "ONE_TIME",
+            "quantity": float(item.get("quantity") or 1.0),
+            "unit_price": unit_price,
+            "floor_price": floor_price,
+            "discount_percent": float(item.get("discount_value") or 0.0) if item.get("discount_type") == "PERCENT" else 0.0,
+            "amount": float(item.get("line_total") or 0.0),
+        }
+        FAKE_OPPORTUNITY_PRODUCTS.append(prod_dict)
+        inherited_products.append(prod_dict)
+
+    new_opp["products"] = inherited_products
+    new_opp["has_products"] = len(inherited_products) > 0
+    new_opp["is_renewal"] = True
+    new_opp["original_contract_id"] = contract["id"]
+    new_opp["original_contract_number"] = contract.get("contract_number")
+
+    # Đảm bảo record trong RAM FAKE_OPPORTUNITIES cũng cập nhật đầy đủ cờ gia hạn
+    for o in FAKE_OPPORTUNITIES:
+        if o["id"] == new_opp_id:
+            o["is_renewal"] = True
+            o["original_contract_id"] = contract["id"]
+            o["original_contract_number"] = contract.get("contract_number")
+            o["products"] = inherited_products
+            o["has_products"] = len(inherited_products) > 0
+            break
+
+    # Cập nhật hợp đồng
+    now_iso = datetime.now().isoformat()
+    contract["renewal_opportunity_id"] = new_opp_id
+    contract["is_renewal_created"] = True
+    contract["status"] = "RENEWED"
+    contract["validity_status"] = "RENEWED"
+    contract["updated_at"] = now_iso
+
+    # Nếu có DB session
+    if db is not None:
+        try:
+            db_c = db.query(ContractModel).filter(ContractModel.id == contract_id).first()
+            if db_c:
+                db_c.status = "RENEWED"
+                db.commit()
+        except Exception:
+            pass
+
+    # Ghi nhận Activity vào dòng thời gian Cơ hội và Hợp đồng
+    try:
+        from app.services import activity_service
+        activity_service.create_activity_record({
+            "title": f"Tạo cơ hội gia hạn từ hợp đồng {contract.get('contract_number')}",
+            "type": "NOTE",
+            "description": f"Đã khởi tạo cơ hội gia hạn #{new_opp_id} cho khách hàng từ hợp đồng số {contract.get('contract_number')} (hết hạn ngày {contract.get('expiration_date')}).\nGiá trị dự kiến: {opp_value:,.0f} VNĐ.",
+            "customer_id": contract.get("customer_id"),
+            "opportunity_id": new_opp_id,
+        }, current_user=user)
+    except Exception:
+        pass
+
+    _safe_log_audit(
+        user_id=user_id,
+        user_name=user.get("full_name") or "User",
+        entity_id=f"CONTRACT-{contract_id}",
+        action="CREATE_RENEWAL_OPPORTUNITY",
+        field_name="renewal_opportunity_id",
+        old_value=None,
+        new_value=str(new_opp_id),
+        db=db,
+    )
+
+    return {
+        "contract_id": contract["id"],
+        "contract_number": contract.get("contract_number"),
+        "opportunity_id": new_opp_id,
+        "opportunity_title": new_opp.get("title"),
+        "customer_id": contract.get("customer_id"),
+        "value": opp_value,
+        "stage": opp_stage,
+        "expected_close_date": exp_date_str,
+        "is_renewal": True,
+        "message": f"Đã tạo thành công cơ hội gia hạn #{new_opp_id} từ hợp đồng {contract.get('contract_number')} (S7-07 AC 3)",
+    }
