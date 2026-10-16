@@ -104,6 +104,7 @@ def create_activity_record(data: dict, current_user: dict) -> dict:
         "opportunity_id": data.get("opportunity_id"),
         "owner_id": current_user["id"],
         "assigned_to": assigned_to,
+        "due_date": data.get("due_date"),
         "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
         "created_at": datetime.utcnow().isoformat(),
     }
