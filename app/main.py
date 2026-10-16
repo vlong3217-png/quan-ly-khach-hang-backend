@@ -160,3 +160,7 @@ app.include_router(team_leaderboard_router)
 from app.routers.lead_source_report import router as lead_source_report_router
 app.include_router(lead_source_report_router)
 
+
+from app.routers.team_activity_audit import router as team_activity_audit_router
+app.include_router(team_activity_audit_router)
+
