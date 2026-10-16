@@ -146,3 +146,7 @@ app.include_router(sales_funnel_router)
 from app.routers.sales_forecast_report import router as sales_forecast_report_router
 app.include_router(sales_forecast_report_router)
 
+
+from app.routers.team_activity_sla import router as team_activity_sla_router
+app.include_router(team_activity_sla_router)
+
