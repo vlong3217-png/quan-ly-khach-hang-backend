@@ -48,3 +48,6 @@ __all__ = [
 ]
 
 from app.models.email_marketing import EmailTemplate, EmailLog
+
+from app.models.notification_preference import NotificationPreference
+
