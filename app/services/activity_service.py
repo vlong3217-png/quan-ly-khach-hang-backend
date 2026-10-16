@@ -51,7 +51,8 @@ FAKE_ACTIVITIES = copy.deepcopy(INITIAL_ACTIVITIES)
 
 def reset_fake_activities() -> None:
     global FAKE_ACTIVITIES
-    FAKE_ACTIVITIES = copy.deepcopy(INITIAL_ACTIVITIES)
+    FAKE_ACTIVITIES.clear()
+    FAKE_ACTIVITIES.extend(copy.deepcopy(INITIAL_ACTIVITIES))
 
 
 def get_raw_activity_by_id(activity_id: int) -> Optional[dict]:

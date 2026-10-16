@@ -26,6 +26,8 @@ from app.schemas.quote import (
     QuoteVersionCreateRequest,
     QuoteVersionListResponse,
     QuoteComparisonResponse,
+    QuoteSendLinkRequest,
+    QuoteSendLinkResponse,
 )
 from app.schemas.contract import ContractConvertRequest, ContractResponse
 from app.services.contract_service import convert_quote_to_contract
@@ -48,6 +50,8 @@ from app.services.quote_service import (
     set_active_quote_version,
     get_all_quote_versions,
     compare_quote_versions,
+    send_quote_link_to_customer,
+    check_and_expire_quotes,
 )
 
 router = APIRouter(
@@ -192,6 +196,31 @@ def compare_quotes_query(
         )
 
     return compare_quote_versions(version_a_id, version_b_id)
+
+
+@router.post("/check-expired")
+def check_expired_quotes_endpoint(
+    db: Session = Depends(get_db),
+):
+    """
+    Kích hoạt quét và tự động chuyển các báo giá quá hạn hiệu lực sang EXPIRED (S7-06 AC 4):
+    - Quét tất cả các báo giá có valid_until < ngày hiện tại mà chưa hoàn tất.
+    - Chuyển trạng thái sang EXPIRED, ghi nhận approval_history và dòng thời gian cơ hội.
+    """
+    expired = check_and_expire_quotes(db=db)
+    return {
+        "total_expired": len(expired),
+        "expired_quotes": [
+            {
+                "id": q["id"],
+                "quote_number": q.get("quote_number"),
+                "valid_until": q.get("valid_until"),
+                "status": q.get("status"),
+            }
+            for q in expired
+        ],
+        "message": f"Đã quét và chuyển {len(expired)} báo giá quá hạn sang Hết hiệu lực (S7-06 AC 4)",
+    }
 
 
 @router.get("/{quote_id}", response_model=QuoteResponse)
@@ -496,6 +525,46 @@ def send_quote(
         )
 
     return send_quote_to_customer_record(quote_id, current_user=current_user, db=db)
+
+
+@router.post("/{quote_id}/send-link", response_model=QuoteSendLinkResponse)
+def send_quote_link_endpoint(
+    quote_id: int,
+    payload: Optional[QuoteSendLinkRequest] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Gửi email kèm liên kết xem báo giá trực tuyến cho khách hàng (S7-06 AC 1):
+    - Sinh mã bảo mật share_token độc nhất chỉ dùng cho đúng báo giá đó.
+    - Chuyển trạng thái sang SENT, lưu thông tin gửi recipient_email, share_link, sent_at.
+    - Ghi nhận lịch sử duyệt (SEND_LINK) và Activity vào dòng thời gian cơ hội liên kết.
+    """
+    q_item = get_raw_quote_by_id(quote_id)
+    if q_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy báo giá để gửi liên kết",
+        )
+
+    if not check_scope_access(current_user, q_item["owner_id"], q_item.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền gửi liên kết báo giá này",
+        )
+
+    recipient = payload.recipient_email if payload else None
+    subject = payload.email_subject if payload else None
+    msg = payload.message if payload else None
+
+    return send_quote_link_to_customer(
+        quote_id=quote_id,
+        recipient_email=recipient,
+        email_subject=subject,
+        message=msg,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.get("/{quote_id}/approval-history", response_model=QuoteApprovalHistoryListResponse)

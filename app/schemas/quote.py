@@ -148,8 +148,19 @@ class QuoteResponse(BaseModel):
     discount_approval_status: Optional[str] = None
     approval_history: List[QuoteApprovalHistoryItem] = []
 
-    # Dispatch / Sending (S7-02 AC 4)
+    # Dispatch / Sending & Online Sharing (S7-02 & S7-06 AC 1)
     sent_at: Optional[str] = None
+    share_token: Optional[str] = None
+    share_link: Optional[str] = None
+    recipient_email: Optional[str] = None
+
+    # Online Viewing & Feedback (S7-06 AC 2 & AC 3)
+    viewed_at: Optional[str] = None
+    view_count: int = 0
+    customer_response_status: Optional[str] = None  # ACCEPTED, REJECTED, PENDING
+    customer_feedback: Optional[str] = None
+    customer_responded_at: Optional[str] = None
+    customer_responder_name: Optional[str] = None
 
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -160,6 +171,95 @@ class QuoteApprovalHistoryListResponse(BaseModel):
     quote_number: Optional[str] = None
     total: int
     history: List[QuoteApprovalHistoryItem]
+
+
+# ============================================================================
+# Schemas for S7-06: Online Quote Link Sharing & Customer Response
+# ============================================================================
+
+class QuoteSendLinkRequest(BaseModel):
+    recipient_email: Optional[str] = None
+    email_subject: Optional[str] = None
+    message: Optional[str] = None
+
+
+class QuoteSendLinkResponse(BaseModel):
+    quote_id: int
+    quote_number: str
+    recipient_email: Optional[str] = None
+    share_token: str
+    share_link: str
+    sent_at: str
+    message: str
+
+
+class PublicQuoteAction(str, Enum):
+    ACCEPT = "ACCEPT"
+    REJECT = "REJECT"
+
+
+class PublicQuoteResponseRequest(BaseModel):
+    action: PublicQuoteAction
+    customer_feedback: Optional[str] = None  # Ô ghi ý kiến / lý do từ chối
+    responder_name: Optional[str] = None      # Họ tên người phản hồi đại diện khách hàng
+
+
+class PublicQuoteItemResponse(BaseModel):
+    id: str
+    product_code: Optional[str] = None
+    product_name: str
+    unit: Optional[str] = "Gói"
+    quantity: int = 1
+    unit_price: float = 0.0
+    discount_type: Optional[str] = "PERCENT"
+    discount_value: float = 0.0
+    line_discount_amount: float = 0.0
+    vat_rate: int = 10
+    line_total: float = 0.0
+
+
+class PublicQuoteDetailResponse(BaseModel):
+    id: int
+    quote_number: str
+    title: str
+    status: str
+    is_expired: bool = False
+    valid_until: Optional[str] = None
+    payment_terms: Optional[str] = None
+    delivery_terms: Optional[str] = None
+    notes: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+
+    # Line items & Financial summary
+    items: List[PublicQuoteItemResponse] = []
+    subtotal: float = 0.0
+    total_line_discount: float = 0.0
+    total_discount_amount: float = 0.0
+    discount_percentage: float = 0.0
+    vat_amount: float = 0.0
+    grand_total: float = 0.0
+    amount_in_words: Optional[str] = None
+
+    # Interaction & Tracking
+    viewed_at: Optional[str] = None
+    view_count: int = 0
+    customer_response_status: Optional[str] = None
+    customer_feedback: Optional[str] = None
+    customer_responded_at: Optional[str] = None
+    customer_responder_name: Optional[str] = None
+
+    created_at: Optional[str] = None
+
+
+class PublicQuoteResponseResult(BaseModel):
+    success: bool
+    quote_number: str
+    new_status: str
+    action: str
+    message: str
+    customer_feedback: Optional[str] = None
+    responded_at: str
 
 
 # Schemas for S7-03 Versioning & Comparison

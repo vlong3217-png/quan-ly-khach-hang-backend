@@ -5,6 +5,7 @@ and approval threshold enforcement (S7-01 & S7-02).
 """
 
 import copy
+import secrets
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from fastapi import HTTPException
@@ -224,7 +225,122 @@ def reset_fake_quotes() -> None:
     FAKE_QUOTES = copy.deepcopy(INITIAL_QUOTES)
 
 
+def _record_opportunity_timeline_activity(
+    opportunity_id: int,
+    customer_id: Optional[int],
+    owner_id: int,
+    title: str,
+    activity_type: str,
+    description: str,
+    db=None,
+):
+    """
+    Ghi nhận một hoạt động (Activity) vào dòng thời gian của Cơ hội (S7-06 AC 1 & AC 3):
+    - Cập nhật thời điểm tương tác gần nhất last_activity_at trên Cơ hội
+    - Tạo bản ghi Activity để nhân viên kinh doanh theo dõi ngay trên dòng thời gian
+    """
+    now_iso = datetime.now().isoformat()
+    # 1. Ghi vào Activity service (In-memory mock)
+    try:
+        from app.services import activity_service
+        actor = {"id": owner_id, "role": "SYSTEM", "full_name": "Hệ thống Báo giá"}
+        activity_service.create_activity_record({
+            "title": title,
+            "type": activity_type,
+            "description": description,
+            "customer_id": customer_id,
+            "opportunity_id": opportunity_id,
+        }, current_user=actor)
+    except Exception:
+        pass
+
+    # 2. Cập nhật last_activity_at trên Cơ hội (In-memory mock)
+    try:
+        from app.services import opportunity_service
+        for opp in (getattr(opportunity_service, "FAKE_OPPORTUNITIES", []) + getattr(opportunity_service, "TEST_SAMPLE_OPPORTUNITIES", [])):
+            if opp.get("id") == opportunity_id:
+                opp["last_activity_at"] = now_iso
+                break
+    except Exception:
+        pass
+
+    # 3. Nếu có DB session
+    if db:
+        try:
+            from app.models.opportunity import OpportunityModel
+            from app.models.activity import Activity as ActivityModel
+            db_opp = db.query(OpportunityModel).filter(OpportunityModel.id == opportunity_id).first()
+            if db_opp:
+                db_opp.last_activity_at = datetime.utcnow()
+            db_act = ActivityModel(
+                title=title,
+                type=activity_type,
+                description=description,
+                customer_id=customer_id,
+                opportunity_id=opportunity_id,
+                owner_id=owner_id,
+                created_at=datetime.utcnow(),
+            )
+            db.add(db_act)
+            db.commit()
+        except Exception:
+            pass
+
+
+def check_and_expire_quotes(db=None) -> List[dict]:
+    """
+    Quá hạn hiệu lực mà không phản hồi thì báo giá tự chuyển sang Hết hiệu lực (S7-06 AC 4):
+    - Kiểm tra valid_until < date.today()
+    - Trạng thái chưa hoàn tất (SENT, VIEWED, APPROVED, DRAFT, PENDING_APPROVAL, RETURNED)
+    - Tự động chuyển sang EXPIRED
+    - Ghi nhận vào approval_history (AUTO_EXPIRED)
+    - Tự động ghi Activity vào dòng thời gian cơ hội liên kết
+    """
+    expired_quotes = []
+    today_str = str(date.today())
+    now_iso = datetime.now().isoformat()
+
+    for q in FAKE_QUOTES:
+        valid_until = q.get("valid_until")
+        if not valid_until:
+            continue
+        v_date_str = str(valid_until)[:10]
+        # Nếu đã quá hạn hiệu lực và chưa được chốt (ACCEPTED, DECLINED, REJECTED, EXPIRED, CONVERTED)
+        if v_date_str < today_str and q.get("status") in ("SENT", "VIEWED", "APPROVED", "DRAFT", "PENDING_APPROVAL", "RETURNED"):
+            prev_status = q.get("status")
+            q["status"] = "EXPIRED"
+            q["updated_at"] = now_iso
+
+            hist_item = {
+                "id": f"hist-exp-{int(datetime.now().timestamp() * 1000)}-{q['id']}",
+                "action": "AUTO_EXPIRED",
+                "performed_by_id": None,
+                "performed_by_name": "Hệ thống tự động",
+                "performed_by_role": "SYSTEM",
+                "comments": f"Báo giá tự động chuyển sang Hết hiệu lực do quá hạn hiệu lực ({v_date_str}) mà chưa có phản hồi từ khách hàng (S7-06 AC 4).",
+                "previous_status": prev_status,
+                "new_status": "EXPIRED",
+                "timestamp": now_iso,
+            }
+            q.setdefault("approval_history", []).append(hist_item)
+
+            if q.get("opportunity_id"):
+                _record_opportunity_timeline_activity(
+                    opportunity_id=q["opportunity_id"],
+                    customer_id=q.get("customer_id"),
+                    owner_id=q.get("owner_id", 1),
+                    title=f"Báo giá {q.get('quote_number')} đã hết hiệu lực",
+                    activity_type="NOTE",
+                    description=f"Báo giá {q.get('quote_number')} đã quá hạn hiệu lực ({v_date_str}) mà chưa nhận được phản hồi từ khách hàng. Trạng thái đã chuyển sang Hết hiệu lực (EXPIRED).",
+                    db=db,
+                )
+            expired_quotes.append(q)
+
+    return expired_quotes
+
+
 def get_raw_quote_by_id(quote_id: int) -> Optional[dict]:
+    check_and_expire_quotes()
     for q in FAKE_QUOTES:
         if q["id"] == quote_id:
             return q
@@ -403,6 +519,7 @@ def get_quotes_by_scope(
     opportunity_id: Optional[int] = None,
     status: Optional[str] = None,
 ) -> list[dict]:
+    check_and_expire_quotes()
     if scope == DataScope.ALL:
         results = list(FAKE_QUOTES)
     elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
@@ -1521,4 +1638,394 @@ def compare_quote_versions(version_a_id: int, version_b_id: int) -> dict:
         "financials": financials_diff,
         "items": items_diff,
         "terms": terms_diff,
+    }
+
+
+# ============================================================================
+# S7-06: Online Quote Link Sharing, Public View & Customer Response
+# ============================================================================
+
+def send_quote_link_to_customer(
+    quote_id: int,
+    recipient_email: Optional[str] = None,
+    email_subject: Optional[str] = None,
+    message: Optional[str] = None,
+    current_user: Optional[dict] = None,
+    db=None,
+) -> dict:
+    """
+    Gửi email kèm liên kết xem báo giá, liên kết chỉ dùng cho đúng báo giá đó (S7-06 AC 1):
+    - Sinh mã bảo mật share_token ngẫu nhiên, độc nhất
+    - Trạng thái báo giá chuyển sang SENT
+    - Lưu recipient_email, share_token, share_link, sent_at
+    - Ghi nhận lịch sử duyệt (SEND_LINK)
+    - Tự động ghi nhận Activity loại EMAIL vào dòng thời gian cơ hội liên kết
+    """
+    q = get_raw_quote_by_id(quote_id)
+    if q is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy báo giá để gửi liên kết",
+        )
+
+    # Chỉ cho phép gửi khi báo giá đã duyệt hoặc đang gửi lại
+    if q.get("status") in ("DRAFT", "PENDING_APPROVAL", "RETURNED", "REJECTED"):
+        raise HTTPException(
+            status_code=400,
+            detail="Chỉ báo giá đã được phê duyệt mới được phép gửi cho khách hàng (S7-02 & S7-06 AC 1)",
+        )
+
+    # Kiểm tra quá hạn
+    today_str = str(date.today())
+    v_date = str(q.get("valid_until", ""))[:10]
+    if q.get("status") == "EXPIRED" or (v_date and v_date < today_str):
+        q["status"] = "EXPIRED"
+        raise HTTPException(
+            status_code=400,
+            detail="Báo giá này đã hết hạn hiệu lực, không thể gửi cho khách hàng (S7-06 AC 4)",
+        )
+
+    # Sinh mã bảo mật độc nhất nếu chưa có
+    share_token = q.get("share_token") or f"sq_{secrets.token_urlsafe(24)}"
+    share_link = f"/public/quotes/{share_token}"
+    email_to = recipient_email or q.get("recipient_email") or f"customer_{q.get('customer_id', 1)}@example.com"
+
+    now_iso = datetime.now().isoformat()
+    prev_status = q.get("status")
+    q["share_token"] = share_token
+    q["share_link"] = share_link
+    q["recipient_email"] = email_to
+    q["status"] = "SENT"
+    q["sent_at"] = now_iso
+    q["updated_at"] = now_iso
+
+    actor_id = current_user.get("id") if current_user else q.get("owner_id", 1)
+    actor_name = (current_user.get("full_name") or current_user.get("username", "Nhân viên kinh doanh")) if current_user else "Nhân viên kinh doanh"
+    actor_role = current_user.get("role", "USER") if current_user else "USER"
+
+    hist_item = {
+        "id": f"hist-sendlink-{int(datetime.now().timestamp() * 1000)}",
+        "action": "SEND_LINK",
+        "performed_by_id": actor_id,
+        "performed_by_name": actor_name,
+        "performed_by_role": actor_role,
+        "comments": f"Đã gửi email kèm liên kết trực tuyến xem báo giá tới {email_to} (S7-06 AC 1).",
+        "previous_status": prev_status,
+        "new_status": "SENT",
+        "timestamp": now_iso,
+    }
+    q.setdefault("approval_history", []).append(hist_item)
+
+    # Ghi nhận vào dòng thời gian cơ hội (AC 1 & AC 3)
+    if q.get("opportunity_id"):
+        _record_opportunity_timeline_activity(
+            opportunity_id=q["opportunity_id"],
+            customer_id=q.get("customer_id"),
+            owner_id=actor_id,
+            title=f"Gửi email báo giá {q['quote_number']}",
+            activity_type="EMAIL",
+            description=f"Nhân viên kinh doanh đã gửi email kèm liên kết xem báo giá trực tuyến tới: {email_to}.\nTiêu đề email: {email_subject or q.get('title')}\nLiên kết xem báo giá: {share_link}\nNội dung thư: {message or 'Kính gửi Quý khách hàng báo giá giải pháp chi tiết.'}",
+            db=db,
+        )
+
+    _safe_log_audit(
+        user_id=actor_id,
+        user_name=actor_name,
+        entity_id=f"QUOTE-{quote_id}",
+        action="SEND_QUOTE_LINK",
+        field_name="status",
+        old_value=prev_status,
+        new_value="SENT",
+        db=db,
+    )
+
+    return {
+        "quote_id": q["id"],
+        "quote_number": q.get("quote_number") or f"BG-{q['id']}",
+        "recipient_email": email_to,
+        "share_token": share_token,
+        "share_link": share_link,
+        "sent_at": now_iso,
+        "message": "Đã gửi email kèm liên kết xem báo giá thành công (S7-06 AC 1)",
+    }
+
+
+def get_quote_by_share_token(share_token: str, mark_viewed: bool = True, db=None) -> dict:
+    """
+    Xem chi tiết báo giá qua liên kết công khai (S7-06 AC 2):
+    - Kiểm tra token duy nhất
+    - Kiểm tra quá hạn hiệu lực -> tự động chuyển EXPIRED
+    - Đánh dấu đã xem (viewed_at, view_count, chuyển status SENT -> VIEWED)
+    - Ghi nhận Activity trên dòng thời gian cơ hội
+    """
+    check_and_expire_quotes(db=db)
+    target_q = None
+    for q in FAKE_QUOTES:
+        if q.get("share_token") == share_token:
+            target_q = q
+            break
+
+    if not target_q:
+        raise HTTPException(
+            status_code=404,
+            detail="Liên kết xem báo giá không tồn tại hoặc không hợp lệ (S7-06 AC 1)",
+        )
+
+    now_iso = datetime.now().isoformat()
+    today_str = str(date.today())
+    v_date = str(target_q.get("valid_until", ""))[:10]
+
+    # Kiểm tra quá hạn hiệu lực (AC 4)
+    if v_date and v_date < today_str and target_q.get("status") in ("SENT", "VIEWED", "APPROVED", "DRAFT"):
+        target_q["status"] = "EXPIRED"
+        target_q["updated_at"] = now_iso
+        hist_item = {
+            "id": f"hist-exp-{int(datetime.now().timestamp() * 1000)}",
+            "action": "AUTO_EXPIRED",
+            "performed_by_id": None,
+            "performed_by_name": "Hệ thống tự động",
+            "performed_by_role": "SYSTEM",
+            "comments": f"Báo giá tự động chuyển sang Hết hiệu lực do quá hạn hiệu lực ({v_date}) mà chưa có phản hồi từ khách hàng (S7-06 AC 4).",
+            "previous_status": "SENT",
+            "new_status": "EXPIRED",
+            "timestamp": now_iso,
+        }
+        target_q.setdefault("approval_history", []).append(hist_item)
+        if target_q.get("opportunity_id"):
+            _record_opportunity_timeline_activity(
+                opportunity_id=target_q["opportunity_id"],
+                customer_id=target_q.get("customer_id"),
+                owner_id=target_q.get("owner_id", 1),
+                title=f"Báo giá {target_q.get('quote_number')} đã hết hiệu lực",
+                activity_type="NOTE",
+                description=f"Báo giá {target_q.get('quote_number')} đã hết hạn hiệu lực ({v_date}).",
+                db=db,
+            )
+
+    is_expired = (target_q.get("status") == "EXPIRED") or (bool(v_date) and v_date < today_str)
+
+    # Đánh dấu đã xem nếu còn hiệu lực (AC 2)
+    if mark_viewed and not is_expired:
+        target_q["view_count"] = int(target_q.get("view_count") or 0) + 1
+        target_q["viewed_at"] = now_iso
+        if target_q.get("status") == "SENT":
+            target_q["status"] = "VIEWED"
+            target_q["updated_at"] = now_iso
+
+            hist_item = {
+                "id": f"hist-view-{int(datetime.now().timestamp() * 1000)}",
+                "action": "CUSTOMER_VIEWED",
+                "performed_by_id": None,
+                "performed_by_name": "Khách hàng",
+                "performed_by_role": "CUSTOMER",
+                "comments": "Khách hàng đã mở xem báo giá trực tuyến qua liên kết (S7-06 AC 2).",
+                "previous_status": "SENT",
+                "new_status": "VIEWED",
+                "timestamp": now_iso,
+            }
+            target_q.setdefault("approval_history", []).append(hist_item)
+
+            if target_q.get("opportunity_id"):
+                _record_opportunity_timeline_activity(
+                    opportunity_id=target_q["opportunity_id"],
+                    customer_id=target_q.get("customer_id"),
+                    owner_id=target_q.get("owner_id", 1),
+                    title=f"Khách hàng đã xem báo giá {target_q.get('quote_number')}",
+                    activity_type="NOTE",
+                    description=f"Khách hàng đã mở xem chi tiết báo giá {target_q.get('quote_number')} qua liên kết trực tuyến lúc {now_iso}.",
+                    db=db,
+                )
+
+    # Lấy tên khách hàng nếu có
+    cust_name = None
+    if target_q.get("customer_id"):
+        try:
+            from app.services.customer_service import get_raw_customer_by_id
+            cust = get_raw_customer_by_id(target_q["customer_id"])
+            if cust:
+                cust_name = cust.get("name")
+        except Exception:
+            pass
+
+    # Chuyển đổi số tiền sang chữ tiếng Việt
+    from app.utils.number_to_words import number_to_vietnamese_words
+    amt_words = number_to_vietnamese_words(target_q.get("grand_total") or target_q.get("amount") or 0.0)
+
+    # Dòng sản phẩm
+    public_items = []
+    for it in target_q.get("items", []):
+        public_items.append({
+            "id": str(it.get("id")),
+            "product_code": it.get("product_code"),
+            "product_name": it.get("product_name", "Sản phẩm"),
+            "unit": it.get("unit") or "Gói",
+            "quantity": int(it.get("quantity") or 1),
+            "unit_price": float(it.get("unit_price") or 0.0),
+            "discount_type": str(it.get("discount_type") or "PERCENT"),
+            "discount_value": float(it.get("discount_value") or 0.0),
+            "line_discount_amount": float(it.get("line_discount_amount") or 0.0),
+            "vat_rate": int(it.get("vat_rate") or 10),
+            "line_total": float(it.get("line_total") or 0.0),
+        })
+
+    return {
+        "id": target_q["id"],
+        "quote_number": target_q.get("quote_number") or f"BG-{target_q['id']}",
+        "title": target_q.get("title", "Báo giá thương mại"),
+        "status": target_q.get("status", "SENT"),
+        "is_expired": is_expired,
+        "valid_until": target_q.get("valid_until"),
+        "payment_terms": target_q.get("payment_terms"),
+        "delivery_terms": target_q.get("delivery_terms"),
+        "notes": target_q.get("notes"),
+        "customer_id": target_q.get("customer_id"),
+        "customer_name": cust_name,
+        "items": public_items,
+        "subtotal": float(target_q.get("subtotal") or target_q.get("amount") or 0.0),
+        "total_line_discount": float(target_q.get("total_line_discount") or 0.0),
+        "total_discount_amount": float(target_q.get("total_discount_amount") or 0.0),
+        "discount_percentage": float(target_q.get("discount_percentage") or 0.0),
+        "vat_amount": float(target_q.get("vat_amount") or 0.0),
+        "grand_total": float(target_q.get("grand_total") or target_q.get("amount") or 0.0),
+        "amount_in_words": amt_words,
+        "viewed_at": target_q.get("viewed_at"),
+        "view_count": int(target_q.get("view_count") or 0),
+        "customer_response_status": target_q.get("customer_response_status"),
+        "customer_feedback": target_q.get("customer_feedback"),
+        "customer_responded_at": target_q.get("customer_responded_at"),
+        "customer_responder_name": target_q.get("customer_responder_name"),
+        "created_at": target_q.get("created_at"),
+    }
+
+
+def customer_respond_quote(
+    share_token: str,
+    action: str,
+    feedback: Optional[str] = None,
+    responder_name: Optional[str] = None,
+    db=None,
+) -> dict:
+    """
+    Khách bấm Chấp nhận hoặc Từ chối, có ô ghi ý kiến (S7-06 AC 2 & AC 3):
+    - Cập nhật ngay trạng thái báo giá: ACCEPTED hoặc DECLINED
+    - Ghi nhận ý kiến khách hàng (customer_feedback)
+    - Ghi nhận lịch sử bất biến (CUSTOMER_ACCEPTED / CUSTOMER_REJECTED)
+    - Ghi nhận Activity vào dòng thời gian Cơ hội & cập nhật last_activity_at
+    """
+    check_and_expire_quotes(db=db)
+    target_q = None
+    for q in FAKE_QUOTES:
+        if q.get("share_token") == share_token:
+            target_q = q
+            break
+
+    if not target_q:
+        raise HTTPException(
+            status_code=404,
+            detail="Liên kết xem báo giá không tồn tại hoặc không hợp lệ (S7-06 AC 1)",
+        )
+
+    now_iso = datetime.now().isoformat()
+    today_str = str(date.today())
+    v_date = str(target_q.get("valid_until", ""))[:10]
+
+    # Kiểm tra quá hạn hiệu lực (AC 4)
+    if (v_date and v_date < today_str) or target_q.get("status") == "EXPIRED":
+        target_q["status"] = "EXPIRED"
+        target_q["updated_at"] = now_iso
+        raise HTTPException(
+            status_code=400,
+            detail="Báo giá này đã hết hạn hiệu lực, không thể gửi phản hồi (S7-06 AC 4)",
+        )
+
+    current_status = target_q.get("status")
+    if current_status in ("ACCEPTED", "DECLINED", "REJECTED", "CONVERTED"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Báo giá này đã được phản hồi trước đó (trạng thái hiện tại: {current_status}).",
+        )
+
+    action_upper = str(action).upper().strip()
+    clean_feedback = feedback.strip() if feedback else None
+    clean_responder = responder_name.strip() if responder_name else "Đại diện Khách hàng"
+
+    if action_upper == "ACCEPT":
+        new_status = "ACCEPTED"
+        hist_action = "CUSTOMER_ACCEPTED"
+        default_comment = "Khách hàng đã CHẤP NHẬN báo giá qua liên kết trực tuyến."
+        activity_title = f"Phản hồi báo giá {target_q['quote_number']}: CHẤP NHẬN"
+    elif action_upper == "REJECT":
+        new_status = "DECLINED"
+        hist_action = "CUSTOMER_REJECTED"
+        default_comment = "Khách hàng đã TỪ CHỐI báo giá qua liên kết trực tuyến."
+        activity_title = f"Phản hồi báo giá {target_q['quote_number']}: TỪ CHỐI"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Hành động phản hồi không hợp lệ. Chỉ chấp nhận 'ACCEPT' hoặc 'REJECT'.",
+        )
+
+    # Cập nhật báo giá ngay lập tức (AC 3)
+    target_q["status"] = new_status
+    target_q["customer_response_status"] = action_upper
+    target_q["customer_feedback"] = clean_feedback
+    target_q["customer_responded_at"] = now_iso
+    target_q["customer_responder_name"] = clean_responder
+    target_q["updated_at"] = now_iso
+
+    full_comment = f"{default_comment} Người phản hồi: {clean_responder}."
+    if clean_feedback:
+        full_comment += f" Ý kiến: {clean_feedback}"
+
+    hist_item = {
+        "id": f"hist-resp-{int(datetime.now().timestamp() * 1000)}",
+        "action": hist_action,
+        "performed_by_id": None,
+        "performed_by_name": clean_responder,
+        "performed_by_role": "CUSTOMER",
+        "comments": full_comment,
+        "previous_status": current_status,
+        "new_status": new_status,
+        "timestamp": now_iso,
+    }
+    target_q.setdefault("approval_history", []).append(hist_item)
+
+    # Ghi nhận vào dòng thời gian cơ hội (AC 3)
+    if target_q.get("opportunity_id"):
+        desc_lines = [
+            f"Khách hàng đã gửi phản hồi trực tuyến qua liên kết:",
+            f"- Quyết định: {'CHẤP NHẬN' if action_upper == 'ACCEPT' else 'TỪ CHỐI'}",
+            f"- Người phản hồi: {clean_responder}",
+            f"- Ý kiến phản hồi: {clean_feedback or '(Không có ý kiến bổ sung)'}",
+            f"- Thời gian phản hồi: {now_iso[:19]}",
+        ]
+        _record_opportunity_timeline_activity(
+            opportunity_id=target_q["opportunity_id"],
+            customer_id=target_q.get("customer_id"),
+            owner_id=target_q.get("owner_id", 1),
+            title=activity_title,
+            activity_type="NOTE",
+            description="\n".join(desc_lines),
+            db=db,
+        )
+
+    _safe_log_audit(
+        user_id=1,
+        user_name=clean_responder,
+        entity_id=f"QUOTE-{target_q['id']}",
+        action=hist_action,
+        field_name="status",
+        old_value=current_status,
+        new_value=new_status,
+        db=db,
+    )
+
+    return {
+        "success": True,
+        "quote_number": target_q.get("quote_number") or f"BG-{target_q['id']}",
+        "new_status": new_status,
+        "action": action_upper,
+        "message": f"Quý khách đã {'chấp nhận' if action_upper == 'ACCEPT' else 'từ chối'} báo giá thành công (S7-06 AC 2 & AC 3)",
+        "customer_feedback": clean_feedback,
+        "responded_at": now_iso,
     }
