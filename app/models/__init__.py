@@ -24,6 +24,7 @@ from app.models.lead import (
 )
 from app.models.campaign import Campaign
 from app.models.contract import Contract, ContractModel, ContractItemModel
+from app.models.pdf_template import PDFTemplate, PDFTemplateModel
 __all__ = [
     "Base",
     "User",
@@ -49,4 +50,6 @@ __all__ = [
     "Contract",
     "ContractModel",
     "ContractItemModel",
+    "PDFTemplate",
+    "PDFTemplateModel",
 ]

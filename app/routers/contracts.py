@@ -3,9 +3,12 @@ Contract API Router with role-based access control and quote conversion (S7-04).
 """
 
 import math
+from datetime import date
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
+from app.services.pdf_template_service import get_template_by_id, get_default_template
+from app.services.pdf_generator_service import generate_contract_pdf
 
 from app.core.database import get_db
 from app.core.dependencies import (
@@ -156,3 +159,55 @@ def get_contract(
         )
 
     return contract
+
+
+@router.get("/{contract_id}/export-pdf")
+def export_contract_pdf(
+    contract_id: int,
+    template_id: Optional[int] = Query(None, description="ID của mẫu PDF cần áp dụng (nếu bỏ trống sẽ lấy mẫu mặc định)"),
+    preview: bool = Query(False, description="True để xem trực tiếp (inline), False để tải về (attachment)"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Xuất hợp đồng ra file PDF theo mẫu công ty (S7-05 AC 1 & AC 2):
+    - Đầy đủ thông tin pháp lý, các bên A và B, dòng sản phẩm, tổng tiền bằng số và bằng chữ.
+    - Tùy biến mẫu theo template_id hoặc mẫu mặc định.
+    """
+    contract = get_contract_by_id(contract_id, db=db)
+    if not contract:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy hợp đồng để xuất PDF",
+        )
+
+    if not check_scope_access(current_user, contract["owner_id"], contract.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập dữ liệu hợp đồng này",
+        )
+
+    # Lấy mẫu PDF cấu hình
+    if template_id is not None:
+        template = get_template_by_id(template_id, db=db)
+        if not template:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy mẫu PDF với ID {template_id}",
+            )
+    else:
+        template = get_default_template("CONTRACT", db=db)
+
+    pdf_bytes = generate_contract_pdf(contract, template)
+    c_num = contract.get("contract_number") or f"HD_{contract_id}"
+    filename = f"Hop_Dong_{c_num}.pdf"
+    disposition = "inline" if preview else f'attachment; filename="{filename}"'
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": disposition,
+            "X-Report-Template-Id": str(template.get("id", 1)),
+        },
+    )

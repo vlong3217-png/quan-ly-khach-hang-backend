@@ -124,4 +124,7 @@ app.include_router(sales_forecast_router)
 from app.routers.contracts import router as contracts_router
 app.include_router(contracts_router)
 
+from app.routers.pdf_templates import router as pdf_templates_router
+app.include_router(pdf_templates_router)
+
 
