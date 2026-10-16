@@ -35,6 +35,7 @@ class DataScope(str, Enum):
 # ADMIN can see everything, MANAGER can see their team, USER can only see own data
 ROLE_SCOPE_MAP: dict[str, list[DataScope]] = {
     "ADMIN": [DataScope.ALL, DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
+    "DIRECTOR": [DataScope.ALL, DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
     "MANAGER": [DataScope.TEAM, DataScope.MY_TEAM, DataScope.MY],
     "USER": [DataScope.MY],
 }
@@ -42,6 +43,7 @@ ROLE_SCOPE_MAP: dict[str, list[DataScope]] = {
 # Default scope per role (used when no scope is explicitly requested)
 ROLE_DEFAULT_SCOPE: dict[str, DataScope] = {
     "ADMIN": DataScope.ALL,
+    "DIRECTOR": DataScope.ALL,
     "MANAGER": DataScope.TEAM,
     "USER": DataScope.MY,
 }

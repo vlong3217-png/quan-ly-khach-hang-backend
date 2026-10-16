@@ -18,7 +18,7 @@ from app.core.database import SessionLocal
 from app.models.user import User as UserModel
 
 
-VALID_ROLES = ["ADMIN", "MANAGER", "USER"]
+VALID_ROLES = ["ADMIN", "MANAGER", "USER", "DIRECTOR"]
 VALID_TEAMS = [
     {"id": 1, "name": "Team A"},
     {"id": 2, "name": "Team B"},
