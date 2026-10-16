@@ -93,6 +93,7 @@ def get_activities_by_scope(
 
 def create_activity_record(data: dict, current_user: dict) -> dict:
     new_id = (max(a["id"] for a in FAKE_ACTIVITIES) + 1) if FAKE_ACTIVITIES else 1
+    assigned_to = data.get("assigned_to") or data.get("user_id")
     new_act = {
         "id": new_id,
         "title": data["title"],
@@ -102,11 +103,24 @@ def create_activity_record(data: dict, current_user: dict) -> dict:
         "lead_id": data.get("lead_id"),
         "opportunity_id": data.get("opportunity_id"),
         "owner_id": current_user["id"],
+        "assigned_to": assigned_to,
         "team_id": data.get("team_id") if data.get("team_id") is not None else current_user.get("team_id"),
-        "opportunity_id": data.get("opportunity_id"),
         "created_at": datetime.utcnow().isoformat(),
     }
     FAKE_ACTIVITIES.append(new_act)
+
+    if assigned_to and int(assigned_to) != current_user.get("id"):
+        try:
+            from app.services import notification_service
+            notification_service.notify_task_assigned(
+                activity_id=new_id,
+                activity_title=new_act["title"],
+                assigned_to_id=int(assigned_to),
+                creator_user=current_user,
+            )
+        except Exception:
+            pass
+
     return new_act
 
 

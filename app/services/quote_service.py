@@ -879,6 +879,20 @@ def submit_quote_record(quote_id: int, current_user: Optional[dict] = None, db=N
         db=db,
     )
 
+    try:
+        from app.services import notification_service
+        approvers = [1, 2]
+        notification_service.notify_quote_waiting_approval(
+            quote_id=q["id"],
+            quote_number=q.get("quote_number") or f"BG-{q['id']}",
+            quote_title=q.get("title") or "Báo giá",
+            submitter_user=current_user,
+            approver_user_ids=approvers,
+            db=db,
+        )
+    except Exception:
+        pass
+
     return q
 
 
@@ -2019,6 +2033,21 @@ def customer_respond_quote(
         new_value=new_status,
         db=db,
     )
+
+    try:
+        from app.services import notification_service
+        recipient_id = target_q.get("owner_id") or target_q.get("created_by") or 1
+        notification_service.notify_quote_customer_response(
+            quote_id=target_q["id"],
+            quote_number=target_q.get("quote_number") or f"BG-{target_q['id']}",
+            response_action="ACCEPTED" if action_upper == "ACCEPT" else "REJECTED",
+            feedback=clean_feedback,
+            recipient_id=recipient_id,
+            customer_name=clean_responder,
+            db=db,
+        )
+    except Exception:
+        pass
 
     return {
         "success": True,

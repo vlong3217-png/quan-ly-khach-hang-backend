@@ -11,7 +11,8 @@ class ActivityCreate(BaseModel):
     lead_id: Optional[int] = None
     opportunity_id: Optional[int] = None
     team_id: Optional[int] = None
-    opportunity_id: Optional[int] = None
+    assigned_to: Optional[int] = None
+    user_id: Optional[int] = None
 
 
 class ActivityUpdate(BaseModel):
@@ -21,6 +22,8 @@ class ActivityUpdate(BaseModel):
     customer_id: Optional[int] = None
     lead_id: Optional[int] = None
     opportunity_id: Optional[int] = None
+    assigned_to: Optional[int] = None
+    user_id: Optional[int] = None
 
 
 class ActivityResponse(BaseModel):
@@ -33,7 +36,8 @@ class ActivityResponse(BaseModel):
     opportunity_id: Optional[int] = None
     owner_id: int
     team_id: Optional[int] = None
-    opportunity_id: Optional[int] = None
+    assigned_to: Optional[int] = None
+    user_id: Optional[int] = None
     created_at: Optional[str] = None
 
 

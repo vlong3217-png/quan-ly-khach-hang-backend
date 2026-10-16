@@ -119,6 +119,7 @@ def evaluate_opportunity(opp: dict, today: Optional[date] = None) -> dict:
 
 def _apply_flags(opp: dict, evaluation: dict, now: datetime) -> None:
     was_flagged = bool(opp.get("is_flagged"))
+    was_stagnant = bool(opp.get("is_stagnant"))
     opp.update(evaluation)
     if evaluation["is_flagged"]:
         if not was_flagged or not opp.get("flagged_at"):
@@ -126,6 +127,20 @@ def _apply_flags(opp: dict, evaluation: dict, now: datetime) -> None:
     else:
         opp["flagged_at"] = None
     opp["flags_evaluated_at"] = now.isoformat()
+
+    # AC 1: Phát sinh thông báo khi cơ hội bị gắn cờ đình trệ
+    if evaluation.get("is_stagnant") and not was_stagnant:
+        try:
+            from app.services import notification_service
+            recipient_id = opp.get("owner_id") or 1
+            notification_service.notify_opportunity_stagnant(
+                opportunity_id=opp["id"],
+                opp_title=opp.get("title") or f"Cơ hội #{opp['id']}",
+                recipient_id=recipient_id,
+                days_inactive=opp.get("days_inactive"),
+            )
+        except Exception:
+            pass
 
 
 def scan_opportunities(
