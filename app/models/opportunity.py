@@ -67,6 +67,56 @@ class OpportunityProductModel(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class OpportunityHistoryModel(Base):
+    __tablename__ = "opportunity_histories"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    opportunity_id = Column(Integer, nullable=False, index=True)
+    field_name = Column(String(100), nullable=False)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    performed_by = Column(Integer, nullable=False, index=True)
+    performer_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class OpportunitySavedFilterModel(Base):
+    __tablename__ = "opportunity_saved_filters"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    filter_criteria = Column(Text, nullable=False)  # JSON string
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class OpportunityShareModel(Base):
+    __tablename__ = "opportunity_shares"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    opportunity_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    permission = Column(String(50), default="READ_WRITE")  # READ, READ_WRITE
+    shared_by = Column(Integer, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class OpportunityAttachmentModel(Base):
+    __tablename__ = "opportunity_attachments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    opportunity_id = Column(Integer, nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    original_name = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_size_bytes = Column(Integer, nullable=False)
+    content_type = Column(String(100), nullable=True)
+    uploaded_by = Column(Integer, nullable=False)
+    uploader_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 # Legacy Pydantic models for backward compatibility if imported elsewhere
 class Opportunity(BaseModel):
     id: int

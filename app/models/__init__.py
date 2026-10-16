@@ -1,4 +1,4 @@
-"""Models package."""
+﻿"""Models package."""
 from app.models.user import Base, User
 from app.models.customer import Customer, CustomerMergeHistory
 from app.models.opportunity import (
@@ -6,8 +6,13 @@ from app.models.opportunity import (
     OpportunityProduct,
     OpportunityModel,
     OpportunityProductModel,
+    OpportunityHistoryModel,
+    OpportunitySavedFilterModel,
+    OpportunityShareModel,
+    OpportunityAttachmentModel,
 )
-from app.models.activity import Activity
+from app.models.opportunity_task import OpportunityTaskModel
+from app.models.activity import Activity, ActivityModel, TaskModel, NotificationModel
 from app.models.quote import Quote
 from app.models.audit_log import AuditLog
 from app.models.product import Product
@@ -30,7 +35,17 @@ __all__ = [
     "CustomerMergeHistory",
     "Opportunity",
     "OpportunityProduct",
+    "OpportunityModel",
+    "OpportunityProductModel",
+    "OpportunityHistoryModel",
+    "OpportunitySavedFilterModel",
+    "OpportunityShareModel",
+    "OpportunityAttachmentModel",
+    "OpportunityTaskModel",
     "Activity",
+    "ActivityModel",
+    "TaskModel",
+    "NotificationModel",
     "Quote",
     "AuditLog",
     "Product",
@@ -48,9 +63,5 @@ __all__ = [
 ]
 
 from app.models.email_marketing import EmailTemplate, EmailLog
-
 from app.models.notification_preference import NotificationPreference
-
-
 from app.models.sales_quota import SalesQuota, SalesQuotaAuditLog
-
