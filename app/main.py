@@ -1,4 +1,4 @@
-import os
+﻿import os
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,7 @@ from app.routers.tickets import router as tickets_router
 from app.models import Base
 from app.core.database import engine
 
-# Tự động tạo các bảng SQL nếu kết nối cơ sở dữ liệu khả dụng
+# Tá»± Ä‘á»™ng táº¡o cÃ¡c báº£ng SQL náº¿u káº¿t ná»‘i cÆ¡ sá»Ÿ dá»¯ liá»‡u kháº£ dá»¥ng
 try:
     Base.metadata.create_all(bind=engine)
 except Exception:
@@ -30,7 +30,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Đảm bảo thư mục lưu trữ uploads tồn tại
+# Äáº£m báº£o thÆ° má»¥c lÆ°u trá»¯ uploads tá»“n táº¡i
 UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
 os.makedirs(os.path.join(UPLOAD_DIR, "avatars"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
@@ -53,7 +53,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     if request.url.path == "/auth/login":
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Tài khoản hoặc mật khẩu không chính xác"},
+            content={"detail": "TÃ i khoáº£n hoáº·c máº­t kháº©u khÃ´ng chÃ­nh xÃ¡c"},
         )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -80,8 +80,10 @@ app.include_router(auth_router)
 app.include_router(customers_router)
 app.include_router(users_router)
 app.include_router(users_router, prefix="/admin")
+from app.routers.opportunity_export import router as opportunity_export_router
+app.include_router(opportunity_export_router)
 from app.routers.opportunity_alerts import router as opportunity_alerts_router
-app.include_router(opportunity_alerts_router)  # S5-07: phải đứng trước /opportunities/{id}
+app.include_router(opportunity_alerts_router)  # S5-07: pháº£i Ä‘á»©ng trÆ°á»›c /opportunities/{id}
 app.include_router(opportunities_router)
 app.include_router(activities_router)
 app.include_router(quotes_router)
