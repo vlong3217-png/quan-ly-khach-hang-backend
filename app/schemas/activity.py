@@ -13,6 +13,7 @@ class ActivityCreate(BaseModel):
     team_id: Optional[int] = None
     assigned_to: Optional[int] = None
     user_id: Optional[int] = None
+    due_date: Optional[str] = None
 
 
 class ActivityUpdate(BaseModel):
@@ -24,6 +25,7 @@ class ActivityUpdate(BaseModel):
     opportunity_id: Optional[int] = None
     assigned_to: Optional[int] = None
     user_id: Optional[int] = None
+    due_date: Optional[str] = None
 
 
 class ActivityResponse(BaseModel):
@@ -38,6 +40,7 @@ class ActivityResponse(BaseModel):
     team_id: Optional[int] = None
     assigned_to: Optional[int] = None
     user_id: Optional[int] = None
+    due_date: Optional[str] = None
     created_at: Optional[str] = None
 
 

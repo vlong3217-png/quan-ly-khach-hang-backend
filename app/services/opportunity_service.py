@@ -508,6 +508,7 @@ def move_opportunity_kanban_stage(
             detail=f"Không tìm thấy giai đoạn '{new_stage_identifier}'",
         )
 
+    old_stage = opp.get("stage")
     opp["stage"] = target_stage["code"]
 
     if probability is not None:
@@ -515,6 +516,22 @@ def move_opportunity_kanban_stage(
         opp["probability_notes"] = probability_notes
     else:
         opp["win_probability"] = float(target_stage.get("win_probability", 10.0))
+
+    if old_stage != target_stage["code"]:
+        try:
+            from app.services import automation_rule_service
+            opp_payload = dict(opp)
+            opp_payload["from_stage"] = old_stage
+            opp_payload["to_stage"] = target_stage["code"]
+            automation_rule_service.trigger_automation_rules(
+                event_type="OPPORTUNITY_STAGE_CHANGED",
+                entity_type="OPPORTUNITY",
+                entity_id=opportunity_id,
+                payload=opp_payload,
+                current_user=current_user,
+            )
+        except Exception:
+            pass
 
     return get_raw_opportunity_by_id(opportunity_id)
 

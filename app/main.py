@@ -133,4 +133,7 @@ app.include_router(public_quotes_router)
 from app.routers.notifications import router as notifications_router
 app.include_router(notifications_router)
 
+from app.routers.automation_rules import router as automation_rules_router
+app.include_router(automation_rules_router)
+
 
