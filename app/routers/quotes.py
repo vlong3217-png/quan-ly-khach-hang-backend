@@ -4,7 +4,7 @@ Quote API router with role-based access control and data scope filtering (S7-01)
 
 from datetime import date
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -29,6 +29,8 @@ from app.schemas.quote import (
 )
 from app.schemas.contract import ContractConvertRequest, ContractResponse
 from app.services.contract_service import convert_quote_to_contract
+from app.services.pdf_template_service import get_template_by_id, get_default_template
+from app.services.pdf_generator_service import generate_quote_pdf
 from app.services.quote_service import (
     create_quote_record,
     delete_quote_record,
@@ -694,4 +696,58 @@ def convert_quote_to_contract_quote_endpoint(
         data=payload.model_dump(),
         current_user=current_user,
         db=db,
+    )
+
+
+@router.get("/{quote_id}/export-pdf")
+def export_quote_pdf(
+    quote_id: int,
+    template_id: Optional[int] = Query(None, description="ID của mẫu PDF cần áp dụng (nếu bỏ trống sẽ lấy mẫu mặc định)"),
+    preview: bool = Query(False, description="True để xem trực tiếp (inline), False để tải về (attachment)"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Xuất báo giá ra file PDF theo mẫu công ty (S7-05 AC 1 & AC 2):
+    - Logo và nhận diện thương hiệu công ty từ cấu hình template.
+    - Bảng dòng sản phẩm đầy đủ số lượng, đơn giá, chiết khấu, VAT, thành tiền.
+    - Tổng tiền bằng số và tự động chuyển đổi sang chữ tiếng Việt.
+    - Tùy biến mẫu theo template_id hoặc mẫu mặc định.
+    """
+    quote = get_raw_quote_by_id(quote_id)
+    if quote is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy báo giá để xuất PDF",
+        )
+
+    if not check_scope_access(current_user, quote["owner_id"], quote.get("team_id")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập dữ liệu báo giá này",
+        )
+
+    # Lấy mẫu PDF cấu hình
+    if template_id is not None:
+        template = get_template_by_id(template_id, db=db)
+        if not template:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy mẫu PDF với ID {template_id}",
+            )
+    else:
+        template = get_default_template("QUOTE", db=db)
+
+    pdf_bytes = generate_quote_pdf(quote, template)
+    quote_num = quote.get("quote_number") or f"BG_{quote_id}"
+    filename = f"Bao_Gia_{quote_num}.pdf"
+    disposition = "inline" if preview else f'attachment; filename="{filename}"'
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": disposition,
+            "X-Report-Template-Id": str(template.get("id", 1)),
+        },
     )
