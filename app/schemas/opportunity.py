@@ -188,3 +188,93 @@ class OpportunityReassignResponse(BaseModel):
     message: str
 
 
+# ============================================================================
+# SPRINT 6 SCHEMAS
+# ============================================================================
+
+# S6-01: Opportunity Change History
+class OpportunityHistoryItem(BaseModel):
+    id: int
+    opportunity_id: int
+    field_name: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    performed_by: int
+    performer_name: Optional[str] = None
+    created_at: Optional[Any] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class OpportunityHistoryListResponse(BaseModel):
+    total: int
+    page: int = 1
+    limit: int = 20
+    total_pages: int = 1
+    items: List[OpportunityHistoryItem]
+
+
+# S6-02: Saved Filters & Multi-criteria Search
+class OpportunitySavedFilterCreate(BaseModel):
+    name: str = Field(..., min_length=1, description="Tên bộ lọc")
+    filter_criteria: dict = Field(..., description="Tiêu chí lọc")
+
+
+class OpportunitySavedFilterUpdate(BaseModel):
+    name: Optional[str] = None
+    filter_criteria: Optional[dict] = None
+
+
+class OpportunitySavedFilterResponse(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    filter_criteria: dict
+    created_at: Optional[Any] = None
+    updated_at: Optional[Any] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+# S6-03: Opportunity Shares
+class OpportunityShareCreate(BaseModel):
+    user_id: int = Field(..., description="Mã người dùng được chia sẻ")
+    permission: Optional[str] = Field(default="READ_WRITE", description="Quyền: READ hoặc READ_WRITE")
+
+
+class OpportunityShareResponse(BaseModel):
+    id: int
+    opportunity_id: int
+    user_id: int
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    permission: str
+    shared_by: int
+    shared_by_name: Optional[str] = None
+    created_at: Optional[Any] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class OpportunityTransferOwnershipRequest(BaseModel):
+    new_owner_id: int = Field(..., description="ID người sở hữu mới")
+    reason: Optional[str] = Field(default="Chuyển quyền sở hữu cơ hội", description="Lý do chuyển quyền")
+
+
+# S6-04: Opportunity Attachments
+class OpportunityAttachmentResponse(BaseModel):
+    id: int
+    opportunity_id: int
+    filename: str
+    original_name: str
+    file_size_bytes: int
+    content_type: Optional[str] = None
+    uploaded_by: int
+    uploader_name: Optional[str] = None
+    created_at: Optional[Any] = None
+    download_url: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+

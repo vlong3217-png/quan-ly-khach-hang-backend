@@ -11,6 +11,7 @@ from app.routers.customers import router as customers_router
 from app.routers.users import router as users_router
 from app.routers.opportunities import router as opportunities_router
 from app.routers.activities import router as activities_router
+from app.routers.opportunity_tasks import router as opportunity_tasks_router
 from app.routers.quotes import router as quotes_router
 from app.routers.menu import router as menu_router
 from app.routers.contacts import router as contacts_router
@@ -18,7 +19,7 @@ from app.routers.tickets import router as tickets_router
 from app.models import Base
 from app.core.database import engine
 
-# Tá»± Ä‘á»™ng táº¡o cÃ¡c báº£ng SQL náº¿u káº¿t ná»‘i cÆ¡ sá»Ÿ dá»¯ liá»‡u kháº£ dá»¥ng
+# Tự động tạo các bảng SQL nếu kết nối cơ sở dữ liệu khả dụng
 try:
     Base.metadata.create_all(bind=engine)
 except Exception:
@@ -30,7 +31,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Äáº£m báº£o thÆ° má»¥c lÆ°u trá»¯ uploads tá»“n táº¡i
+# Đảm bảo thư mục lưu trữ uploads tồn tại
 UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
 os.makedirs(os.path.join(UPLOAD_DIR, "avatars"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
@@ -45,7 +46,6 @@ app.add_middleware(
 )
 
 
-
 from fastapi.encoders import jsonable_encoder
 
 @app.exception_handler(RequestValidationError)
@@ -53,7 +53,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     if request.url.path == "/auth/login":
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "TÃ i khoáº£n hoáº·c máº­t kháº©u khÃ´ng chÃ­nh xÃ¡c"},
+            content={"detail": "Tài khoản hoặc mật khẩu không chính xác"},
         )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -83,7 +83,8 @@ app.include_router(users_router, prefix="/admin")
 from app.routers.opportunity_export import router as opportunity_export_router
 app.include_router(opportunity_export_router)
 from app.routers.opportunity_alerts import router as opportunity_alerts_router
-app.include_router(opportunity_alerts_router)  # S5-07: pháº£i Ä‘á»©ng trÆ°á»›c /opportunities/{id}
+app.include_router(opportunity_alerts_router)  # S5-07: phải đứng trước /opportunities/{id}
+app.include_router(opportunity_tasks_router)
 app.include_router(opportunities_router)
 app.include_router(activities_router)
 app.include_router(quotes_router)
@@ -123,44 +124,32 @@ app.include_router(campaigns_router)
 from app.routers.sales_forecast import router as sales_forecast_router
 app.include_router(sales_forecast_router)
 
-
-
 from app.routers.email_marketing import router as email_marketing_router
 app.include_router(email_marketing_router)
-
 
 from app.routers.notification_preferences import router as notification_preferences_router
 app.include_router(notification_preferences_router)
 
-
 from app.routers.sales_quotas import router as sales_quotas_router
 app.include_router(sales_quotas_router)
-
 
 from app.routers.sales_dashboard import router as sales_dashboard_router
 app.include_router(sales_dashboard_router)
 
-
 from app.routers.sales_funnel import router as sales_funnel_router
 app.include_router(sales_funnel_router)
-
 
 from app.routers.sales_forecast_report import router as sales_forecast_report_router
 app.include_router(sales_forecast_report_router)
 
-
 from app.routers.team_activity_sla import router as team_activity_sla_router
 app.include_router(team_activity_sla_router)
-
 
 from app.routers.team_leaderboard import router as team_leaderboard_router
 app.include_router(team_leaderboard_router)
 
-
 from app.routers.lead_source_report import router as lead_source_report_router
 app.include_router(lead_source_report_router)
 
-
 from app.routers.team_activity_audit import router as team_activity_audit_router
 app.include_router(team_activity_audit_router)
-
