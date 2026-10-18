@@ -195,7 +195,7 @@ def test_admin_create_user_duplicate_email():
     """Admin cannot create user with existing email (400 Bad Request)."""
     admin_token = get_token()
     payload = {
-        "email": "admin@gmail.com",
+        "email": "vlong3217@gmail.com",
         "full_name": "Duplicate Admin",
         "password": "password123",
     }
@@ -293,7 +293,7 @@ def test_admin_update_user_duplicate_email():
     response = client.put(
         "/users/3",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"email": "admin@gmail.com"},
+        json={"email": "vlong3217@gmail.com"},
     )
     assert response.status_code == 400
     assert "Email" in response.json()["detail"]

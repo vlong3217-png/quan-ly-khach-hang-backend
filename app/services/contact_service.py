@@ -9,77 +9,7 @@ from app.models.contact import Contact as ContactModel, ContactCompanyHistory as
 from app.schemas.contact import ContactCreate, ContactTransfer, ContactUpdate, DecisionRole
 from app.services.customer_service import FAKE_CUSTOMERS
 
-INITIAL_CONTACTS: List[Dict[str, Any]] = [
-    {
-        "id": 1,
-        "customer_id": 1,
-        "name": "Nguyễn Văn Giám Đốc",
-        "phone": "0912345678",
-        "email": "giamdoc@abc-tech.vn",
-        "position": "Tổng Giám Đốc",
-        "decision_role": DecisionRole.DECISION_MAKER.value,
-        "is_primary": True,
-        "notes": "Đầu mối duyệt ngân sách chính",
-        "history": [
-            {
-                "action": "CREATE",
-                "from_customer_id": None,
-                "to_customer_id": 1,
-                "note": "Khởi tạo thông tin liên hệ ban đầu",
-                "performed_by": "admin",
-                "timestamp": datetime(2026, 1, 10, 8, 30, 0, tzinfo=timezone.utc),
-            }
-        ],
-        "created_at": datetime(2026, 1, 10, 8, 30, 0, tzinfo=timezone.utc),
-        "updated_at": None,
-    },
-    {
-        "id": 2,
-        "customer_id": 1,
-        "name": "Trần Thị Trưởng Phòng Kỹ Thuật",
-        "phone": "0987654321",
-        "email": "techlead@abc-tech.vn",
-        "position": "Trưởng phòng CNTT",
-        "decision_role": DecisionRole.INFLUENCER.value,
-        "is_primary": False,
-        "notes": "Đánh giá mặt kỹ thuật và tích hợp hệ thống",
-        "history": [
-            {
-                "action": "CREATE",
-                "from_customer_id": None,
-                "to_customer_id": 1,
-                "note": "Khởi tạo người liên hệ kỹ thuật",
-                "performed_by": "admin",
-                "timestamp": datetime(2026, 1, 12, 9, 0, 0, tzinfo=timezone.utc),
-            }
-        ],
-        "created_at": datetime(2026, 1, 12, 9, 0, 0, tzinfo=timezone.utc),
-        "updated_at": None,
-    },
-    {
-        "id": 3,
-        "customer_id": 2,
-        "name": "Lê Kế Toán Trưởng",
-        "phone": "0901234567",
-        "email": "ketoan@xyz-solutions.com",
-        "position": "Kế toán trưởng",
-        "decision_role": DecisionRole.BLOCKER.value,
-        "is_primary": False,
-        "notes": "Quan tâm sâu về chi phí và điều khoản thanh toán",
-        "history": [
-            {
-                "action": "CREATE",
-                "from_customer_id": None,
-                "to_customer_id": 2,
-                "note": "Khởi tạo liên hệ",
-                "performed_by": "manager",
-                "timestamp": datetime(2026, 2, 2, 10, 0, 0, tzinfo=timezone.utc),
-            }
-        ],
-        "created_at": datetime(2026, 2, 2, 10, 0, 0, tzinfo=timezone.utc),
-        "updated_at": None,
-    },
-]
+INITIAL_CONTACTS: List[Dict[str, Any]] = []
 
 FAKE_CONTACTS: List[Dict[str, Any]] = copy.deepcopy(INITIAL_CONTACTS)
 

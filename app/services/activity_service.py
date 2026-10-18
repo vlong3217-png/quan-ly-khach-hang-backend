@@ -17,64 +17,7 @@ from app.models.customer import Customer as CustomerModel
 from app.models.contact import Contact as ContactModel
 from app.models.user import User as UserModel
 
-INITIAL_ACTIVITIES = [
-    {
-        "id": 1,
-        "title": "Tư vấn giải pháp Admin",
-        "type": "MEETING",
-        "description": "Họp trao đổi yêu cầu với Admin",
-        "customer_id": 1,
-        "contact_id": 1,
-        "opportunity_id": None,
-        "duration_minutes": 60,
-        "occurred_at": datetime(2026, 1, 15, 10, 0, 0),
-        "owner_id": 1,
-        "team_id": 1,
-        "created_at": datetime(2026, 1, 15, 10, 0, 0).isoformat(),
-    },
-    {
-        "id": 2,
-        "title": "Gọi điện tư vấn Manager",
-        "type": "CALL",
-        "description": "Gọi điện giới thiệu tính năng",
-        "customer_id": 2,
-        "contact_id": 2,
-        "opportunity_id": None,
-        "duration_minutes": 15,
-        "occurred_at": datetime(2026, 1, 16, 14, 30, 0),
-        "owner_id": 2,
-        "team_id": 1,
-        "created_at": datetime(2026, 1, 16, 14, 30, 0).isoformat(),
-    },
-    {
-        "id": 3,
-        "title": "Gửi email báo giá User1",
-        "type": "EMAIL",
-        "description": "Gửi email kèm file báo giá",
-        "customer_id": 3,
-        "contact_id": None,
-        "opportunity_id": None,
-        "duration_minutes": 10,
-        "occurred_at": datetime(2026, 1, 17, 9, 15, 0),
-        "owner_id": 3,
-        "team_id": 1,
-        "created_at": datetime(2026, 1, 17, 9, 15, 0).isoformat(),
-    },
-    {
-        "id": 4,
-        "title": "Ghi chú hợp đồng User2",
-        "type": "NOTE",
-        "description": "Ghi chú theo dõi hợp đồng",
-        "customer_id": 4,
-        "contact_id": None,
-        "opportunity_id": None,
-        "duration_minutes": 5,
-        "occurred_at": datetime(2026, 1, 18, 16, 0, 0),
-        "owner_id": 4,
-        "team_id": 2,
-        "created_at": datetime(2026, 1, 18, 16, 0, 0).isoformat(),
-    },
-]
+INITIAL_ACTIVITIES = []
 
 FAKE_ACTIVITIES = copy.deepcopy(INITIAL_ACTIVITIES)
 FAKE_TASKS: List[Dict[str, Any]] = []

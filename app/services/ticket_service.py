@@ -5,32 +5,7 @@ from typing import Any, Dict, List, Optional
 from app.schemas.ticket import ChurnRiskAlert, SupportTicketCreate, SupportTicketUpdate, TicketPriority, TicketStatus
 from app.services.customer_service import FAKE_CUSTOMERS, get_customer_by_id
 
-INITIAL_TICKETS: List[Dict[str, Any]] = [
-    {
-        "id": 1,
-        "customer_id": 1,
-        "title": "Hệ thống gặp lỗi tích hợp API cổng thanh toán",
-        "description": "API thỉnh thoảng phản hồi timeout 504 khi thanh toán giờ cao điểm",
-        "priority": TicketPriority.HIGH.value,
-        "status": TicketStatus.OPEN.value,
-        "assigned_to": "admin",
-        "resolution_note": None,
-        "created_at": datetime(2026, 3, 1, 9, 0, 0, tzinfo=timezone.utc),
-        "updated_at": None,
-    },
-    {
-        "id": 2,
-        "customer_id": 2,
-        "title": "Yêu cầu xuất hoá đơn điều chỉnh tháng 2",
-        "description": "Cần hoá đơn VAT cho hợp đồng bảo trì",
-        "priority": TicketPriority.LOW.value,
-        "status": TicketStatus.RESOLVED.value,
-        "assigned_to": "manager",
-        "resolution_note": "Đã gửi qua email kế toán ngày 02/03",
-        "created_at": datetime(2026, 3, 2, 10, 0, 0, tzinfo=timezone.utc),
-        "updated_at": datetime(2026, 3, 2, 11, 0, 0, tzinfo=timezone.utc),
-    },
-]
+INITIAL_TICKETS: List[Dict[str, Any]] = []
 
 FAKE_TICKETS: List[Dict[str, Any]] = copy.deepcopy(INITIAL_TICKETS)
 

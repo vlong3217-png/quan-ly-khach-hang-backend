@@ -16,44 +16,7 @@ from app.models.campaign import Campaign as CampaignModel
 from app.services import auth_service
 from app.services.opportunity_service import FAKE_OPPORTUNITIES
 
-INITIAL_CAMPAIGNS: List[Dict[str, Any]] = [
-    {
-        "id": 1,
-        "name": "Hội thảo Chuyển đổi số 2026",
-        "code": "CAMP-2026-EXPO",
-        "budget": 50000000.0,
-        "actual_cost": 45000000.0,
-        "start_date": datetime(2026, 3, 1, 0, 0, 0),
-        "end_date": datetime(2026, 3, 31, 23, 59, 59),
-        "channel": "EVENT",
-        "target_leads": 50,
-        "expected_revenue": 200000000.0,
-        "status": "ACTIVE",
-        "description": "Hội thảo giới thiệu giải pháp quản lý khách hàng tại Trung tâm Hội nghị Quốc gia",
-        "owner_id": 1,
-        "team_id": 1,
-        "created_at": datetime(2026, 2, 20, 8, 0, 0),
-        "updated_at": None,
-    },
-    {
-        "id": 2,
-        "name": "Chiến dịch Facebook Ads Q1",
-        "code": "CAMP-FB-Q1",
-        "budget": 30000000.0,
-        "actual_cost": 28000000.0,
-        "start_date": datetime(2026, 1, 15, 0, 0, 0),
-        "end_date": datetime(2026, 3, 31, 23, 59, 59),
-        "channel": "FACEBOOK_ADS",
-        "target_leads": 100,
-        "expected_revenue": 150000000.0,
-        "status": "ACTIVE",
-        "description": "Quảng cáo tiếp cận doanh nghiệp vừa và nhỏ",
-        "owner_id": 2,
-        "team_id": 1,
-        "created_at": datetime(2026, 1, 10, 8, 0, 0),
-        "updated_at": None,
-    },
-]
+INITIAL_CAMPAIGNS: List[Dict[str, Any]] = []
 
 FAKE_CAMPAIGNS: List[Dict[str, Any]] = copy.deepcopy(INITIAL_CAMPAIGNS)
 
