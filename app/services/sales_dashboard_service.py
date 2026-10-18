@@ -1,4 +1,4 @@
-﻿import time
+import time
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, List
 
@@ -28,9 +28,8 @@ def get_role_based_dashboard(current_user: Dict[str, Any]) -> Dict[str, Any]:
     team_id = current_user.get("team_id", "TEAM_NORTH")
 
     # 1. Base Rep Data
-    # Quota
-    rep_quota_target = 100000000.0
-    rep_quota_achieved = 35000000.0
+    rep_quota_target = 0.0
+    rep_quota_achieved = 0.0
 
     # Opportunities
     open_opps = [
@@ -79,19 +78,13 @@ def get_role_based_dashboard(current_user: Dict[str, Any]) -> Dict[str, Any]:
             "load_time_seconds": round(elapsed, 4),
         }
 
-    # 2. Manager Data (Xếp hạng thành viên, cơ hội đình trệ của nhóm, việc quá hạn của nhóm)
-    member_rankings = [
-        {"user_id": 1, "user_name": "Nguyễn Văn Admin", "closed_won_value": 150000000.0, "attainment_rate": 150.0, "rank": 1},
-        {"user_id": 2, "user_name": "Trần Thị Manager", "closed_won_value": 90000000.0, "attainment_rate": 90.0, "rank": 2},
-        {"user_id": 3, "user_name": "Lê Văn Sales", "closed_won_value": 60000000.0, "attainment_rate": 60.0, "rank": 3},
-    ]
+    # 2. Manager Data
+    member_rankings: List[Dict[str, Any]] = []
 
-    # Stagnant opportunities: trong open_opps
     stagnant_opps = [
         o for o in open_opps if o.get("stage") in ["PROPOSAL", "NEGOTIATION", "QUALIFICATION"]
     ]
 
-    # Overdue tasks
     overdue_tasks = [
         a for a in FAKE_ACTIVITIES
         if str(a.get("scheduled_start") or "") < today_str and a.get("status") not in ["COMPLETED", "CANCELLED"]
@@ -116,32 +109,22 @@ def get_role_based_dashboard(current_user: Dict[str, Any]) -> Dict[str, Any]:
             "load_time_seconds": round(elapsed, 4),
         }
 
-    # 3. Director / Admin Data (Dự báo so với chỉ tiêu, pipeline theo giai đoạn, doanh số đã chốt theo tháng)
+    # 3. Director / Admin Data
     pipeline_by_stage = [
-        {"stage": "PROSPECTING", "count": 12, "value": 240000000.0},
-        {"stage": "QUALIFICATION", "count": 8, "value": 320000000.0},
-        {"stage": "PROPOSAL", "count": 6, "value": 450000000.0},
-        {"stage": "NEGOTIATION", "count": 4, "value": 500000000.0},
-        {"stage": "CLOSED_WON", "count": 15, "value": 1200000000.0},
-        {"stage": "CLOSED_LOST", "count": 5, "value": 180000000.0},
+        {"stage": s, "count": 0, "value": 0.0}
+        for s in STAGE_WEIGHTS.keys()
     ]
 
-    # Weighted forecast
     total_forecast = sum(
         item["value"] * STAGE_WEIGHTS.get(item["stage"], 0.0)
         for item in pipeline_by_stage
         if item["stage"] not in ["CLOSED_LOST"]
     )
 
-    total_quota_target = 2500000000.0
-    overall_attainment = round((1200000000.0 / total_quota_target) * 100, 2)
+    total_quota_target = 0.0
+    overall_attainment = 0.0
 
-    closed_won_by_month = [
-        {"month": "2026-07", "closed_won_value": 180000000.0},
-        {"month": "2026-08", "closed_won_value": 240000000.0},
-        {"month": "2026-09", "closed_won_value": 380000000.0},
-        {"month": "2026-10", "closed_won_value": 400000000.0},
-    ]
+    closed_won_by_month: List[Dict[str, Any]] = []
 
     director_data = {
         **manager_data,
@@ -150,7 +133,7 @@ def get_role_based_dashboard(current_user: Dict[str, Any]) -> Dict[str, Any]:
         "overall_attainment_rate": overall_attainment,
         "pipeline_by_stage": pipeline_by_stage,
         "closed_won_by_month": closed_won_by_month,
-        "total_closed_won_ytd": 1200000000.0,
+        "total_closed_won_ytd": 0.0,
     }
 
     elapsed = time.perf_counter() - start_time
