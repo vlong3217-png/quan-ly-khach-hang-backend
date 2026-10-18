@@ -153,3 +153,10 @@ app.include_router(lead_source_report_router)
 
 from app.routers.team_activity_audit import router as team_activity_audit_router
 app.include_router(team_activity_audit_router)
+
+
+from app.routers.contracts import router as contracts_router
+app.include_router(contracts_router)
+
+from app.routers.automation_rules import router as automation_rules_router
+app.include_router(automation_rules_router)

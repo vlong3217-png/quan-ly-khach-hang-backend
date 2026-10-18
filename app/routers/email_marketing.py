@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+﻿from fastapi import APIRouter, Depends, HTTPException, Query
 # dont import unused
 from sqlalchemy.orm import Session
 from typing import Optional
+import math
 
 from app.core.database import get_db, SessionLocal
 from app.core.dependencies import get_current_user
@@ -32,12 +33,40 @@ def create_template(
 def list_templates(
     search: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mẫu mỗi trang"),
+    skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu"),
     current_user=Depends(get_current_user),
 ):
     items = service.list_templates(search=search)
     if category:
         items = [t for t in items if t.get("category") == category]
-    return {"total": len(items), "templates": items}
+    
+    total = len(items)
+    if page is None and limit is None and skip is None:
+        return {"total": total, "templates": items}
+
+    effective_limit = limit if limit is not None else 10
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        effective_skip = 0
+        effective_page = 1
+
+    paged_items = items[effective_skip : effective_skip + effective_limit]
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
+
+    return {
+        "total": total,
+        "templates": paged_items,
+        "page": effective_page,
+        "limit": effective_limit,
+        "total_pages": total_pages,
+    }
 
 
 @router.get("/templates/{template_id}", response_model=EmailTemplateResponse)
@@ -100,9 +129,32 @@ def retry_email(
 def list_logs(
     customer_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
-    skip: int = 0,
-    limit: int = 50,
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    skip: Optional[int] = Query(None, ge=0),
+    limit: Optional[int] = Query(None, ge=1, le=100),
     current_user=Depends(get_current_user),
 ):
-    items = service.list_email_logs(customer_id=customer_id, status=status, skip=skip, limit=limit)
-    return {"total": len(items), "logs": items}
+    all_logs = service.list_email_logs(customer_id=customer_id, status=status, skip=0, limit=10000)
+    total = len(all_logs)
+
+    effective_limit = limit if limit is not None else 10
+    if page is not None:
+        effective_skip = (page - 1) * effective_limit
+        effective_page = page
+    elif skip is not None:
+        effective_skip = skip
+        effective_page = (effective_skip // effective_limit) + 1
+    else:
+        effective_skip = 0
+        effective_page = 1
+
+    paged_items = all_logs[effective_skip : effective_skip + effective_limit]
+    total_pages = max(1, math.ceil(total / effective_limit)) if total > 0 else 1
+
+    return {
+        "total": total,
+        "logs": paged_items,
+        "page": effective_page,
+        "limit": effective_limit,
+        "total_pages": total_pages,
+    }

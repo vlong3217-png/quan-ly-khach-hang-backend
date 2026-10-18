@@ -1,5 +1,6 @@
+﻿from typing import Optional
 from pydantic import BaseModel, EmailStr, ConfigDict
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 from datetime import datetime
 
 class EmailTemplateBase(BaseModel):
@@ -58,7 +59,13 @@ class EmailLogResponse(BaseModel):
 class EmailTemplateListResponse(BaseModel):
     total: int
     templates: List[EmailTemplateResponse]
+    page: Optional[int] = None
+    limit: Optional[int] = None
+    total_pages: Optional[int] = None
 
 class EmailLogListResponse(BaseModel):
     total: int
     logs: List[EmailLogResponse]
+    page: Optional[int] = None
+    limit: Optional[int] = None
+    total_pages: Optional[int] = None
