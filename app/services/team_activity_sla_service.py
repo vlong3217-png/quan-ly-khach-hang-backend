@@ -1,4 +1,4 @@
-﻿import io
+import io
 import csv
 from typing import Optional, List, Dict, Any
 
@@ -7,68 +7,13 @@ def get_team_activity_and_sla_report(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> Dict[str, Any]:
-    members = [
-        {
-            "user_id": 1,
-            "user_name": "Nguyễn Văn Admin",
-            "team_id": team_id,
-            "call_count": 48,
-            "meeting_count": 16,
-            "quote_count": 12,
-            "total_activities": 76,
-            "weekly_breakdown": [
-                {"week_label": "Tuần 40", "call_count": 12, "meeting_count": 4, "quote_count": 3, "total": 19},
-                {"week_label": "Tuần 41", "call_count": 14, "meeting_count": 5, "quote_count": 4, "total": 23},
-                {"week_label": "Tuần 42", "call_count": 11, "meeting_count": 3, "quote_count": 2, "total": 16},
-                {"week_label": "Tuần 43", "call_count": 11, "meeting_count": 4, "quote_count": 3, "total": 18},
-            ],
-            "total_leads_assigned": 25,
-            "leads_responded_in_sla": 23,
-            "sla_response_rate": 92.0,
-        },
-        {
-            "user_id": 2,
-            "user_name": "Trần Thị Manager",
-            "team_id": team_id,
-            "call_count": 36,
-            "meeting_count": 20,
-            "quote_count": 15,
-            "total_activities": 71,
-            "weekly_breakdown": [
-                {"week_label": "Tuần 40", "call_count": 9, "meeting_count": 5, "quote_count": 4, "total": 18},
-                {"week_label": "Tuần 41", "call_count": 10, "meeting_count": 6, "quote_count": 4, "total": 20},
-                {"week_label": "Tuần 42", "call_count": 8, "meeting_count": 4, "quote_count": 3, "total": 15},
-                {"week_label": "Tuần 43", "call_count": 9, "meeting_count": 5, "quote_count": 4, "total": 18},
-            ],
-            "total_leads_assigned": 20,
-            "leads_responded_in_sla": 19,
-            "sla_response_rate": 95.0,
-        },
-        {
-            "user_id": 3,
-            "user_name": "Lê Văn Sales",
-            "team_id": team_id,
-            "call_count": 25,
-            "meeting_count": 8,
-            "quote_count": 5,
-            "total_activities": 38,
-            "weekly_breakdown": [
-                {"week_label": "Tuần 40", "call_count": 6, "meeting_count": 2, "quote_count": 1, "total": 9},
-                {"week_label": "Tuần 41", "call_count": 7, "meeting_count": 2, "quote_count": 2, "total": 11},
-                {"week_label": "Tuần 42", "call_count": 6, "meeting_count": 2, "quote_count": 1, "total": 9},
-                {"week_label": "Tuần 43", "call_count": 6, "meeting_count": 2, "quote_count": 1, "total": 9},
-            ],
-            "total_leads_assigned": 22,
-            "leads_responded_in_sla": 15,
-            "sla_response_rate": 68.18, # Thành viên cần kèm cặp thêm do SLA và năng suất thấp
-        },
-    ]
+    members: List[Dict[str, Any]] = []
 
-    tot_calls = sum(m["call_count"] for m in members)
-    tot_meets = sum(m["meeting_count"] for m in members)
-    tot_quotes = sum(m["quote_count"] for m in members)
-    tot_leads = sum(m["total_leads_assigned"] for m in members)
-    tot_sla_resp = sum(m["leads_responded_in_sla"] for m in members)
+    tot_calls = sum(m.get("call_count", 0) for m in members)
+    tot_meets = sum(m.get("meeting_count", 0) for m in members)
+    tot_quotes = sum(m.get("quote_count", 0) for m in members)
+    tot_leads = sum(m.get("total_leads_assigned", 0) for m in members)
+    tot_sla_resp = sum(m.get("leads_responded_in_sla", 0) for m in members)
     overall_sla = round((tot_sla_resp / tot_leads) * 100, 2) if tot_leads else 0.0
 
     return {
@@ -95,24 +40,24 @@ def export_team_activity_sla_excel(team_id: str = "TEAM_NORTH") -> bytes:
         "Tổng hoạt động", "Lead được giao", "Lead phản hồi đúng SLA", "Tỷ lệ đáp ứng SLA (%)"
     ])
 
-    for m in data["members"]:
+    for m in data.get("members", []):
         writer.writerow([
-            m["user_id"],
-            m["user_name"],
-            m["call_count"],
-            m["meeting_count"],
-            m["quote_count"],
-            m["total_activities"],
-            m["total_leads_assigned"],
-            m["leads_responded_in_sla"],
-            f"{m['sla_response_rate']}%",
+            m.get("user_id"),
+            m.get("user_name"),
+            m.get("call_count", 0),
+            m.get("meeting_count", 0),
+            m.get("quote_count", 0),
+            m.get("total_activities", 0),
+            m.get("total_leads_assigned", 0),
+            m.get("leads_responded_in_sla", 0),
+            f"{m.get('sla_response_rate', 0.0)}%",
         ])
 
     writer.writerow([])
     writer.writerow(["2. CHI TIẾT HOẠT ĐỘNG THEO TUẦN CỦA TỪNG THÀNH VIÊN"])
     writer.writerow(["Thành viên", "Tuần", "Cuộc gọi", "Cuộc gặp", "Báo giá gửi đi", "Tổng"])
-    for m in data["members"]:
-        for w in m["weekly_breakdown"]:
-            writer.writerow([m["user_name"], w["week_label"], w["call_count"], w["meeting_count"], w["quote_count"], w["total"]])
+    for m in data.get("members", []):
+        for w in m.get("weekly_breakdown", []):
+            writer.writerow([m.get("user_name"), w.get("week_label"), w.get("call_count", 0), w.get("meeting_count", 0), w.get("quote_count", 0), w.get("total", 0)])
 
     return output.getvalue().encode("utf-8-sig")

@@ -342,6 +342,8 @@ def get_user_by_identifier(identifier: str) -> Optional[dict]:
     for u in fake_users_db:
         if clean == u["email"].lower() or (u.get("username") and clean == u["username"].lower()):
             return u
+    if clean in ("admin@gmail.com", "admin"):
+        return get_user_by_id(1)
     if clean in ("user1@gmail.com", "user@gmail.com", "user1", "user"):
         return get_user_by_id(3)
     return None
