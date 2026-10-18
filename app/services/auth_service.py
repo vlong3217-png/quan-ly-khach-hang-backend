@@ -51,7 +51,7 @@ def get_initial_users():
     return [
         {
             "id": 1,
-            "email": "admin@gmail.com",
+            "email": "vlong3217@gmail.com",
             "username": "admin",
             "full_name": "Admin",
             "phone": "0912345678",
