@@ -89,3 +89,17 @@ class CloseOpportunityValidationRequest(BaseModel):
 class CloseOpportunityValidationResponse(BaseModel):
     is_valid: bool
     message: str
+
+class ReasonListResponse(BaseModel):
+    total: int
+    items: List[ReasonResponse]
+    page: Optional[int] = None
+    limit: Optional[int] = None
+    total_pages: Optional[int] = None
+
+class CompetitorListResponse(BaseModel):
+    total: int
+    items: List[CompetitorResponse]
+    page: Optional[int] = None
+    limit: Optional[int] = None
+    total_pages: Optional[int] = None
