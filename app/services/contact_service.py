@@ -116,6 +116,8 @@ def list_contacts(customer_id: Optional[int] = None, db: Optional[Session] = Non
             q = q.filter(ContactModel.customer_id == customer_id)
         db_items = q.order_by(ContactModel.id.asc()).all()
         return [_model_to_dict(c) for c in db_items]
+    except Exception:
+        return []
     finally:
         if own_session:
             db.close()

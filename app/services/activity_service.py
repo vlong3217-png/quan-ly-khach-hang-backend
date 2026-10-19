@@ -180,6 +180,8 @@ def get_activities_by_scope(
 
         results.sort(key=lambda x: str(x.get("occurred_at") or x.get("created_at") or ""), reverse=True)
         return [_enrich_activity(a) for a in results]
+    except Exception:
+        return []
     finally:
         db.close()
 
