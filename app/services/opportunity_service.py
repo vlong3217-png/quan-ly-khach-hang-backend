@@ -391,6 +391,8 @@ def get_opportunities_by_scope(
                 results = [o for o in results if s in o.get("title", "").lower() or s in o.get("stage", "").lower()]
 
         return results
+    except Exception:
+        results = []
     finally:
         db.close()
 

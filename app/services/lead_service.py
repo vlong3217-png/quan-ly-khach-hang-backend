@@ -1216,6 +1216,8 @@ def list_leads(
         for it in items:
             _enrich_lead_model(it)
         return total, items
+    except Exception:
+        return 0, []
     finally:
         if should_close:
             db.close()

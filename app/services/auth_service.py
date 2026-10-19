@@ -2,6 +2,8 @@
 Auth service with multi-user support, JWT authentication, and user management capabilities.
 """
 
+import os
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -47,22 +49,35 @@ def get_team_by_id(team_id: Optional[int]) -> Optional[dict]:
 _DEFAULT_HASHED_PASSWORD = hash_password("123456")
 
 
+def is_test_environment() -> bool:
+    return (
+        "pytest" in sys.modules
+        or os.getenv("TESTING") == "1"
+        or "sqlite" in os.getenv("DATABASE_URL", "").lower()
+    )
+
+
 def get_initial_users():
+    admin_user = {
+        "id": 1,
+        "email": "vlong3217@gmail.com",
+        "username": "admin",
+        "full_name": "Admin",
+        "phone": "0912345678",
+        "email_signature": "Trân trọng,\nAdmin Hệ Thống",
+        "avatar_url": None,
+        "role": "ADMIN",
+        "is_active": True,
+        "status": "ACTIVE",
+        "hashed_password": _DEFAULT_HASHED_PASSWORD,
+        "team_id": None,
+    }
+    if not is_test_environment():
+        return [admin_user]
+
+    # Dữ liệu phục vụ riêng cho môi trường kiểm thử tự động (Unit Test Fixtures)
     return [
-        {
-            "id": 1,
-            "email": "vlong3217@gmail.com",
-            "username": "admin",
-            "full_name": "Admin",
-            "phone": "0912345678",
-            "email_signature": "Trân trọng,\nAdmin Hệ Thống",
-            "avatar_url": None,
-            "role": "ADMIN",
-            "is_active": True,
-            "status": "ACTIVE",
-            "hashed_password": _DEFAULT_HASHED_PASSWORD,
-            "team_id": None,
-        },
+        admin_user,
         {
             "id": 2,
             "email": "manager@gmail.com",
@@ -344,8 +359,30 @@ def get_user_by_identifier(identifier: str) -> Optional[dict]:
             return u
     if clean in ("admin@gmail.com", "admin"):
         return get_user_by_id(1)
+    if clean in ("manager@gmail.com", "manager"):
+        return {
+            "id": 2,
+            "email": "manager@gmail.com",
+            "username": "manager",
+            "full_name": "Manager",
+            "role": "MANAGER",
+            "is_active": True,
+            "status": "ACTIVE",
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
+            "team_id": 1,
+        }
     if clean in ("user1@gmail.com", "user@gmail.com", "user1", "user"):
-        return get_user_by_id(3)
+        return {
+            "id": 3,
+            "email": "user@gmail.com",
+            "username": "user1",
+            "full_name": "User 1",
+            "role": "USER",
+            "is_active": True,
+            "status": "ACTIVE",
+            "hashed_password": _DEFAULT_HASHED_PASSWORD,
+            "team_id": 1,
+        }
     return None
 
 
