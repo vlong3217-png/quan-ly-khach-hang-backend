@@ -34,28 +34,46 @@ load_local_env_files()
 def get_smtp_config():
     load_local_env_files()
 
-    host = os.getenv("SMTP_HOST") or os.getenv("EMAIL_HOST") or os.getenv("MAIL_HOST") or "smtp.gmail.com"
-    port_str = os.getenv("SMTP_PORT") or os.getenv("EMAIL_PORT") or os.getenv("MAIL_PORT") or "587"
+    # Hỗ trợ đầy đủ các biến môi trường người dùng đã cấu hình trên Render:
+    # SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM, SMTP_TLS
+    host = (
+        os.getenv("SMTP_SERVER")
+        or os.getenv("SMTP_HOST")
+        or os.getenv("EMAIL_HOST")
+        or os.getenv("MAIL_HOST")
+        or "smtp.gmail.com"
+    )
+    port_str = (
+        os.getenv("SMTP_PORT")
+        or os.getenv("EMAIL_PORT")
+        or os.getenv("MAIL_PORT")
+        or "587"
+    )
     try:
         port = int(port_str)
     except Exception:
         port = 587
 
     user = (
-        os.getenv("SMTP_USER")
-        or os.getenv("SMTP_USERNAME")
+        os.getenv("SMTP_USERNAME")
+        or os.getenv("SMTP_USER")
         or os.getenv("EMAIL_HOST_USER")
         or os.getenv("MAIL_USERNAME")
         or os.getenv("MAIL_USER")
     )
-    password = (
+    raw_password = (
         os.getenv("SMTP_PASSWORD")
         or os.getenv("SMTP_PASS")
         or os.getenv("EMAIL_HOST_PASSWORD")
         or os.getenv("MAIL_PASSWORD")
+        or ""
     )
+    # Loại bỏ khoảng trắng nếu người dùng copy mật khẩu ứng dụng có dấu cách (vd: uryo ciou xctf uugf)
+    password = raw_password.strip().replace(" ", "")
+
     sender = (
-        os.getenv("SMTP_FROM")
+        os.getenv("MAIL_FROM")
+        or os.getenv("SMTP_FROM")
         or os.getenv("EMAIL_FROM")
         or os.getenv("DEFAULT_FROM_EMAIL")
         or user
@@ -79,7 +97,7 @@ def get_smtp_config():
 def send_password_reset_email(to_email: str, otp_code: str) -> tuple[bool, str]:
     config = get_smtp_config()
     if not config["is_configured"]:
-        logger.warning("SMTP chưa được cấu hình (thiếu SMTP_USER hoặc SMTP_PASSWORD)")
+        logger.warning("SMTP chưa được cấu hình (thiếu SMTP_USERNAME/SMTP_USER hoặc SMTP_PASSWORD)")
         return False, "Chưa cấu hình thông tin SMTP gửi thư."
 
     msg = MIMEMultipart("alternative")
