@@ -170,3 +170,23 @@ def reset_password_endpoint(request: ResetPasswordRequest):
     }
 
 
+
+
+@router.get(
+    "/smtp-status",
+    status_code=status.HTTP_200_OK,
+)
+def check_smtp_status():
+    """Kiểm tra cấu hình SMTP (đã che mật khẩu)"""
+    from app.core.email import get_smtp_config
+    cfg = get_smtp_config()
+    return {
+        "host": cfg["host"],
+        "port": cfg["port"],
+        "user": cfg["user"],
+        "sender": cfg["sender"],
+        "has_password": bool(cfg["password"]),
+        "use_tls": cfg["use_tls"],
+        "use_ssl": cfg["use_ssl"],
+        "is_configured": cfg["is_configured"],
+    }
