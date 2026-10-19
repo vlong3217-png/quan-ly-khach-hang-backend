@@ -44,6 +44,9 @@ if raw_db_url:
         if use_ssl:
             # PyMySQL bật SSL mode an toàn
             connect_args["ssl"] = {"check_hostname": False}
+        connect_args["connect_timeout"] = 10
+        connect_args["read_timeout"] = 10
+        connect_args["write_timeout"] = 10
 
         DATABASE_URL = urllib.parse.urlunsplit(
             (parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(filtered_params), parsed.fragment)

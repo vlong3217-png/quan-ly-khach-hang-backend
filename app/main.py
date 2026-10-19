@@ -76,6 +76,33 @@ def portal():
     return HTMLResponse(content=get_portal_html())
 
 
+
+@app.on_event("startup")
+def on_startup():
+    try:
+        Base.metadata.create_all(bind=engine)
+        from app.models.user import User as UserModel
+        from app.services.auth_service import hash_password, _DEFAULT_HASHED_PASSWORD
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        admin = db.query(UserModel).filter(UserModel.email == "vlong3217@gmail.com").first()
+        if not admin:
+            admin = UserModel(
+                id=1,
+                email="vlong3217@gmail.com",
+                username="admin",
+                full_name="Admin",
+                role="ADMIN",
+                is_active=True,
+                status="ACTIVE",
+                hashed_password=_DEFAULT_HASHED_PASSWORD,
+            )
+            db.merge(admin)
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
 app.include_router(auth_router)
 app.include_router(customers_router)
 app.include_router(users_router)
