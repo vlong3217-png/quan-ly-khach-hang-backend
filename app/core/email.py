@@ -1,8 +1,11 @@
 import os
 import smtplib
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
+import urllib.request
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +83,9 @@ def get_smtp_config():
     use_tls = os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
     use_ssl = os.getenv("SMTP_SSL", "false").lower() in ("true", "1", "yes") or port == 465
 
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    brevo_key = os.getenv("BREVO_API_KEY", "").strip()
+
     return {
         "host": host,
         "port": port,
@@ -88,20 +94,82 @@ def get_smtp_config():
         "sender": sender,
         "use_tls": use_tls,
         "use_ssl": use_ssl,
-        "is_configured": bool(user and password),
+        "resend_key": resend_key,
+        "brevo_key": brevo_key,
+        "is_configured": bool((user and password) or resend_key or brevo_key),
     }
+
+def send_via_resend(api_key: str, to_email: str, subject: str, html_content: str, text_content: str) -> tuple[bool, str]:
+    """Gửi email qua Resend REST API (cổng 443 HTTPS, không bao giờ bị Render chặn)"""
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "CRM-System/1.0",
+    }
+    sender = os.getenv("RESEND_FROM") or "CRM System <onboarding@resend.dev>"
+    payload = {
+        "from": sender,
+        "to": [to_email],
+        "subject": subject,
+        "html": html_content,
+        "text": text_content,
+    }
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read().decode("utf-8")
+            logger.info(f"Resend API gửi thành công đến {to_email}: {data}")
+            return True, "Email gửi thành công qua Resend API"
+    except Exception as e:
+        err_msg = str(e)
+        if hasattr(e, "read"):
+            try:
+                err_msg = e.read().decode(errors="ignore")
+            except Exception:
+                pass
+        logger.error(f"Lỗi gửi email qua Resend API: {err_msg}")
+        return False, f"Resend API error: {err_msg}"
+
+def send_via_brevo(api_key: str, to_email: str, subject: str, html_content: str, text_content: str, sender_email: str) -> tuple[bool, str]:
+    """Gửi email qua Brevo REST API (cổng 443 HTTPS, không bị Render chặn)"""
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "api-key": api_key,
+        "Content-Type": "application/json",
+        "User-Agent": "CRM-System/1.0",
+    }
+    payload = {
+        "sender": {"email": sender_email or "vlong3217@gmail.com", "name": "Hệ thống CRM"},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html_content,
+        "textContent": text_content,
+    }
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read().decode("utf-8")
+            logger.info(f"Brevo API gửi thành công đến {to_email}: {data}")
+            return True, "Email gửi thành công qua Brevo API"
+    except Exception as e:
+        err_msg = str(e)
+        if hasattr(e, "read"):
+            try:
+                err_msg = e.read().decode(errors="ignore")
+            except Exception:
+                pass
+        logger.error(f"Lỗi gửi email qua Brevo API: {err_msg}")
+        return False, f"Brevo API error: {err_msg}"
 
 def send_password_reset_email(to_email: str, otp_code: str) -> tuple[bool, str]:
     config = get_smtp_config()
     if not config["is_configured"]:
-        err = "SMTP chưa được cấu hình (thiếu SMTP_USERNAME/SMTP_USER hoặc SMTP_PASSWORD)"
+        err = "Chưa cấu hình dịch vụ gửi email (cần SMTP hoặc RESEND_API_KEY/BREVO_API_KEY)"
         logger.warning(err)
         return False, err
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[{otp_code}] Mã xác nhận đặt lại mật khẩu CRM"
-    msg["From"] = f"Hệ thống CRM <{config['sender']}>"
-    msg["To"] = to_email
+    subject = f"[{otp_code}] Mã xác nhận đặt lại mật khẩu CRM"
 
     text_body = f"""Xin chào,
 
@@ -156,17 +224,30 @@ Ban Quản trị CRM
 </body>
 </html>"""
 
+    # 1. Nếu có RESEND_API_KEY, ưu tiên gửi qua Resend HTTPS API (cổng 443, miễn phí, không bị chặn)
+    if config["resend_key"]:
+        return send_via_resend(config["resend_key"], to_email, subject, html_body, text_body)
+
+    # 2. Nếu có BREVO_API_KEY, gửi qua Brevo HTTPS API (cổng 443)
+    if config["brevo_key"]:
+        return send_via_brevo(config["brevo_key"], to_email, subject, html_body, text_body, config["sender"])
+
+    # 3. Gửi qua SMTP truyền thống (phù hợp localhost hoặc máy chủ mở port 587/465)
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"Hệ thống CRM <{config['sender']}>"
+    msg["To"] = to_email
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     errors = []
 
-    # 1. Thử gửi với cấu hình đã cho
+    # Thử gửi với cấu hình đã cho
     try:
         if config["use_ssl"]:
-            server = smtplib.SMTP_SSL(config["host"], config["port"], timeout=12)
+            server = smtplib.SMTP_SSL(config["host"], config["port"], timeout=8)
         else:
-            server = smtplib.SMTP(config["host"], config["port"], timeout=12)
+            server = smtplib.SMTP(config["host"], config["port"], timeout=8)
             if config["use_tls"]:
                 server.starttls()
 
@@ -179,18 +260,21 @@ Ban Quản trị CRM
         logger.error(f"Lỗi gửi email lần 1 qua cổng {config['port']}: {e}")
         errors.append(f"Port {config['port']}: {e}")
 
-    # 2. Tự động fallback sang port 465 SSL nếu đang dùng port khác và host là Gmail
+    # Fallback sang port 465 SSL
     if config["port"] != 465 and "gmail" in config["host"].lower():
         try:
-            logger.info("Thử lại gửi qua Gmail SMTP cổng 465 (SSL)...")
-            server = smtplib.SMTP_SSL(config["host"], 465, timeout=12)
+            server = smtplib.SMTP_SSL(config["host"], 465, timeout=8)
             server.login(config["user"], config["password"])
             server.sendmail(config["sender"], [to_email], msg.as_string())
             server.quit()
             logger.info(f"Gửi thành công qua cổng 465 (SSL) đến {to_email}")
-            return True, "Email gửi thành công (qua cổng dự phòng 465 SSL)"
+            return True, "Email gửi thành công qua SSL 465"
         except Exception as e2:
             logger.error(f"Lỗi gửi email cổng 465: {e2}")
             errors.append(f"Port 465: {e2}")
 
-    return False, " | ".join(errors)
+    full_err = " | ".join(errors)
+    if "Network is unreachable" in full_err or "101" in full_err:
+        full_err += " (Lưu ý: Render Free Tier chặn toàn bộ kết nối gửi mail cổng SMTP 25, 465, 587. Cần cấu hình RESEND_API_KEY hoặc BREVO_API_KEY qua cổng HTTPS 443)."
+
+    return False, full_err

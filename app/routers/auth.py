@@ -211,3 +211,58 @@ def test_send_email_endpoint(to_email: str = "vlong3217@gmail.com"):
         "use_tls": cfg.get("use_tls"),
         "use_ssl": cfg.get("use_ssl"),
     }
+
+
+@router.get(
+    "/test-smtp-ipv4",
+    status_code=status.HTTP_200_OK,
+)
+def test_smtp_ipv4_endpoint():
+    """Kiểm tra DNS IPv4 vs IPv6 và kết nối socket đến smtp.gmail.com"""
+    import socket
+    results = {}
+    
+    # 1. Thử resolve IPv4
+    try:
+        ipv4_addrs = socket.getaddrinfo("smtp.gmail.com", 587, socket.AF_INET, socket.SOCK_STREAM)
+        results["ipv4_dns"] = [x[4][0] for x in ipv4_addrs]
+    except Exception as e:
+        results["ipv4_dns_error"] = str(e)
+
+    # 2. Thử resolve IPv6
+    try:
+        ipv6_addrs = socket.getaddrinfo("smtp.gmail.com", 587, socket.AF_INET6, socket.SOCK_STREAM)
+        results["ipv6_dns"] = [x[4][0] for x in ipv6_addrs]
+    except Exception as e:
+        results["ipv6_dns_error"] = str(e)
+
+    # 3. Thử kết nối trực tiếp IPv4 socket port 587
+    if "ipv4_dns" in results and results["ipv4_dns"]:
+        target_ip = results["ipv4_dns"][0]
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect((target_ip, 587))
+            banner = s.recv(1024).decode(errors="ignore")
+            s.close()
+            results["ipv4_connect_587"] = f"SUCCESS: {banner.strip()}"
+        except Exception as e:
+            results["ipv4_connect_587_error"] = str(e)
+
+    # 4. Thử kết nối IPv4 socket port 465
+    if "ipv4_dns" in results and results["ipv4_dns"]:
+        target_ip = results["ipv4_dns"][0]
+        try:
+            import ssl
+            ctx = ssl.create_default_context()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            ssl_sock = ctx.wrap_socket(s, server_hostname="smtp.gmail.com")
+            ssl_sock.connect((target_ip, 465))
+            banner = ssl_sock.recv(1024).decode(errors="ignore")
+            ssl_sock.close()
+            results["ipv4_connect_465"] = f"SUCCESS: {banner.strip()}"
+        except Exception as e:
+            results["ipv4_connect_465_error"] = str(e)
+
+    return results
