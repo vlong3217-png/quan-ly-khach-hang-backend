@@ -190,3 +190,24 @@ def check_smtp_status():
         "use_ssl": cfg["use_ssl"],
         "is_configured": cfg["is_configured"],
     }
+
+
+@router.get(
+    "/test-send-email",
+    status_code=status.HTTP_200_OK,
+)
+def test_send_email_endpoint(to_email: str = "vlong3217@gmail.com"):
+    """Thử gửi email và trả về chi tiết kết quả hoặc lỗi cụ thể"""
+    from app.core.email import send_password_reset_email, get_smtp_config
+    cfg = get_smtp_config()
+    ok, msg = send_password_reset_email(to_email, "888999")
+    return {
+        "success": ok,
+        "detail": msg,
+        "to_email": to_email,
+        "smtp_host": cfg.get("host"),
+        "smtp_port": cfg.get("port"),
+        "smtp_user": cfg.get("user"),
+        "use_tls": cfg.get("use_tls"),
+        "use_ssl": cfg.get("use_ssl"),
+    }

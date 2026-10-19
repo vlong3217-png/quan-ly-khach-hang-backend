@@ -34,8 +34,6 @@ load_local_env_files()
 def get_smtp_config():
     load_local_env_files()
 
-    # Hỗ trợ đầy đủ các biến môi trường người dùng đã cấu hình trên Render:
-    # SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM, SMTP_TLS
     host = (
         os.getenv("SMTP_SERVER")
         or os.getenv("SMTP_HOST")
@@ -68,7 +66,6 @@ def get_smtp_config():
         or os.getenv("MAIL_PASSWORD")
         or ""
     )
-    # Loại bỏ khoảng trắng nếu người dùng copy mật khẩu ứng dụng có dấu cách (vd: uryo ciou xctf uugf)
     password = raw_password.strip().replace(" ", "")
 
     sender = (
@@ -97,8 +94,9 @@ def get_smtp_config():
 def send_password_reset_email(to_email: str, otp_code: str) -> tuple[bool, str]:
     config = get_smtp_config()
     if not config["is_configured"]:
-        logger.warning("SMTP chưa được cấu hình (thiếu SMTP_USERNAME/SMTP_USER hoặc SMTP_PASSWORD)")
-        return False, "Chưa cấu hình thông tin SMTP gửi thư."
+        err = "SMTP chưa được cấu hình (thiếu SMTP_USERNAME/SMTP_USER hoặc SMTP_PASSWORD)"
+        logger.warning(err)
+        return False, err
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[{otp_code}] Mã xác nhận đặt lại mật khẩu CRM"
@@ -161,11 +159,14 @@ Ban Quản trị CRM
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
+    errors = []
+
+    # 1. Thử gửi với cấu hình đã cho
     try:
         if config["use_ssl"]:
-            server = smtplib.SMTP_SSL(config["host"], config["port"], timeout=15)
+            server = smtplib.SMTP_SSL(config["host"], config["port"], timeout=12)
         else:
-            server = smtplib.SMTP(config["host"], config["port"], timeout=15)
+            server = smtplib.SMTP(config["host"], config["port"], timeout=12)
             if config["use_tls"]:
                 server.starttls()
 
@@ -175,5 +176,21 @@ Ban Quản trị CRM
         logger.info(f"Đã gửi mã xác nhận OTP thành công đến {to_email}")
         return True, "Email gửi thành công"
     except Exception as e:
-        logger.error(f"Lỗi gửi email tới {to_email}: {e}")
-        return False, str(e)
+        logger.error(f"Lỗi gửi email lần 1 qua cổng {config['port']}: {e}")
+        errors.append(f"Port {config['port']}: {e}")
+
+    # 2. Tự động fallback sang port 465 SSL nếu đang dùng port khác và host là Gmail
+    if config["port"] != 465 and "gmail" in config["host"].lower():
+        try:
+            logger.info("Thử lại gửi qua Gmail SMTP cổng 465 (SSL)...")
+            server = smtplib.SMTP_SSL(config["host"], 465, timeout=12)
+            server.login(config["user"], config["password"])
+            server.sendmail(config["sender"], [to_email], msg.as_string())
+            server.quit()
+            logger.info(f"Gửi thành công qua cổng 465 (SSL) đến {to_email}")
+            return True, "Email gửi thành công (qua cổng dự phòng 465 SSL)"
+        except Exception as e2:
+            logger.error(f"Lỗi gửi email cổng 465: {e2}")
+            errors.append(f"Port 465: {e2}")
+
+    return False, " | ".join(errors)
