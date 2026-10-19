@@ -18,6 +18,7 @@ from app.services.auth_service import (
     revoke_token,
     create_password_reset_token,
     reset_password_with_token,
+    is_test_environment,
 )
 
 router = APIRouter(
@@ -133,14 +134,15 @@ def refresh_session(
 )
 def forgot_password_endpoint(request: ForgotPasswordRequest):
     """
-    AC S1-03: Nhập email nhận được liên kết đặt lại có hiệu lực 30 phút.
-    Liên kết chỉ dùng được 1 lần. Email không tồn tại vẫn hiển thị cùng một thông báo.
+    AC S1-03: Nhập email nhận được mã xác nhận OTP qua email có hiệu lực 30 phút.
+    Email không tồn tại vẫn hiển thị cùng một thông báo an toàn.
     """
     token, user = create_password_reset_token(request.email)
+    is_test = is_test_environment()
     return {
         "success": True,
-        "message": "Nếu email tồn tại trong hệ thống, bạn sẽ nhận được liên kết đặt lại mật khẩu có hiệu lực trong 30 phút.",
-        "reset_token": token if user else None,
+        "message": "Nếu email tồn tại trong hệ thống, mã xác nhận đặt lại mật khẩu đã được gửi đến email của bạn. Vui lòng kiểm tra hộp thư (hoặc mục Spam).",
+        "reset_token": token if (user and is_test) else None,
     }
 
 

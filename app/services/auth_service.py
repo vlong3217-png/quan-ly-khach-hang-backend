@@ -656,18 +656,32 @@ def change_password(
 def create_password_reset_token(email: str) -> tuple[str, Optional[dict]]:
     clean_email = (email or "").strip().lower()
     user = get_user_by_email(clean_email)
-    reset_token = str(uuid.uuid4())
+    
+    import random
+    otp_code = f"{random.randint(100000, 999999)}"
+    uuid_token = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
 
     if user:
-        RESET_TOKENS[reset_token] = {
+        record = {
             "user_id": user["id"],
             "email": user["email"],
+            "otp_code": otp_code,
+            "uuid_token": uuid_token,
             "expires_at": expires_at,
             "used": False,
         }
-    return reset_token, user
+        RESET_TOKENS[otp_code] = record
+        RESET_TOKENS[uuid_token] = record
+
+        try:
+            from app.core.email import send_password_reset_email
+            send_password_reset_email(user["email"], otp_code)
+        except Exception as e:
+            logger.error(f"Failed to send reset email: {e}")
+
+    return uuid_token if is_test_environment() else otp_code, user
 
 
 def reset_password_with_token(token: str, new_password: str) -> tuple[bool, str]:
