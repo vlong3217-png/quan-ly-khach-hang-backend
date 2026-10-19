@@ -392,7 +392,7 @@ def get_opportunities_by_scope(
 
         return results
     except Exception:
-        results = []
+        return []
     finally:
         db.close()
 

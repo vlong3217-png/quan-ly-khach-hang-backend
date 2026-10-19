@@ -160,3 +160,44 @@ app.include_router(contracts_router)
 
 from app.routers.automation_rules import router as automation_rules_router
 app.include_router(automation_rules_router)
+
+
+@app.get("/system/db-info")
+def get_system_db_info():
+    import urllib.parse
+    import re
+    from app.core.database import engine, raw_db_url
+    from sqlalchemy import text
+    
+    url_str = str(raw_db_url or "")
+    if url_str:
+        parsed = urllib.parse.urlsplit(url_str)
+        masked_netloc = re.sub(r":([^@/]+)@", ":****@", parsed.netloc)
+        masked_url = urllib.parse.urlunsplit((parsed.scheme, masked_netloc, parsed.path, parsed.query, parsed.fragment))
+    else:
+        masked_url = "NOT_CONFIGURED"
+        
+    res = {
+        "raw_db_url_configured": bool(raw_db_url),
+        "masked_url": masked_url,
+        "engine_url": re.sub(r":([^@/]+)@", ":****@", str(engine.url)),
+        "engine_host": engine.url.host,
+        "engine_port": engine.url.port,
+        "engine_database": engine.url.database,
+        "is_aiven": "aiven" in str(engine.url.host or "").lower(),
+        "connected": False,
+        "error": None,
+    }
+    
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT 1, DATABASE(), CURRENT_USER(), @@hostname, VERSION()")).fetchone()
+            res["connected"] = True
+            res["current_database"] = row[1]
+            res["current_user"] = re.sub(r"@.*", "@****", str(row[2]))
+            res["server_hostname"] = str(row[3])
+            res["mysql_version"] = str(row[4])
+    except Exception as e:
+        res["error"] = f"{type(e).__name__}: {str(e)}"
+        
+    return res
