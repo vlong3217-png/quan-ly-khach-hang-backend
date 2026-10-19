@@ -282,7 +282,7 @@ def list_sales_quotas(
             res = [r for r in res if r.get("quota_type") == quota_type.lower()]
         return res
     except Exception:
-        rows = []
+        return []
     finally:
         db.close()
 
