@@ -1,4 +1,4 @@
-﻿import os
+import os
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,10 +31,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Đảm bảo thư mục lưu trữ uploads tồn tại
-UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
-os.makedirs(os.path.join(UPLOAD_DIR, "avatars"), exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# Đảm bảo thư mục lưu trữ uploads tồn tại (an toàn cho serverless Vercel /tmp)
+try:
+    UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/tmp/uploads" if os.environ.get("VERCEL") else os.path.join(os.getcwd(), "uploads"))
+    os.makedirs(os.path.join(UPLOAD_DIR, "avatars"), exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+except Exception as e:
+    print(f"Warning: Could not initialize /uploads static directory: {e}")
 
 # Enable CORS for frontend integration
 app.add_middleware(
