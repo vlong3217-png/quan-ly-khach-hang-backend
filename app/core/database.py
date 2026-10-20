@@ -1,11 +1,13 @@
 import os
 import urllib.parse
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-
-# Load file cấu hình .env (nếu có)
-load_dotenv()
 
 # Thông tin cấu hình MySQL
 DB_USER = os.getenv("DB_USER", "root")

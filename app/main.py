@@ -1,7 +1,9 @@
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -22,12 +24,6 @@ from app.routers.contacts import router as contacts_router
 from app.routers.tickets import router as tickets_router
 from app.models import Base
 from app.core.database import engine
-
-# Tự động tạo các bảng SQL nếu kết nối cơ sở dữ liệu khả dụng
-try:
-    Base.metadata.create_all(bind=engine)
-except Exception:
-    pass
 
 app = FastAPI(
     title="Customer Management API",
