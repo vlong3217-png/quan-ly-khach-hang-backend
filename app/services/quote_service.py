@@ -10,6 +10,10 @@ from typing import Optional, List, Dict, Any, Tuple
 from fastapi import HTTPException
 from app.core.dependencies import DataScope
 
+import json
+from app.core.database import SessionLocal
+from app.models.quote import QuoteModel
+
 # Ngưỡng phê duyệt chiết khấu (S7-01 & S7-02)
 DISCOUNT_TIER_1_THRESHOLD = 10.0  # >= 10%: Trưởng nhóm (MANAGER) duyệt
 DISCOUNT_TIER_2_THRESHOLD = 20.0  # >= 20% hoặc dưới giá sàn: Giám đốc (DIRECTOR) duyệt
@@ -21,11 +25,191 @@ FAKE_QUOTES = copy.deepcopy(INITIAL_QUOTES)
 
 def reset_fake_quotes() -> None:
     global FAKE_QUOTES
-    FAKE_QUOTES = copy.deepcopy(INITIAL_QUOTES)
+    FAKE_QUOTES.clear()
+    FAKE_QUOTES.extend(copy.deepcopy(INITIAL_QUOTES))
+    try:
+        db = SessionLocal()
+        try:
+            db.query(QuoteModel).delete()
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
+def _quote_model_to_dict(m: QuoteModel) -> dict:
+    items = []
+    approval_history = []
+    if m.raw_data_json:
+        try:
+            parsed = json.loads(m.raw_data_json)
+            items = parsed.get("items", [])
+            approval_history = parsed.get("approval_history", [])
+        except Exception:
+            pass
+
+    return {
+        "id": m.id,
+        "quote_number": m.quote_number,
+        "opportunity_id": m.opportunity_id,
+        "opportunity_title": m.opportunity_title,
+        "title": m.title,
+        "amount": float(m.amount or 0.0),
+        "status": m.status or "DRAFT",
+        "is_draft": bool(m.is_draft),
+        "customer_id": m.customer_id,
+        "customer_name": m.customer_name,
+        "owner_id": m.owner_id,
+        "team_id": m.team_id,
+        "product_id": None,
+        "unit_price": None,
+        "items": items,
+        "overall_discount_type": m.overall_discount_type or "PERCENT",
+        "overall_discount_value": float(m.overall_discount_value or 0.0),
+        "subtotal": float(m.subtotal or 0.0),
+        "total_line_discount": float(m.total_line_discount or 0.0),
+        "overall_discount_amount": float(m.overall_discount_amount or 0.0),
+        "total_discount_amount": float(m.total_discount_amount or 0.0),
+        "discount_percentage": float(m.discount_percentage or 0.0),
+        "vat_amount": float(m.vat_amount or 0.0),
+        "grand_total": float(m.grand_total or 0.0),
+        "valid_until": m.valid_until,
+        "payment_terms": m.payment_terms,
+        "delivery_terms": m.delivery_terms,
+        "notes": m.notes or "",
+        "requires_discount_approval": bool(m.requires_discount_approval),
+        "approval_level": m.approval_level or "NONE",
+        "approval_reason": m.approval_reason,
+        "discount_approval_status": m.discount_approval_status or "NONE",
+        "contract_id": m.contract_id,
+        "contract_number": m.contract_number,
+        "is_converted_to_contract": bool(m.is_converted_to_contract),
+        "sent_at": None,
+        "approval_history": approval_history,
+        "created_at": m.created_at.isoformat() if m.created_at else datetime.now().isoformat(),
+        "updated_at": m.updated_at.isoformat() if m.updated_at else datetime.now().isoformat(),
+    }
+
+
+def _get_all_quotes(db=None) -> List[dict]:
+    own_session = False
+    if db is None:
+        try:
+            db = SessionLocal()
+            own_session = True
+        except Exception:
+            db = None
+
+    if db is not None:
+        try:
+            rows = db.query(QuoteModel).order_by(QuoteModel.id.desc()).all()
+            if rows or not FAKE_QUOTES:
+                res = [_quote_model_to_dict(r) for r in rows]
+                FAKE_QUOTES.clear()
+                FAKE_QUOTES.extend(copy.deepcopy(res))
+                return res
+        except Exception:
+            pass
+        finally:
+            if own_session:
+                db.close()
+
+    return list(FAKE_QUOTES)
+
+
+def _sync_quote_to_db(q: dict, db=None) -> None:
+    own_session = False
+    if db is None:
+        try:
+            db = SessionLocal()
+            own_session = True
+        except Exception:
+            db = None
+
+    if db is not None:
+        try:
+            raw_json = json.dumps({
+                "items": q.get("items", []),
+                "approval_history": q.get("approval_history", []),
+            }, ensure_ascii=False)
+            db_row = db.query(QuoteModel).filter(QuoteModel.id == q["id"]).first()
+            if db_row:
+                db_row.title = q.get("title", db_row.title)
+                db_row.amount = float(q.get("amount") or 0.0)
+                db_row.status = q.get("status", db_row.status)
+                db_row.is_draft = bool(q.get("is_draft", False))
+                db_row.subtotal = float(q.get("subtotal") or 0.0)
+                db_row.total_line_discount = float(q.get("total_line_discount") or 0.0)
+                db_row.overall_discount_type = q.get("overall_discount_type", "PERCENT")
+                db_row.overall_discount_value = float(q.get("overall_discount_value") or 0.0)
+                db_row.overall_discount_amount = float(q.get("overall_discount_amount") or 0.0)
+                db_row.total_discount_amount = float(q.get("total_discount_amount") or 0.0)
+                db_row.discount_percentage = float(q.get("discount_percentage") or 0.0)
+                db_row.vat_amount = float(q.get("vat_amount") or 0.0)
+                db_row.grand_total = float(q.get("grand_total") or 0.0)
+                db_row.valid_until = str(q.get("valid_until")) if q.get("valid_until") else None
+                db_row.payment_terms = q.get("payment_terms")
+                db_row.delivery_terms = q.get("delivery_terms")
+                db_row.notes = q.get("notes")
+                db_row.requires_discount_approval = bool(q.get("requires_discount_approval"))
+                db_row.approval_level = q.get("approval_level")
+                db_row.approval_reason = q.get("approval_reason")
+                db_row.discount_approval_status = q.get("discount_approval_status")
+                db_row.contract_id = q.get("contract_id")
+                db_row.contract_number = q.get("contract_number")
+                db_row.is_converted_to_contract = bool(q.get("is_converted_to_contract"))
+                db_row.raw_data_json = raw_json
+                db.commit()
+            else:
+                db_row = QuoteModel(
+                    id=q["id"],
+                    quote_number=q.get("quote_number", f"BG-{q['id']}"),
+                    opportunity_id=q.get("opportunity_id"),
+                    opportunity_title=q.get("opportunity_title"),
+                    title=q.get("title", ""),
+                    amount=float(q.get("amount") or 0.0),
+                    status=q.get("status", "DRAFT"),
+                    is_draft=bool(q.get("is_draft", False)),
+                    customer_id=q.get("customer_id"),
+                    customer_name=q.get("customer_name"),
+                    owner_id=q.get("owner_id", 1),
+                    team_id=q.get("team_id"),
+                    subtotal=float(q.get("subtotal") or 0.0),
+                    total_line_discount=float(q.get("total_line_discount") or 0.0),
+                    overall_discount_type=q.get("overall_discount_type", "PERCENT"),
+                    overall_discount_value=float(q.get("overall_discount_value") or 0.0),
+                    overall_discount_amount=float(q.get("overall_discount_amount") or 0.0),
+                    total_discount_amount=float(q.get("total_discount_amount") or 0.0),
+                    discount_percentage=float(q.get("discount_percentage") or 0.0),
+                    vat_amount=float(q.get("vat_amount") or 0.0),
+                    grand_total=float(q.get("grand_total") or 0.0),
+                    valid_until=str(q.get("valid_until")) if q.get("valid_until") else None,
+                    payment_terms=q.get("payment_terms"),
+                    delivery_terms=q.get("delivery_terms"),
+                    notes=q.get("notes"),
+                    requires_discount_approval=bool(q.get("requires_discount_approval")),
+                    approval_level=q.get("approval_level"),
+                    approval_reason=q.get("approval_reason"),
+                    discount_approval_status=q.get("discount_approval_status"),
+                    contract_id=q.get("contract_id"),
+                    contract_number=q.get("contract_number"),
+                    is_converted_to_contract=bool(q.get("is_converted_to_contract")),
+                    raw_data_json=raw_json,
+                )
+                db.add(db_row)
+                db.commit()
+        except Exception:
+            if db:
+                db.rollback()
+        finally:
+            if own_session and db:
+                db.close()
 
 
 def get_raw_quote_by_id(quote_id: int) -> Optional[dict]:
-    for q in FAKE_QUOTES:
+    all_quotes = _get_all_quotes()
+    for q in all_quotes:
         if q["id"] == quote_id:
             return q
     return None
@@ -203,17 +387,18 @@ def get_quotes_by_scope(
     opportunity_id: Optional[int] = None,
     status: Optional[str] = None,
 ) -> list[dict]:
+    all_quotes = _get_all_quotes()
     if scope == DataScope.ALL:
-        results = list(FAKE_QUOTES)
+        results = list(all_quotes)
     elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
         user_team_id = current_user.get("team_id")
         if user_team_id is None:
-            results = list(FAKE_QUOTES)
+            results = list(all_quotes)
         else:
-            results = [q for q in FAKE_QUOTES if q.get("team_id") == user_team_id]
+            results = [q for q in all_quotes if q.get("team_id") == user_team_id]
     else:
         user_id = current_user["id"]
-        results = [q for q in FAKE_QUOTES if q.get("owner_id") == user_id]
+        results = [q for q in all_quotes if q.get("owner_id") == user_id]
 
     if opportunity_id is not None:
         results = [q for q in results if q.get("opportunity_id") == opportunity_id]
@@ -243,7 +428,8 @@ def create_quote_record(data: dict, current_user: dict, db=None) -> dict:
     4. Thiết lập hạn hiệu lực & điều khoản (AC 4)
     5. Hỗ trợ lưu nháp (AC 5)
     """
-    new_id = (max(q["id"] for q in FAKE_QUOTES) + 1) if FAKE_QUOTES else 1
+    all_stored = _get_all_quotes(db=db)
+    new_id = (max([q["id"] for q in all_stored], default=0) + 1)
 
     opportunity_id = data.get("opportunity_id")
     opp_dict = None
@@ -410,6 +596,7 @@ def create_quote_record(data: dict, current_user: dict, db=None) -> dict:
     }
 
     FAKE_QUOTES.append(new_quote)
+    _sync_quote_to_db(new_quote, db=db)
     return new_quote
 
 
@@ -485,6 +672,7 @@ def update_quote_record(quote_id: int, data: dict, db=None) -> Optional[dict]:
             q["discount_approval_status"] = "PENDING_APPROVAL" if financials["requires_approval"] else "APPROVED"
 
     q["updated_at"] = datetime.now().isoformat()
+    _sync_quote_to_db(q, db=db)
     return q
 
 
@@ -549,6 +737,7 @@ def submit_quote_record(quote_id: int, current_user: Optional[dict] = None, db=N
         db=db,
     )
 
+    _sync_quote_to_db(q, db=db)
     return q
 
 
@@ -646,6 +835,7 @@ def approve_quote_record(
         db=db,
     )
 
+    _sync_quote_to_db(q, db=db)
     return q
 
 
@@ -722,6 +912,7 @@ def reject_quote_record(
         db=db,
     )
 
+    _sync_quote_to_db(q, db=db)
     return q
 
 
@@ -799,6 +990,7 @@ def return_quote_record(
         db=db,
     )
 
+    _sync_quote_to_db(q, db=db)
     return q
 
 
@@ -858,6 +1050,7 @@ def send_quote_to_customer_record(
         db=db,
     )
 
+    _sync_quote_to_db(q, db=db)
     return q
 
 
@@ -913,8 +1106,30 @@ def _safe_log_audit(
         pass
 
 
-def delete_quote_record(quote_id: int) -> bool:
+def delete_quote_record(quote_id: int, db=None) -> bool:
     global FAKE_QUOTES
     initial_len = len(FAKE_QUOTES)
     FAKE_QUOTES = [q for q in FAKE_QUOTES if q["id"] != quote_id]
+
+    own_session = False
+    if db is None:
+        try:
+            db = SessionLocal()
+            own_session = True
+        except Exception:
+            db = None
+
+    if db is not None:
+        try:
+            db_row = db.query(QuoteModel).filter(QuoteModel.id == quote_id).first()
+            if db_row:
+                db.delete(db_row)
+                db.commit()
+        except Exception:
+            if db:
+                db.rollback()
+        finally:
+            if own_session and db:
+                db.close()
+
     return len(FAKE_QUOTES) < initial_len

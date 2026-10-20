@@ -55,6 +55,42 @@ def reset_fake_campaigns() -> None:
         pass
 
 
+def _model_to_dict(m: CampaignModel) -> dict:
+    return {
+        "id": m.id,
+        "name": m.name,
+        "code": m.code,
+        "budget": float(m.budget or 0.0),
+        "actual_cost": float(m.actual_cost or 0.0),
+        "start_date": m.start_date,
+        "end_date": m.end_date,
+        "channel": m.channel,
+        "target_leads": int(m.target_leads or 0),
+        "expected_revenue": float(m.expected_revenue or 0.0),
+        "status": m.status or "ACTIVE",
+        "description": m.description,
+        "owner_id": m.owner_id,
+        "team_id": m.team_id,
+        "created_at": m.created_at,
+        "updated_at": m.updated_at,
+    }
+
+
+def _get_all_campaigns() -> List[dict]:
+    global FAKE_CAMPAIGNS
+    try:
+        db: Session = SessionLocal()
+        try:
+            db_camps = db.query(CampaignModel).order_by(CampaignModel.id.desc()).all()
+            if db_camps:
+                FAKE_CAMPAIGNS = [_model_to_dict(c) for c in db_camps]
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return FAKE_CAMPAIGNS
+
+
 def _enrich_campaign_display(c: dict) -> dict:
     enriched = dict(c)
     owner = auth_service.get_user_by_id(enriched.get("owner_id"))
@@ -64,6 +100,7 @@ def _enrich_campaign_display(c: dict) -> dict:
 
 def create_campaign(data: dict, current_user: dict) -> dict:
     """AC S4-03: Khai báo chiến dịch với ngân sách, thời gian chạy, kênh."""
+    _get_all_campaigns()
     code = str(data["code"]).strip().upper()
     if any(c["code"].upper() == code for c in FAKE_CAMPAIGNS):
         raise HTTPException(
@@ -113,7 +150,7 @@ def create_campaign(data: dict, current_user: dict) -> dict:
                 owner_id=new_camp["owner_id"],
                 team_id=new_camp["team_id"],
             )
-            db.add(m)
+            db.merge(m)
             db.commit()
         finally:
             db.close()
@@ -124,6 +161,7 @@ def create_campaign(data: dict, current_user: dict) -> dict:
 
 
 def get_campaign_by_id(campaign_id: int) -> Optional[dict]:
+    _get_all_campaigns()
     for c in FAKE_CAMPAIGNS:
         if c["id"] == campaign_id:
             return _enrich_campaign_display(c)
@@ -131,6 +169,7 @@ def get_campaign_by_id(campaign_id: int) -> Optional[dict]:
 
 
 def get_campaign_by_code(code: str) -> Optional[dict]:
+    _get_all_campaigns()
     norm_code = code.strip().upper()
     for c in FAKE_CAMPAIGNS:
         if c["code"].strip().upper() == norm_code:
@@ -143,7 +182,7 @@ def list_campaigns(
     channel_filter: Optional[str] = None,
     search: Optional[str] = None,
 ) -> List[dict]:
-    results = list(FAKE_CAMPAIGNS)
+    results = list(_get_all_campaigns())
 
     if status_filter:
         s_val = status_filter.upper().strip()
@@ -167,6 +206,7 @@ def list_campaigns(
 
 
 def update_campaign(campaign_id: int, data: dict, current_user: dict) -> dict:
+    _get_all_campaigns()
     camp = None
     for c in FAKE_CAMPAIGNS:
         if c["id"] == campaign_id:
@@ -214,6 +254,7 @@ def update_campaign(campaign_id: int, data: dict, current_user: dict) -> dict:
 
 def delete_campaign(campaign_id: int) -> bool:
     global FAKE_CAMPAIGNS
+    _get_all_campaigns()
     initial_len = len(FAKE_CAMPAIGNS)
     FAKE_CAMPAIGNS = [c for c in FAKE_CAMPAIGNS if c["id"] != campaign_id]
 

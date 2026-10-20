@@ -1,4 +1,4 @@
-﻿"""Models package."""
+"""Models package."""
 from app.models.user import Base, User
 from app.models.customer import Customer, CustomerMergeHistory
 from app.models.opportunity import (
@@ -13,7 +13,8 @@ from app.models.opportunity import (
 )
 from app.models.opportunity_task import OpportunityTaskModel
 from app.models.activity import Activity, ActivityModel, TaskModel, NotificationModel
-from app.models.quote import Quote
+from app.models.quote import Quote, QuoteModel
+from app.models.contract import ContractModel, ContractItemModel
 from app.models.audit_log import AuditLog
 from app.models.product import Product
 from app.models.contact import Contact, ContactCompanyHistory

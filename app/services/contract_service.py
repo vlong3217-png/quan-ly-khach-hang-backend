@@ -35,6 +35,114 @@ def reset_fake_contracts() -> None:
     CURRENT_RENEWAL_SETTINGS["threshold_days"] = 30
     CURRENT_RENEWAL_SETTINGS["updated_at"] = None
     CURRENT_RENEWAL_SETTINGS["updated_by"] = "Hệ thống mặc định"
+    try:
+        db = SessionLocal()
+        try:
+            db.query(ContractItemModel).delete()
+            db.query(ContractModel).delete()
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
+def _contract_model_to_dict(m: ContractModel, db: Optional[Session] = None) -> dict:
+    items = []
+    own_session = False
+    if db is None:
+        try:
+            db = SessionLocal()
+            own_session = True
+        except Exception:
+            db = None
+
+    if db is not None:
+        try:
+            it_rows = db.query(ContractItemModel).filter(ContractItemModel.contract_id == m.id).all()
+            for it in it_rows:
+                items.append({
+                    "id": it.id,
+                    "contract_id": it.contract_id,
+                    "product_id": it.product_id,
+                    "product_code": it.product_code,
+                    "product_name": it.product_name,
+                    "unit": it.unit,
+                    "quantity": it.quantity,
+                    "unit_price": it.unit_price,
+                    "floor_price": it.floor_price,
+                    "discount_type": it.discount_type,
+                    "discount_value": it.discount_value,
+                    "line_discount_amount": it.line_discount_amount,
+                    "vat_rate": it.vat_rate,
+                    "line_vat_amount": it.line_vat_amount,
+                    "line_total": it.line_total,
+                    "notes": it.notes,
+                })
+        except Exception:
+            pass
+        finally:
+            if own_session:
+                db.close()
+
+    return {
+        "id": m.id,
+        "contract_number": m.contract_number,
+        "title": m.title,
+        "quote_id": m.quote_id,
+        "quote_number": m.quote_number,
+        "customer_id": m.customer_id,
+        "customer_name": m.customer_name,
+        "opportunity_id": m.opportunity_id,
+        "opportunity_title": m.opportunity_title,
+        "owner_id": m.owner_id,
+        "team_id": m.team_id,
+        "status": m.status or "ACTIVE",
+        "signed_date": m.signed_date.isoformat() if m.signed_date else None,
+        "effective_date": m.effective_date.isoformat() if m.effective_date else None,
+        "expiration_date": m.expiration_date.isoformat() if m.expiration_date else None,
+        "payment_terms": m.payment_terms,
+        "delivery_terms": m.delivery_terms,
+        "notes": m.notes,
+        "items": items,
+        "subtotal": float(m.subtotal or 0.0),
+        "total_line_discount": float(m.total_line_discount or 0.0),
+        "overall_discount_type": m.overall_discount_type or "PERCENT",
+        "overall_discount_value": float(m.overall_discount_value or 0.0),
+        "overall_discount_amount": float(m.overall_discount_amount or 0.0),
+        "total_discount_amount": float(m.total_discount_amount or 0.0),
+        "discount_percentage": float(m.discount_percentage or 0.0),
+        "vat_amount": float(m.vat_amount or 0.0),
+        "grand_total": float(m.grand_total or 0.0),
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+        "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+    }
+
+
+def _get_all_contracts(db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    own_session = False
+    if db is None:
+        try:
+            db = SessionLocal()
+            own_session = True
+        except Exception:
+            db = None
+
+    if db is not None:
+        try:
+            rows = db.query(ContractModel).order_by(ContractModel.id.desc()).all()
+            if rows or not FAKE_CONTRACTS:
+                res = [_contract_model_to_dict(r, db) for r in rows]
+                FAKE_CONTRACTS.clear()
+                FAKE_CONTRACTS.extend(copy.deepcopy(res))
+                return res
+        except Exception:
+            pass
+        finally:
+            if own_session:
+                db.close()
+
+    return list(FAKE_CONTRACTS)
 
 
 def get_renewal_threshold_setting() -> dict:
@@ -199,8 +307,9 @@ def get_contracts_by_scope(
     db: Optional[Session] = None,
 ) -> List[Dict[str, Any]]:
     """Lấy danh sách hợp đồng theo quyền hạn (DataScope) và bộ lọc kèm thông tin thời hạn."""
-    # Lấy từ RAM và làm giàu thông tin thời hạn (S7-07 AC 1)
-    results = [_enrich_contract_expiration_info(c, threshold_days=threshold_days) for c in list(FAKE_CONTRACTS)]
+    # Lấy từ MySQL / RAM và làm giàu thông tin thời hạn (S7-07 AC 1)
+    all_stored = _get_all_contracts(db=db)
+    results = [_enrich_contract_expiration_info(c, threshold_days=threshold_days) for c in all_stored]
 
     # Lọc theo DataScope
     if scope == DataScope.ALL:
@@ -253,7 +362,8 @@ def get_contracts_by_scope(
 
 def get_contract_by_id(contract_id: int, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
     """Lấy chi tiết một hợp đồng theo ID kèm thông tin thời hạn (S7-07 AC 1)."""
-    for c in FAKE_CONTRACTS:
+    contracts = _get_all_contracts(db=db)
+    for c in contracts:
         if c.get("id") == contract_id:
             return _enrich_contract_expiration_info(c)
     return None
@@ -261,7 +371,8 @@ def get_contract_by_id(contract_id: int, db: Optional[Session] = None) -> Option
 
 def get_contract_by_quote_id(quote_id: int, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
     """Tra cứu hợp đồng được sinh từ một báo giá kèm thông tin thời hạn."""
-    for c in FAKE_CONTRACTS:
+    contracts = _get_all_contracts(db=db)
+    for c in contracts:
         if c.get("quote_id") == quote_id:
             return _enrich_contract_expiration_info(c)
     return None
@@ -781,3 +892,177 @@ def create_renewal_opportunity_from_contract(
         "is_renewal": True,
         "message": f"Đã tạo thành công cơ hội gia hạn #{new_opp_id} từ hợp đồng {contract.get('contract_number')} (S7-07 AC 3)",
     }
+
+
+def create_direct_contract(
+    data: dict,
+    current_user: dict,
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    """Tạo hợp đồng trực tiếp hoặc từ báo giá (nếu có quote_id)."""
+    quote_id = data.get("quote_id")
+    if quote_id and int(quote_id) > 0:
+        return convert_quote_to_contract(
+            quote_id=int(quote_id),
+            data=data,
+            current_user=current_user,
+            db=db,
+        )
+
+    contract_number = (data.get("contract_number") or "").strip()
+    if not contract_number:
+        contract_number = generate_unique_contract_number(db=db)
+    else:
+        if check_contract_number_exists(contract_number, db=db):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Số hợp đồng '{contract_number}' đã tồn tại trong hệ thống.",
+            )
+
+    signed_date = data.get("signed_date") or data.get("sign_date")
+    effective_date = data.get("effective_date")
+    expiration_date = data.get("expiration_date")
+
+    if not signed_date or not effective_date or not expiration_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bắt buộc khai báo ngày ký, ngày hiệu lực và ngày hết hạn hợp đồng.",
+        )
+
+    def _parse_date(d_val):
+        if isinstance(d_val, str):
+            return datetime.strptime(d_val[:10], "%Y-%m-%d").date()
+        return d_val
+
+    s_date = _parse_date(signed_date)
+    eff_date = _parse_date(effective_date)
+    exp_date = _parse_date(expiration_date)
+
+    if exp_date < eff_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ngày hết hạn hợp đồng không thể trước ngày bắt đầu có hiệu lực.",
+        )
+
+    title = (data.get("title") or "").strip() or f"Hợp đồng kinh tế - {contract_number}"
+    payment_terms = (data.get("payment_terms") or "").strip() or "Thanh toán theo tiến độ hợp đồng."
+    delivery_terms = (data.get("delivery_terms") or "").strip()
+    notes = (data.get("notes") or "").strip()
+    customer_id = int(data.get("customer_id") or 1)
+    customer_name = data.get("customer_name") or f"Khách hàng ID {customer_id}"
+    opportunity_id = data.get("opportunity_id")
+    opportunity_title = data.get("opportunity_title")
+    owner_id = current_user.get("id", 1)
+    team_id = current_user.get("team_id")
+    total_value = float(data.get("total_value") or data.get("grand_total") or 0.0)
+
+    now_iso = datetime.now().isoformat()
+    raw_items = data.get("items") or []
+
+    new_contract_id = (max([c["id"] for c in FAKE_CONTRACTS], default=0) + 1)
+    new_contract = {
+        "id": new_contract_id,
+        "contract_number": contract_number,
+        "title": title,
+        "quote_id": 0,
+        "quote_number": None,
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "opportunity_id": opportunity_id,
+        "opportunity_title": opportunity_title,
+        "owner_id": owner_id,
+        "team_id": team_id,
+        "status": "ACTIVE",
+        "signed_date": str(s_date),
+        "effective_date": str(eff_date),
+        "expiration_date": str(exp_date),
+        "payment_terms": payment_terms,
+        "delivery_terms": delivery_terms,
+        "notes": notes,
+        "items": raw_items,
+        "subtotal": total_value,
+        "total_line_discount": 0.0,
+        "overall_discount_type": "PERCENT",
+        "overall_discount_value": 0.0,
+        "overall_discount_amount": 0.0,
+        "total_discount_amount": 0.0,
+        "discount_percentage": 0.0,
+        "vat_amount": 0.0,
+        "grand_total": total_value,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    own_session = False
+    if db is None:
+        try:
+            db = SessionLocal()
+            own_session = True
+        except Exception:
+            db = None
+
+    if db is not None:
+        try:
+            db_contract = ContractModel(
+                contract_number=contract_number,
+                title=title,
+                quote_id=0,
+                quote_number=None,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                opportunity_id=int(opportunity_id) if opportunity_id and str(opportunity_id).isdigit() else None,
+                opportunity_title=opportunity_title,
+                owner_id=owner_id,
+                team_id=team_id,
+                status="ACTIVE",
+                signed_date=s_date,
+                effective_date=eff_date,
+                expiration_date=exp_date,
+                payment_terms=payment_terms,
+                delivery_terms=delivery_terms,
+                notes=notes,
+                subtotal=total_value,
+                total_line_discount=0.0,
+                overall_discount_type="PERCENT",
+                overall_discount_value=0.0,
+                overall_discount_amount=0.0,
+                total_discount_amount=0.0,
+                discount_percentage=0.0,
+                vat_amount=0.0,
+                grand_total=total_value,
+            )
+            db.add(db_contract)
+            db.commit()
+            db.refresh(db_contract)
+            new_contract["id"] = db_contract.id
+
+            for idx, it in enumerate(raw_items):
+                db_item = ContractItemModel(
+                    contract_id=db_contract.id,
+                    product_id=it.get("product_id"),
+                    product_code=it.get("product_code", f"SP-{idx+1}"),
+                    product_name=it.get("product_name", f"Sản phẩm {idx+1}"),
+                    unit=it.get("unit", "Gói"),
+                    quantity=int(it.get("quantity") or 1),
+                    unit_price=float(it.get("unit_price") or 0.0),
+                    floor_price=it.get("floor_price"),
+                    discount_type=it.get("discount_type", "PERCENT"),
+                    discount_value=float(it.get("discount_value") or 0.0),
+                    line_discount_amount=float(it.get("line_discount_amount") or 0.0),
+                    vat_rate=int(it.get("vat_rate") or 10),
+                    line_vat_amount=float(it.get("line_vat_amount") or 0.0),
+                    line_total=float(it.get("line_total") or 0.0),
+                    notes=it.get("notes"),
+                )
+                db.add(db_item)
+            db.commit()
+        except Exception:
+            if db:
+                db.rollback()
+        finally:
+            if own_session and db:
+                db.close()
+
+    FAKE_CONTRACTS.append(new_contract)
+    return new_contract
+
