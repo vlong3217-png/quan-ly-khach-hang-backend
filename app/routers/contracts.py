@@ -31,6 +31,7 @@ from app.schemas.contract import (
 )
 from app.services.contract_service import (
     convert_quote_to_contract,
+    create_direct_contract,
     generate_unique_contract_number,
     get_contract_by_id,
     get_contract_by_quote_id,
@@ -117,6 +118,20 @@ def convert_quote_to_contract_endpoint(
     return convert_quote_to_contract(
         quote_id=quote_id,
         data=payload.model_dump(),
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.post("", response_model=ContractResponse, status_code=status.HTTP_201_CREATED)
+def create_direct_contract_endpoint(
+    payload: dict,
+    current_user: dict = Depends(require_roles(["ADMIN", "ACCOUNTANT", "DIRECTOR", "MANAGER", "USER"])),
+    db: Session = Depends(get_db),
+):
+    """Tạo hợp đồng trực tiếp hoặc từ báo giá."""
+    return create_direct_contract(
+        data=payload,
         current_user=current_user,
         db=db,
     )
