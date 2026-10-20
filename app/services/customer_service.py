@@ -190,6 +190,20 @@ def validate_tax_code_uniqueness(tax_code: Optional[str], exclude_id: Optional[i
             )
 
 
+def normalize_customer_status(status_val) -> str:
+    if not status_val:
+        return "PROSPECT"
+    if hasattr(status_val, "value"):
+        status_val = status_val.value
+    s = str(status_val).strip()
+    mapping = {
+        "POTENTIAL": "PROSPECT",
+        "ACTIVE_CUSTOMER": "CUSTOMER",
+        "STOPPED": "DISCONTINUED",
+    }
+    return mapping.get(s.upper(), s)
+
+
 def create_customer_record(data: dict, current_user: dict) -> dict:
     """
     AC S3-01: Khai báo tên công ty, mã số thuế, ngành nghề, quy mô, website, địa chỉ, người sở hữu.
@@ -213,6 +227,7 @@ def create_customer_record(data: dict, current_user: dict) -> dict:
 
     all_custs = _get_all_customers()
     new_id = (max(c["id"] for c in all_custs) + 1) if all_custs else 1
+    normalized_status = normalize_customer_status(data.get("status", "PROSPECT"))
     new_customer = {
         "id": new_id,
         "name": data["name"].strip(),
@@ -221,7 +236,7 @@ def create_customer_record(data: dict, current_user: dict) -> dict:
         "company_size": data.get("company_size"),
         "website": data.get("website"),
         "address": data.get("address"),
-        "status": data.get("status", "PROSPECT"),
+        "status": normalized_status,
         "parent_company_id": data.get("parent_company_id"),
         "email": data.get("email"),
         "phone": data.get("phone"),
@@ -285,6 +300,9 @@ def update_customer_record(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Người sở hữu với ID {data['owner_id']} không tồn tại",
             )
+
+    if "status" in data and data["status"] is not None:
+        data["status"] = normalize_customer_status(data["status"])
 
     for key, value in data.items():
         if value is not None and key != "id":

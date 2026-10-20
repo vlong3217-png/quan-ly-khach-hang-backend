@@ -8,9 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class CustomerStatus(str, Enum):
     PROSPECT = "PROSPECT"               # Tiềm năng
+    POTENTIAL = "POTENTIAL"             # Frontend alias
     IN_TRANSACTION = "IN_TRANSACTION"   # Đang giao dịch
     CUSTOMER = "CUSTOMER"               # Khách hàng
+    ACTIVE_CUSTOMER = "ACTIVE_CUSTOMER" # Frontend alias
     DISCONTINUED = "DISCONTINUED"       # Ngừng hợp tác
+    STOPPED = "STOPPED"                 # Frontend alias
 
 
 class CustomerBase(BaseModel):
