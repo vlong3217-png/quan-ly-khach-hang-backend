@@ -19,6 +19,41 @@ INITIAL_CUSTOMERS = []
 FAKE_CUSTOMERS = copy.deepcopy(INITIAL_CUSTOMERS)
 
 
+def _get_all_customers() -> List[dict]:
+    """Tải toàn bộ khách hàng từ CSDL MySQL (nếu có kết nối) hoặc fallback sang RAM FAKE_CUSTOMERS."""
+    global FAKE_CUSTOMERS
+    try:
+        db = SessionLocal()
+        db_custs = db.query(CustomerModel).order_by(CustomerModel.id.asc()).all()
+        if db_custs:
+            res = []
+            for item in db_custs:
+                res.append({
+                    "id": item.id,
+                    "name": item.name,
+                    "tax_code": item.tax_code,
+                    "industry": item.industry,
+                    "company_size": item.company_size,
+                    "website": item.website,
+                    "address": item.address,
+                    "status": item.status or "PROSPECT",
+                    "parent_company_id": item.parent_company_id,
+                    "email": item.email,
+                    "phone": item.phone,
+                    "company": item.company or item.name,
+                    "owner_id": item.owner_id,
+                    "team_id": item.team_id,
+                    "created_at": item.created_at,
+                })
+            db.close()
+            FAKE_CUSTOMERS = res
+            return FAKE_CUSTOMERS
+        db.close()
+    except Exception:
+        pass
+    return FAKE_CUSTOMERS
+
+
 def reset_fake_customers() -> None:
     """Reset customer data back to initial state (useful for tests)."""
     global FAKE_CUSTOMERS
@@ -47,13 +82,15 @@ def _enrich_customer_names(customer: dict) -> dict:
 
 def get_raw_customer_by_id(customer_id: int) -> Optional[dict]:
     """Find a customer by ID without scope filter (returns raw dict or None)."""
-    for c in FAKE_CUSTOMERS:
+    all_custs = _get_all_customers()
+    for c in all_custs:
         if c["id"] == customer_id:
             return _enrich_customer_names(c)
     return None
 
 
 get_customer_by_id = get_raw_customer_by_id
+
 
 
 
@@ -76,17 +113,18 @@ def get_customers_by_scope(
     - Quản trị viên (ADMIN) thấy tất cả.
     - Tìm kiếm và lọc đa điều kiện: ngành nghề, quy mô, địa chỉ/khu vực, người phụ trách, trạng thái.
     """
+    all_custs = _get_all_customers()
     if scope == DataScope.ALL:
-        results = list(FAKE_CUSTOMERS)
+        results = list(all_custs)
     elif scope in (DataScope.TEAM, DataScope.MY_TEAM):
         user_team_id = current_user.get("team_id")
         if user_team_id is None:
-            results = list(FAKE_CUSTOMERS)
+            results = list(all_custs)
         else:
-            results = [c for c in FAKE_CUSTOMERS if c.get("team_id") == user_team_id]
+            results = [c for c in all_custs if c.get("team_id") == user_team_id]
     else:
         user_id = current_user["id"]
-        results = [c for c in FAKE_CUSTOMERS if c.get("owner_id") == user_id]
+        results = [c for c in all_custs if c.get("owner_id") == user_id]
 
     if status_filter:
         sf = status_filter.strip().upper()
@@ -141,7 +179,8 @@ def validate_tax_code_uniqueness(tax_code: Optional[str], exclude_id: Optional[i
     if not tax_code or not tax_code.strip():
         return
     clean_tax = tax_code.strip()
-    for c in FAKE_CUSTOMERS:
+    all_custs = _get_all_customers()
+    for c in all_custs:
         if exclude_id and c["id"] == exclude_id:
             continue
         if c.get("tax_code") and c["tax_code"].strip().lower() == clean_tax.lower():
@@ -172,7 +211,8 @@ def create_customer_record(data: dict, current_user: dict) -> dict:
         owner_id = current_user["id"]
         team_id = data.get("team_id") or current_user.get("team_id")
 
-    new_id = (max(c["id"] for c in FAKE_CUSTOMERS) + 1) if FAKE_CUSTOMERS else 1
+    all_custs = _get_all_customers()
+    new_id = (max(c["id"] for c in all_custs) + 1) if all_custs else 1
     new_customer = {
         "id": new_id,
         "name": data["name"].strip(),
@@ -226,6 +266,7 @@ def update_customer_record(
     data: dict,
 ) -> Optional[dict]:
     """Cập nhật thông tin khách hàng kèm kiểm tra trùng MST."""
+    _get_all_customers()
     customer = None
     for c in FAKE_CUSTOMERS:
         if c["id"] == customer_id:
@@ -268,6 +309,7 @@ def update_customer_record(
 def delete_customer_record(customer_id: int) -> bool:
     """Delete a customer by ID."""
     global FAKE_CUSTOMERS
+    _get_all_customers()
     initial_len = len(FAKE_CUSTOMERS)
     FAKE_CUSTOMERS = [c for c in FAKE_CUSTOMERS if c["id"] != customer_id]
     deleted = len(FAKE_CUSTOMERS) < initial_len
