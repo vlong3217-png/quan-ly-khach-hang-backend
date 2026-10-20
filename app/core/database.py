@@ -1,7 +1,11 @@
 import os
 import urllib.parse
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+
+# Load file cấu hình .env (nếu có)
+load_dotenv()
 
 # Thông tin cấu hình MySQL
 DB_USER = os.getenv("DB_USER", "root")
@@ -44,9 +48,9 @@ if raw_db_url:
         if use_ssl:
             # PyMySQL bật SSL mode an toàn
             connect_args["ssl"] = {"check_hostname": False}
-        connect_args["connect_timeout"] = 10
-        connect_args["read_timeout"] = 10
-        connect_args["write_timeout"] = 10
+        connect_args["connect_timeout"] = 3
+        connect_args["read_timeout"] = 3
+        connect_args["write_timeout"] = 3
 
         DATABASE_URL = urllib.parse.urlunsplit(
             (parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(filtered_params), parsed.fragment)
@@ -61,9 +65,10 @@ if raw_db_url:
         )
 else:
     DATABASE_URL = f"mysql+pymysql://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
+    local_connect_args = {"connect_timeout": 3, "read_timeout": 3, "write_timeout": 3}
     engine = create_engine(
         DATABASE_URL,
-        connect_args=connect_args,
+        connect_args=local_connect_args,
         pool_pre_ping=True,      # Tự động ping kiểm tra kết nối còn sống không
         pool_recycle=3600,       # Tái tạo kết nối sau 1 tiếng để tránh timeout
         pool_size=10,
