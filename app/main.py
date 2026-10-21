@@ -103,6 +103,11 @@ try:
     from app.models.user import Base
     from app.core.database import engine
     Base.metadata.create_all(bind=engine)
+    try:
+        from scripts.migrate_columns import migrate
+        migrate()
+    except Exception:
+        pass
 except Exception:
     pass
 

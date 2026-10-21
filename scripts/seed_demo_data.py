@@ -31,6 +31,11 @@ def seed():
     print("=" * 60)
 
     Base.metadata.create_all(bind=engine)
+    try:
+        from scripts.migrate_columns import migrate
+        migrate()
+    except Exception:
+        pass
     db = SessionLocal()
 
     try:
