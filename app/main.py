@@ -96,6 +96,12 @@ def root(request: Request):
 def portal():
     return HTMLResponse(content=get_portal_html())
 
+@app.get('/db-url')
+def get_db_url():
+    import os
+    return {'db_url': os.environ.get('DATABASE_URL')}
+
+
 
 
 @app.on_event("startup")
