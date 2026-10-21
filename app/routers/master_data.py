@@ -93,3 +93,9 @@ def seed_demo_data_endpoint(
         return {"success": True, "message": "Nap du lieu mau thanh cong cho toan bo he thong!"}
     except Exception as e:
         return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
+
+@router.get('/db-url')
+def get_db_url(current_user: dict = Depends(require_roles(['ADMIN']))):
+    import os
+    return {'db_url': os.environ.get('DATABASE_URL')}
