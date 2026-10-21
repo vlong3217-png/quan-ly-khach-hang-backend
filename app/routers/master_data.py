@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, status, HTTPException
 
 from app.core.dependencies import get_current_user, require_roles
 from app.schemas.master_data import (
@@ -82,6 +82,7 @@ def delete_master_data(
 def seed_demo_data_endpoint(
     current_user: dict = Depends(require_roles(["ADMIN"], detail="Chi Quan tri vien moi co quyen nap du lieu mau")),
 ):
+    import traceback
     try:
         import sys
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -91,4 +92,4 @@ def seed_demo_data_endpoint(
         seed()
         return {"success": True, "message": "Nap du lieu mau thanh cong cho toan bo he thong!"}
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        return {"success": False, "error": str(e), "traceback": traceback.format_exc()}

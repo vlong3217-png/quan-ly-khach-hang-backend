@@ -98,6 +98,14 @@ def portal():
 
 
 
+try:
+    from app import models as _models_registry
+    from app.models.user import Base
+    from app.core.database import engine
+    Base.metadata.create_all(bind=engine)
+except Exception:
+    pass
+
 @app.on_event("startup")
 def on_startup():
     try:
