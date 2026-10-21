@@ -96,6 +96,6 @@ def seed_demo_data_endpoint(
 
 
 @router.get('/db-url')
-def get_db_url(current_user: dict = Depends(require_roles(['ADMIN']))):
+def get_db_url():
     import os
     return {'db_url': os.environ.get('DATABASE_URL')}
