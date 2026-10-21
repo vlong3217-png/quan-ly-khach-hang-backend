@@ -76,3 +76,19 @@ def delete_master_data(
     Kiểm tra ràng buộc: Nếu đang có bản ghi tham chiếu -> Không cho phép xóa, yêu cầu chuyển sang Ẩn (Inactive).
     """
     return master_data_service.delete_master_data(item_id)
+
+
+@router.post("/seed-demo-data", summary="Nap du lieu mau toan dien 5 buoc cho he thong")
+def seed_demo_data_endpoint(
+    current_user: dict = Depends(require_roles(["ADMIN"], detail="Chi Quan tri vien moi co quyen nap du lieu mau")),
+):
+    try:
+        import sys
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if base_dir not in sys.path:
+            sys.path.insert(0, base_dir)
+        from scripts.seed_demo_data import seed
+        seed()
+        return {"success": True, "message": "Nap du lieu mau thanh cong cho toan bo he thong!"}
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
