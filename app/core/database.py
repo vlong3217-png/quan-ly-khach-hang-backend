@@ -50,9 +50,9 @@ if raw_db_url:
         if use_ssl:
             # PyMySQL bật SSL mode an toàn
             connect_args["ssl"] = {"check_hostname": False}
-        connect_args["connect_timeout"] = 3
-        connect_args["read_timeout"] = 3
-        connect_args["write_timeout"] = 3
+        connect_args["connect_timeout"] = 15
+        connect_args["read_timeout"] = 15
+        connect_args["write_timeout"] = 15
 
         DATABASE_URL = urllib.parse.urlunsplit(
             (parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(filtered_params), parsed.fragment)
@@ -67,7 +67,7 @@ if raw_db_url:
         )
 else:
     DATABASE_URL = f"mysql+pymysql://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
-    local_connect_args = {"connect_timeout": 3, "read_timeout": 3, "write_timeout": 3}
+    local_connect_args = {"connect_timeout": 15, "read_timeout": 15, "write_timeout": 15}
     engine = create_engine(
         DATABASE_URL,
         connect_args=local_connect_args,
