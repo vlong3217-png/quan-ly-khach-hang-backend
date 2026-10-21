@@ -1068,3 +1068,180 @@ def check_sla_endpoint(
 ):
     """Kiểm tra và cập nhật các lead vi phạm SLA phản hồi."""
     return check_sla_violations(sla_minutes=sla_minutes, db=db)
+
+
+# ============================================================================
+# LEAD INTERACTIONS & FORM SUBMISSIONS (S4 COMPATIBILITY)
+# ============================================================================
+
+lead_interactions_store: List[Dict[str, Any]] = []
+
+
+@router.get(
+    "/leads/interactions/recent",
+    summary="Lấy danh sách tương tác Lead gần đây",
+)
+def get_recent_lead_interactions_endpoint(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    start = (page - 1) * limit
+    end = start + limit
+    return {
+        "items": lead_interactions_store[start:end],
+        "total": len(lead_interactions_store),
+        "page": page,
+        "limit": limit,
+    }
+
+
+@router.get(
+    "/leads/{lead_id}/interactions",
+    summary="Lấy danh sách tương tác của một Lead",
+)
+def get_lead_interactions_endpoint(
+    lead_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    filtered = [i for i in lead_interactions_store if str(i.get("lead_id")) == str(lead_id)]
+    start = (page - 1) * limit
+    end = start + limit
+    return {
+        "items": filtered[start:end],
+        "total": len(filtered),
+        "page": page,
+        "limit": limit,
+    }
+
+
+@router.post(
+    "/leads/{lead_id}/interactions",
+    status_code=status.HTTP_201_CREATED,
+    summary="Tạo mới tương tác cho Lead",
+)
+def create_lead_interaction_endpoint(
+    lead_id: str,
+    payload: Dict[str, Any],
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    now_str = datetime.now().isoformat()
+    item = {
+        "id": f"int_{len(lead_interactions_store) + 1}_{int(datetime.now().timestamp())}",
+        "lead_id": str(lead_id),
+        "type": payload.get("type", "note"),
+        "title": payload.get("title", "Tương tác mới"),
+        "content": payload.get("content", ""),
+        "outcome": payload.get("outcome"),
+        "performed_by_id": current_user.get("id") if current_user else None,
+        "performed_by_name": current_user.get("full_name") if current_user else "Người dùng hệ thống",
+        "performed_at": payload.get("performed_at") or now_str,
+        "next_action": payload.get("next_action"),
+        "next_action_due": payload.get("next_action_due"),
+        "metadata": payload.get("metadata", {}),
+        "created_at": now_str,
+    }
+    lead_interactions_store.insert(0, item)
+    return item
+
+
+@router.delete(
+    "/leads/interactions/{interaction_id}",
+    summary="Xóa tương tác của Lead",
+)
+def delete_lead_interaction_endpoint(
+    interaction_id: str,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    global lead_interactions_store
+    lead_interactions_store = [i for i in lead_interactions_store if str(i.get("id")) != str(interaction_id)]
+    return {"success": True, "message": "Xóa tương tác thành công"}
+
+
+@router.get(
+    "/lead-submissions",
+    summary="Lấy danh sách các bài nộp form Lead",
+)
+def get_all_lead_submissions_endpoint(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    from app.models.lead import Lead
+    items = []
+    try:
+        leads = db.query(Lead).filter(Lead.source == "Web-to-Lead").all()
+        for l in leads:
+            items.append({
+                "id": str(l.id),
+                "form_id": getattr(l, "form_key", None) or "default",
+                "form_name": "Web Form Thu Thập Lead",
+                "full_name": getattr(l, "full_name", None) or getattr(l, "name", "") or "",
+                "email": getattr(l, "email", "") or "",
+                "phone": getattr(l, "phone", "") or "",
+                "company": getattr(l, "company", "") or "",
+                "requirement": getattr(l, "requirement", None) or getattr(l, "notes", "") or "",
+                "status": getattr(l, "status", "NEW") or "NEW",
+                "created_at": l.created_at.isoformat() if getattr(l, "created_at", None) else datetime.now().isoformat(),
+            })
+    except Exception:
+        pass
+
+    start = (page - 1) * limit
+    end = start + limit
+    return {
+        "items": items[start:end],
+        "total": len(items),
+        "page": page,
+        "limit": limit,
+    }
+
+
+@router.get(
+    "/lead-forms/{form_id}/submissions",
+    summary="Lấy danh sách bài nộp của một form Lead",
+)
+def get_form_lead_submissions_endpoint(
+    form_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    from app.models.lead import Lead
+    items = []
+    try:
+        leads = db.query(Lead).filter(
+            Lead.source == "Web-to-Lead",
+            getattr(Lead, "form_key", None) == form_id,
+        ).all()
+        for l in leads:
+            items.append({
+                "id": str(l.id),
+                "form_id": form_id,
+                "form_name": "Web Form Thu Thập Lead",
+                "full_name": getattr(l, "full_name", None) or getattr(l, "name", "") or "",
+                "email": getattr(l, "email", "") or "",
+                "phone": getattr(l, "phone", "") or "",
+                "company": getattr(l, "company", "") or "",
+                "requirement": getattr(l, "requirement", None) or getattr(l, "notes", "") or "",
+                "status": getattr(l, "status", "NEW") or "NEW",
+                "created_at": l.created_at.isoformat() if getattr(l, "created_at", None) else datetime.now().isoformat(),
+            })
+    except Exception:
+        pass
+
+    start = (page - 1) * limit
+    end = start + limit
+    return {
+        "items": items[start:end],
+        "total": len(items),
+        "page": page,
+        "limit": limit,
+    }
