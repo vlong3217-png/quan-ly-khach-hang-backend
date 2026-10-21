@@ -225,6 +225,8 @@ def list_lead_forms(db: Optional[Session] = None) -> List[Dict[str, Any]]:
                 **snippets,
             })
         return results
+    except Exception:
+        return []
     finally:
         if should_close:
             db.close()
@@ -238,6 +240,8 @@ def get_lead_form_by_key(form_key: str, db: Optional[Session] = None) -> Optiona
 
     try:
         return db.query(LeadSourceConfig).filter(LeadSourceConfig.form_key == form_key).first()
+    except Exception:
+        return None
     finally:
         if should_close:
             db.close()

@@ -5,7 +5,9 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, Depends
+from sqlalchemy.orm import Session
+from app.core.dependencies import get_current_user
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -23,7 +25,7 @@ from app.routers.menu import router as menu_router
 from app.routers.contacts import router as contacts_router
 from app.routers.tickets import router as tickets_router
 from app.models import Base
-from app.core.database import engine
+from app.core.database import engine, get_db
 
 app = FastAPI(
     title="Customer Management API",
@@ -61,6 +63,22 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"detail": jsonable_encoder(exc.errors())},
+    )
+
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    origin = request.headers.get("origin", "*")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Lỗi máy chủ nội bộ", "error": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
     )
 
 
@@ -125,6 +143,7 @@ app.include_router(tickets_router)
 
 from app.routers.audit_logs import router as audit_logs_router
 app.include_router(audit_logs_router)
+app.include_router(audit_logs_router, prefix="/api/v1")
 
 from app.routers.products import router as products_router
 app.include_router(products_router)
@@ -231,3 +250,15 @@ def get_system_db_info():
         res["error"] = f"{type(e).__name__}: {str(e)}"
         
     return res
+
+from app.routers.opportunity_activities import router as opportunity_activities_router
+app.include_router(opportunity_activities_router)
+
+@app.get("/profile", summary="Lấy thông tin cá nhân (alias)")
+def get_profile_root_alias(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+@app.put("/profile", summary="Cập nhật thông tin cá nhân (alias)")
+def put_profile_root_alias(payload: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.services.user_service import update_user_account
+    return update_user_account(user_id=current_user.get("id"), payload=payload, db=db) or current_user

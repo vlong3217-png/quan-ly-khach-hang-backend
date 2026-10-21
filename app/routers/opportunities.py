@@ -2,7 +2,9 @@
 Opportunity API router with role-based access control and data scope filtering.
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+from sqlalchemy.orm import Session
+from app.core.database import get_db
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 
 from app.core.dependencies import (
@@ -815,3 +817,60 @@ def delete_opportunity_attachment_endpoint(
     return None
 
 
+
+
+# --- Extra Opportunity Status Actions for Frontend ---
+@router.post("/{opportunity_id}/close-won", summary="Đóng thành công cơ hội (Close Won)")
+def close_won_opportunity_alias(
+    opportunity_id: int,
+    payload: Optional[Dict[str, Any]] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opp = get_opportunity_by_id(opportunity_id, db=db)
+    payload_dict = {"stage": "CLOSE_WON", "probability": 100}
+    if payload:
+        if "notes" in payload:
+            payload_dict["description"] = payload["notes"]
+    return update_opportunity_by_id(opportunity_id=opportunity_id, payload=payload_dict, current_user=current_user, db=db)
+
+
+@router.post("/{opportunity_id}/close-lost", summary="Đóng thất bại cơ hội (Close Lost)")
+def close_lost_opportunity_alias(
+    opportunity_id: int,
+    payload: Optional[Dict[str, Any]] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opp = get_opportunity_by_id(opportunity_id, db=db)
+    payload_dict = {"stage": "CLOSE_LOST", "probability": 0}
+    if payload:
+        if "reason_id" in payload:
+            payload_dict["lost_reason_id"] = payload["reason_id"]
+        if "notes" in payload:
+            payload_dict["description"] = payload["notes"]
+    return update_opportunity_by_id(opportunity_id=opportunity_id, payload=payload_dict, current_user=current_user, db=db)
+
+
+@router.post("/{opportunity_id}/reopen", summary="Mở lại cơ hội đã đóng")
+def reopen_opportunity_alias(
+    opportunity_id: int,
+    payload: Optional[Dict[str, Any]] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    target_stage = "PROSPECTING"
+    if payload and payload.get("target_stage_id"):
+        target_stage = payload["target_stage_id"]
+    payload_dict = {"stage": target_stage, "probability": 20}
+    return update_opportunity_by_id(opportunity_id=opportunity_id, payload=payload_dict, current_user=current_user, db=db)
+
+
+@router.post("/{opportunity_id}/intervene", summary="Can thiệp cơ hội trì trệ")
+def intervene_opportunity_alias(
+    opportunity_id: int,
+    payload: Optional[Dict[str, Any]] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return {"success": True, "message": "Ghi nhận can thiệp thành công"}

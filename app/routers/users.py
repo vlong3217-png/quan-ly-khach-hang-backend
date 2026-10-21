@@ -2,7 +2,7 @@
 User API router — profile and user management endpoints (S1-05, S1-08, S1-10).
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -1047,3 +1047,45 @@ def update_user_target_endpoint(
 
 
 
+
+
+# --- Profile and Assigned Data Aliases for Frontend ---
+@router.get("/profile", summary="Lấy thông tin cá nhân (alias của /users/me)")
+def get_user_profile_alias(
+    current_user: dict = Depends(get_current_user),
+):
+    return current_user
+
+
+@router.put("/profile", summary="Cập nhật thông tin cá nhân (alias)")
+def update_user_profile_alias(
+    payload: Dict[str, Any],
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user.get("id")
+    from app.services.user_service import update_user_account
+    updated = update_user_account(user_id=user_id, payload=payload, db=db)
+    return updated or current_user
+
+
+@router.patch("/profile", summary="Cập nhật một phần thông tin cá nhân (alias)")
+def patch_user_profile_alias(
+    payload: Dict[str, Any],
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user.get("id")
+    from app.services.user_service import update_user_account
+    updated = update_user_account(user_id=user_id, payload=payload, db=db)
+    return updated or current_user
+
+
+@router.get("/{user_id}/assigned-data", summary="Lấy danh sách dữ liệu do user phụ trách")
+def get_user_assigned_data_alias(
+    user_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.data_handover_service import get_user_assigned_data
+    return get_user_assigned_data(user_id)
