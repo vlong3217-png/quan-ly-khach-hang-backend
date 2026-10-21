@@ -19,7 +19,50 @@ def get_all_users(
     skip: int = 0,
     limit: int = 20,
 ) -> List[dict]:
-    results = fake_users_db
+    db_results = []
+    try:
+        db = SessionLocal()
+        query = db.query(UserModel)
+        if search and search.strip():
+            term = f"%{search.strip().lower()}%"
+            query = query.filter(
+                (UserModel.email.ilike(term)) |
+                (UserModel.full_name.ilike(term)) |
+                (UserModel.username.ilike(term))
+            )
+        if role and role.strip():
+            query = query.filter(UserModel.role == role.strip().upper())
+        if is_active is not None:
+            query = query.filter(UserModel.is_active == is_active)
+            
+        db_users = query.order_by(UserModel.id.asc()).all()
+        for u in db_users:
+            db_results.append({
+                "id": u.id,
+                "email": u.email,
+                "username": u.username,
+                "full_name": u.full_name,
+                "role": u.role,
+                "is_active": u.is_active if u.is_active is not None else True,
+                "status": u.status or ("ACTIVE" if u.is_active else "LOCKED"),
+                "team_id": u.team_id,
+                "phone": u.phone,
+                "email_signature": u.email_signature,
+                "avatar_url": u.avatar_url,
+            })
+        db.close()
+    except Exception:
+        pass
+
+    if db_results:
+        db_emails = {u["email"].lower() for u in db_results}
+        combined = list(db_results)
+        for u in fake_users_db:
+            if u["email"].lower() not in db_emails:
+                combined.append(u)
+        results = combined
+    else:
+        results = fake_users_db
 
     if search and search.strip():
         term = search.strip().lower()
@@ -41,6 +84,30 @@ def get_all_users(
 
 
 def get_user_by_id(user_id: int) -> dict:
+    try:
+        db = SessionLocal()
+        u = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if u:
+            res = {
+                "id": u.id,
+                "email": u.email,
+                "username": u.username,
+                "full_name": u.full_name,
+                "role": u.role,
+                "is_active": u.is_active if u.is_active is not None else True,
+                "status": u.status or ("ACTIVE" if u.is_active else "LOCKED"),
+                "team_id": u.team_id,
+                "phone": u.phone,
+                "email_signature": u.email_signature,
+                "avatar_url": u.avatar_url,
+                "hashed_password": u.hashed_password,
+            }
+            db.close()
+            return res
+        db.close()
+    except Exception:
+        pass
+
     for u in fake_users_db:
         if u["id"] == user_id:
             if "status" not in u:
@@ -55,7 +122,22 @@ def get_user_by_id(user_id: int) -> dict:
 def create_user(user_in: UserCreate) -> dict:
     clean_email = user_in.email.strip().lower()
 
-    # Check email duplicate
+    # 1. Kiểm tra trùng lặp email trên CSDL MySQL
+    try:
+        db = SessionLocal()
+        db_dup = db.query(UserModel).filter(UserModel.email == clean_email).first()
+        db.close()
+        if db_dup:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email đã được sử dụng",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # Check email duplicate trong fake_users_db
     for u in fake_users_db:
         if u["email"].lower() == clean_email:
             raise HTTPException(
@@ -63,9 +145,23 @@ def create_user(user_in: UserCreate) -> dict:
                 detail="Email đã được sử dụng",
             )
 
-    # Check username duplicate if provided
+    # 2. Check username duplicate if provided
     clean_username = user_in.username.strip().lower() if user_in.username else None
     if clean_username:
+        try:
+            db = SessionLocal()
+            db_un_dup = db.query(UserModel).filter(UserModel.username == clean_username).first()
+            db.close()
+            if db_un_dup:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Tên đăng nhập đã được sử dụng",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
         for u in fake_users_db:
             if u.get("username") and u["username"].lower() == clean_username:
                 raise HTTPException(
@@ -82,9 +178,34 @@ def create_user(user_in: UserCreate) -> dict:
         )
 
     hashed = hash_password(user_in.password)
-
-    new_id = max([u["id"] for u in fake_users_db], default=0) + 1
     is_active = True if user_in.is_active is None else user_in.is_active
+
+    # 3. Lưu vào MySQL và lấy ID tự sinh chính xác
+    new_id = None
+    try:
+        db = SessionLocal()
+        db_user = UserModel(
+            email=user_in.email.strip(),
+            username=user_in.username.strip() if user_in.username else clean_email.split("@")[0],
+            full_name=user_in.full_name.strip(),
+            role=role,
+            hashed_password=hashed,
+            is_active=is_active,
+            team_id=getattr(user_in, "team_id", None),
+            status="ACTIVE" if is_active else "LOCKED",
+            phone=getattr(user_in, "phone", None),
+        )
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        new_id = db_user.id
+        db.close()
+    except Exception:
+        pass
+
+    if not new_id:
+        new_id = max([u["id"] for u in fake_users_db], default=0) + 1
+
     new_user = {
         "id": new_id,
         "email": user_in.email.strip(),
@@ -94,30 +215,12 @@ def create_user(user_in: UserCreate) -> dict:
         "is_active": is_active,
         "status": "ACTIVE" if is_active else "LOCKED",
         "hashed_password": hashed,
+        "team_id": getattr(user_in, "team_id", None),
+        "phone": getattr(user_in, "phone", None),
     }
 
+    # Cập nhật fake_users_db để các bộ test và cache trong tiến trình cùng thấy
     fake_users_db.append(new_user)
-
-    # Đồng bộ lưu vào CSDL MySQL
-    try:
-        db = SessionLocal()
-        db_user = UserModel(
-            id=new_id,
-            email=new_user["email"],
-            username=new_user["username"],
-            full_name=new_user["full_name"],
-            role=new_user["role"],
-            hashed_password=new_user["hashed_password"],
-            is_active=new_user["is_active"],
-            team_id=new_user.get("team_id"),
-            status=new_user["status"],
-        )
-        db.merge(db_user)
-        db.commit()
-        db.close()
-    except Exception:
-        pass
-
     return new_user
 
 
@@ -239,6 +342,12 @@ def update_user_status(
         user["is_active"] = False
         message = f"Đã khóa tài khoản thành công cho user #{user_id}"
 
+        # Cập nhật fake_users_db
+        for f in fake_users_db:
+            if f["id"] == user_id:
+                f["status"] = "LOCKED"
+                f["is_active"] = False
+
         if status_in.handover_to_user_id is not None:
             handover_result = execute_handover(
                 source_user_id=user_id,
@@ -249,6 +358,12 @@ def update_user_status(
         user["status"] = "ACTIVE"
         user["is_active"] = True
         message = f"Đã mở khóa tài khoản thành công cho user #{user_id}"
+
+        # Cập nhật fake_users_db
+        for f in fake_users_db:
+            if f["id"] == user_id:
+                f["status"] = "ACTIVE"
+                f["is_active"] = True
 
     try:
         from app.core.database import SessionLocal
