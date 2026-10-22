@@ -229,6 +229,7 @@ def test_lock_account_with_handover_combined():
         json={
             "status": "LOCKED",
             "handover_to_user_id": 2,
+            "reason": "Kiểm thử lý do khóa tài khoản",
         },
     )
     assert response.status_code == 200

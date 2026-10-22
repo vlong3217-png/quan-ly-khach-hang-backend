@@ -70,6 +70,7 @@ class UserStatusUpdate(BaseModel):
         default=None,
         description="ID ng?????i d??ng nh???n b??n giao d??? li???u khi kh??a t??i kho???n"
     )
+    reason: Optional[str] = Field(default=None, min_length=1, max_length=1000, description="Lý do khóa tài khoản")
 
 
 class DataHandoverRequest(BaseModel):

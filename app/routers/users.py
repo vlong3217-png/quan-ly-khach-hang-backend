@@ -667,6 +667,17 @@ def patch_user_status_endpoint(
             old_value="ACTIVE" if status_in.status.upper() == "LOCKED" else "LOCKED",
             new_value=status_in.status.upper(),
         )
+        if status_in.status.upper() == "LOCKED" and status_in.reason:
+            log_change(
+                user_id=admin_user["id"],
+                user_name=admin_user.get("full_name", "Admin"),
+                entity_type="USER",
+                entity_id=str(user_id),
+                action="LOCK_USER_REASON",
+                field_name="reason",
+                old_value=None,
+                new_value=status_in.reason.strip(),
+            )
     except Exception:
         pass
 
