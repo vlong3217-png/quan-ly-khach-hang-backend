@@ -1,14 +1,15 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.dependencies import get_current_user
 from app.schemas.ticket import ChurnRiskAlert, SupportTicketCreate, SupportTicketResponse, SupportTicketUpdate
+from app.schemas.pagination import PaginatedResponse, make_paginated_response
 from app.services import ticket_service
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 
 
-@router.get("", response_model=List[SupportTicketResponse])
+@router.get("", response_model=Union[List[SupportTicketResponse], PaginatedResponse[SupportTicketResponse]])
 def get_tickets(
     customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
     status: Optional[str] = Query(None, description="Lọc theo trạng thái"),
@@ -19,6 +20,15 @@ def get_tickets(
 ):
     """AC S3-08: Danh sách ticket hỗ trợ khách hàng sau bán có phân trang."""
     items = ticket_service.list_tickets(customer_id=customer_id, status=status)
+    if page is not None:
+        effective_limit = limit or 20
+        effective_skip = (page - 1) * effective_limit
+        return make_paginated_response(
+            items[effective_skip : effective_skip + effective_limit],
+            page,
+            effective_limit,
+            len(items),
+        )
     if limit is not None:
         effective_skip = (page - 1) * limit if page is not None else (skip or 0)
         return items[effective_skip : effective_skip + limit]

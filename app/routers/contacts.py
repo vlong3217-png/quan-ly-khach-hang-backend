@@ -1,10 +1,11 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import check_scope_access, get_current_user
 from app.schemas.contact import ContactCreate, ContactResponse, ContactTransfer, ContactUpdate
+from app.schemas.pagination import PaginatedResponse, make_paginated_response
 from app.services import contact_service
 from app.services.customer_service import get_raw_customer_by_id
 
@@ -26,9 +27,10 @@ def _get_customer_and_check_access(customer_id: int, current_user: dict) -> dict
     return customer
 
 
-@router.get("", response_model=List[ContactResponse])
+@router.get("", response_model=Union[List[ContactResponse], PaginatedResponse[ContactResponse]])
 def get_contacts(
     customer_id: Optional[int] = Query(None, description="Lọc theo khách hàng"),
+    search: Optional[str] = Query(None, description="Tìm theo tên, chức danh, email hoặc số điện thoại"),
     page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
     skip: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu"),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng tối đa mỗi trang"),
@@ -60,8 +62,24 @@ def get_contacts(
                 allowed_contacts.append(c)
         raw_contacts = allowed_contacts
 
+    if search and search.strip():
+        query = search.strip().casefold()
+        raw_contacts = [
+            contact for contact in raw_contacts
+            if any(query in str(contact.get(field) or "").casefold() for field in ("name", "position", "email", "phone"))
+        ]
+
+    if page is not None:
+        effective_limit = limit or 20
+        effective_skip = (page - 1) * effective_limit
+        return make_paginated_response(
+            raw_contacts[effective_skip : effective_skip + effective_limit],
+            page,
+            effective_limit,
+            len(raw_contacts),
+        )
     if limit is not None:
-        effective_skip = (page - 1) * limit if page is not None else (skip or 0)
+        effective_skip = skip or 0
         return raw_contacts[effective_skip : effective_skip + limit]
     elif skip is not None:
         return raw_contacts[skip:]
