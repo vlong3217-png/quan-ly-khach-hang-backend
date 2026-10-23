@@ -9,7 +9,7 @@ Role restrictions:
   (data and actions are constrained by MY / TEAM / ALL scope).
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Response, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -41,6 +41,7 @@ from app.schemas.customer import (
     PeriodicCareCustomerItem,
     MarkCareInteractionRequest,
 )
+from app.schemas.pagination import PaginatedResponse, make_paginated_response
 from app.services.customer_service import (
     add_customer_attachment,
     commit_customer_import,
@@ -59,6 +60,8 @@ from app.services.customer_service import (
     list_saved_filters,
     mark_customer_care_interaction,
     merge_customers,
+    normalize_tax_code,
+    normalize_website_domain,
     preview_customer_import_excel,
     preview_merge_customers,
     update_customer_record,
@@ -183,9 +186,11 @@ def remove_saved_filter(
     return None
 
 
-@router.get("/periodic-care", response_model=List[PeriodicCareCustomerItem])
+@router.get("/periodic-care", response_model=Union[List[PeriodicCareCustomerItem], PaginatedResponse[PeriodicCareCustomerItem]])
 def get_customers_for_periodic_care(
     days: int = Query(30, ge=1, description="Số ngày tối thiểu không có tương tác"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số khách hàng mỗi trang"),
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -194,7 +199,62 @@ def get_customers_for_periodic_care(
     - Tự động sắp xếp theo giá trị hợp đồng giảm dần.
     - Đính kèm cờ cảnh báo rủi ro rời bỏ.
     """
-    return get_periodic_care_customers(days_threshold=days, current_user=current_user)
+    items = get_periodic_care_customers(days_threshold=days, current_user=current_user)
+    if page is None:
+        return items
+    effective_limit = limit or 20
+    effective_skip = (page - 1) * effective_limit
+    return make_paginated_response(
+        items[effective_skip : effective_skip + effective_limit],
+        page,
+        effective_limit,
+        len(items),
+    )
+
+
+@router.get("/duplicate-groups", response_model=PaginatedResponse[dict])
+def get_customer_duplicate_groups(
+    page: int = Query(1, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: int = Query(10, ge=1, le=100, description="Số nhóm trùng lặp mỗi trang"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Lấy nhóm khách hàng trùng trong phạm vi dữ liệu người dùng, có phân trang."""
+    scope = resolve_scope(current_user, None)
+    _, customers = get_customers_by_scope(current_user, scope)
+    groups: List[dict] = []
+
+    def add_groups(match_reason: str, key_label: str, key_fn) -> None:
+        grouped: Dict[str, List[dict]] = {}
+        for customer in customers:
+            value = key_fn(customer)
+            if value:
+                grouped.setdefault(value, []).append(customer)
+
+        for key, matched_customers in grouped.items():
+            if len(matched_customers) < 2:
+                continue
+            ids = {int(customer["id"]) for customer in matched_customers}
+            if any(ids == set(group["customer_ids"]) for group in groups):
+                continue
+            groups.append({
+                "id": f"duplicate-{match_reason.lower()}-{key}",
+                "match_reason": match_reason,
+                "match_field_value": f"{key_label}: {key}",
+                "customers": matched_customers,
+                "customer_ids": ids,
+            })
+
+    add_groups("TAX_CODE", "MST", lambda customer: normalize_tax_code(customer.get("tax_code")))
+    add_groups("WEBSITE", "Website", lambda customer: normalize_website_domain(customer.get("website")))
+
+    groups.sort(key=lambda group: group["id"])
+    total = len(groups)
+    start = (page - 1) * limit
+    page_groups = [
+        {key: value for key, value in group.items() if key != "customer_ids"}
+        for group in groups[start : start + limit]
+    ]
+    return make_paginated_response(page_groups, page, limit, total)
 
 
 @router.post("/{customer_id}/mark-care")
