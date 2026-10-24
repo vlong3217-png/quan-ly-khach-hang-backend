@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -53,3 +53,6 @@ class TeamQuotaValidationResponse(BaseModel):
 class SalesQuotaListResponse(BaseModel):
     total: int
     quotas: List[SalesQuotaResponse]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    total_pages: Optional[int] = 1

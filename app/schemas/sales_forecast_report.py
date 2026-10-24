@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 class ForecastProgressItem(BaseModel):
@@ -25,3 +25,7 @@ class ForecastReportResponse(BaseModel):
     breakdown_by_rep: List[ForecastProgressItem]
     loss_analysis_by_category: List[WinLossLossAnalysisItem]
     loss_analysis_by_competitor: List[WinLossLossAnalysisItem]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    total_pages: Optional[int] = 1
+    total_reps: Optional[int] = None
