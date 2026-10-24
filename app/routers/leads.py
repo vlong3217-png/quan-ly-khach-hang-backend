@@ -13,7 +13,7 @@ Unified Lead Router:
 from datetime import datetime
 import html
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -73,6 +73,7 @@ from app.schemas.lead import (
     WebToLeadSubmitRequest,
     WebToLeadSubmitResponse,
 )
+from app.schemas.pagination import PaginatedResponse, make_paginated_response
 from app.services import lead_service
 from app.services.lead_service import (
     accept_lead,
@@ -216,14 +217,28 @@ def create_lead_form_endpoint(
 
 @router.get(
     "/lead-forms",
-    response_model=List[LeadFormResponse],
+    response_model=Union[List[LeadFormResponse], PaginatedResponse[LeadFormResponse]],
     summary="Xem danh sách biểu mẫu Web-to-Lead đã tạo (S4-01)",
 )
 def list_lead_forms_endpoint(
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số biểu mẫu mỗi trang"),
+    search: Optional[str] = Query(None, description="Tìm theo tên hoặc mã biểu mẫu"),
+    is_active: Optional[bool] = Query(None, description="Lọc trạng thái biểu mẫu"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return lead_service.list_lead_forms(db=db)
+    items = lead_service.list_lead_forms(db=db)
+    if search and search.strip():
+        query = search.strip().casefold()
+        items = [item for item in items if query in str(item.get("name") or "").casefold() or query in str(item.get("form_key") or "").casefold()]
+    if is_active is not None:
+        items = [item for item in items if bool(item.get("is_active")) == is_active]
+    if page is None:
+        return items
+    effective_limit = limit or 20
+    start = (page - 1) * effective_limit
+    return make_paginated_response(items[start : start + effective_limit], page, effective_limit, len(items))
 
 
 @router.get(
@@ -386,10 +401,23 @@ def download_lead_template(
 )
 async def preview_lead_excel(
     file: UploadFile = File(...),
+    page: Optional[int] = Query(None, ge=1),
+    limit: Optional[int] = Query(None, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
 ):
     file_bytes = await file.read()
-    return lead_service.preview_import_leads_excel(file_bytes, current_user)
+    result = lead_service.preview_import_leads_excel(file_bytes, current_user)
+    if page is None:
+        return result
+
+    effective_limit = limit or 20
+    rows = result.get("rows", [])
+    start = (page - 1) * effective_limit
+    result["rows"] = rows[start : start + effective_limit]
+    result["page"] = page
+    result["limit"] = effective_limit
+    result["total_pages"] = max(1, (len(rows) + effective_limit - 1) // effective_limit) if rows else 1
+    return result
 
 
 @router.post(
@@ -1084,16 +1112,34 @@ lead_interactions_store: List[Dict[str, Any]] = []
 def get_recent_lead_interactions_endpoint(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
+    interaction_type: Optional[str] = Query(None, alias="type"),
+    search: Optional[str] = Query(None),
     current_user: Optional[dict] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
+    items = lead_interactions_store
+    if interaction_type:
+        requested_type = interaction_type.strip().upper()
+        if requested_type == "STATUS_CHANGE":
+            items = [item for item in items if str(item.get("type") or "").upper() in ("STATUS_CHANGE", "SYSTEM")]
+        else:
+            items = [item for item in items if str(item.get("type") or "").upper() == requested_type]
+    if search and search.strip():
+        query = search.strip().casefold()
+        items = [
+            item for item in items
+            if query in str(item.get("title") or "").casefold()
+            or query in str(item.get("content") or "").casefold()
+            or query in str(item.get("performed_by_name") or "").casefold()
+        ]
     start = (page - 1) * limit
     end = start + limit
     return {
-        "items": lead_interactions_store[start:end],
-        "total": len(lead_interactions_store),
+        "items": items[start:end],
+        "total": len(items),
         "page": page,
         "limit": limit,
+        "total_pages": max(1, (len(items) + limit - 1) // limit) if items else 1,
     }
 
 
@@ -1170,6 +1216,9 @@ def delete_lead_interaction_endpoint(
 def get_all_lead_submissions_endpoint(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
+    form_id: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = Query(None),
     current_user: Optional[dict] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
@@ -1193,6 +1242,18 @@ def get_all_lead_submissions_endpoint(
     except Exception:
         pass
 
+    if form_id:
+        items = [item for item in items if str(item["form_id"]) == form_id]
+    if status_filter:
+        requested_status = status_filter.strip().upper()
+        items = [item for item in items if str(item["status"]).upper() == requested_status]
+    if search and search.strip():
+        query = search.strip().casefold()
+        items = [
+            item for item in items
+            if any(query in str(item.get(field) or "").casefold() for field in ("full_name", "email", "phone", "company", "requirement"))
+        ]
+
     start = (page - 1) * limit
     end = start + limit
     return {
@@ -1200,6 +1261,7 @@ def get_all_lead_submissions_endpoint(
         "total": len(items),
         "page": page,
         "limit": limit,
+        "total_pages": max(1, (len(items) + limit - 1) // limit) if items else 1,
     }
 
 
@@ -1244,4 +1306,5 @@ def get_form_lead_submissions_endpoint(
         "total": len(items),
         "page": page,
         "limit": limit,
+        "total_pages": max(1, (len(items) + limit - 1) // limit) if items else 1,
     }

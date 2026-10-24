@@ -331,6 +331,9 @@ class LeadImportPreviewResponse(BaseModel):
     invalid_rows_count: int
     duplicate_rows_count: int
     rows: List[LeadImportRowData]
+    page: Optional[int] = None
+    limit: Optional[int] = None
+    total_pages: Optional[int] = None
 
 
 class LeadImportCommitRequest(BaseModel):
