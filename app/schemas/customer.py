@@ -182,6 +182,9 @@ class CustomerImportPreviewResponse(BaseModel):
     invalid_rows_count: int
     duplicate_rows_count: int
     rows: List[CustomerImportPreviewRow]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    total_pages: Optional[int] = 1
 
 
 class CustomerImportCommitRequest(BaseModel):

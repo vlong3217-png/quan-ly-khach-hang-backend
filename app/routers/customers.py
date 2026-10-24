@@ -624,11 +624,16 @@ def download_customer_import_template(
 @router.post("/import/preview", response_model=CustomerImportPreviewResponse)
 async def preview_customer_import(
     file: UploadFile = File(...),
+    search: Optional[str] = Query(None, description="Tìm kiếm theo tên công ty / khách hàng"),
+    page: Optional[int] = Query(None, ge=1, description="Trang hiện tại"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng dòng mỗi trang"),
     current_user: dict = Depends(get_current_user),
 ):
     """
     AC S3-06: Tải file Excel lên để xem trước, kiểm tra tính hợp lệ và cảnh báo trùng lặp từng dòng.
+    Hỗ trợ tìm kiếm theo tên và phân trang kết quả xem trước.
     """
+    import math
     if not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -637,6 +642,29 @@ async def preview_customer_import(
     content = await file.read()
     try:
         preview_result = preview_customer_import_excel(content)
+        all_rows = preview_result.get("rows", [])
+        
+        # Lọc tìm kiếm theo tên nếu có
+        if search and search.strip():
+            query_str = search.strip().lower()
+            filtered_rows = [
+                r for r in all_rows
+                if (r.get("name") and query_str in r.get("name", "").lower()) or
+                   (r.get("tax_code") and query_str in r.get("tax_code", "").lower())
+            ]
+        else:
+            filtered_rows = all_rows
+
+        total_filtered = len(filtered_rows)
+        effective_limit = limit if limit is not None else 20
+        effective_page = page if page is not None else 1
+        total_pages = max(1, math.ceil(total_filtered / effective_limit)) if total_filtered > 0 else 1
+
+        paged_rows = filtered_rows[(effective_page - 1) * effective_limit : effective_page * effective_limit]
+        preview_result["rows"] = paged_rows
+        preview_result["page"] = effective_page
+        preview_result["limit"] = effective_limit
+        preview_result["total_pages"] = total_pages
         return preview_result
     except Exception as e:
         raise HTTPException(
