@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 class WeeklyActivityCount(BaseModel):
@@ -30,3 +30,7 @@ class TeamActivitySLAReportResponse(BaseModel):
     total_quotes_sent: int
     overall_sla_rate: float
     members: List[TeamMemberActivityMetric]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    total_pages: Optional[int] = 1
+    total_members: Optional[int] = None
