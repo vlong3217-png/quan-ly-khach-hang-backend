@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 class LeadSourceMetricItem(BaseModel):
@@ -30,3 +30,8 @@ class LeadEffectivenessReportResponse(BaseModel):
     total_revenue_generated: float
     source_metrics: List[LeadSourceMetricItem]
     campaign_metrics: List[CampaignEffectivenessItem]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    total_pages: Optional[int] = 1
+    total_sources: Optional[int] = None
+    total_campaigns: Optional[int] = None

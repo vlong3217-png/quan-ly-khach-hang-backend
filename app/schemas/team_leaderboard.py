@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 class LeaderboardRankItem(BaseModel):
@@ -16,6 +16,10 @@ class TeamLeaderboardResponse(BaseModel):
     team_id: Optional[str] = None
     period_name: str
     rankings: List[LeaderboardRankItem]
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    total_pages: Optional[int] = 1
+    total_rankings: Optional[int] = None
 
 class LeaderboardConfigUpdateRequest(BaseModel):
     is_feature_enabled: bool
