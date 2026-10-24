@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, Query, Response
 from app.core.dependencies import get_current_user
 from app.schemas.sales_forecast_report import ForecastReportResponse

@@ -7,6 +7,7 @@ from app.models.user import Base
 
 class NotificationModel(Base):
     __tablename__ = "notifications"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     recipient_id = Column(Integer, index=True, nullable=False)
