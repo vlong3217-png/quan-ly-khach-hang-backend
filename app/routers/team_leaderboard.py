@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from app.core.dependencies import get_current_user
 from app.schemas.team_leaderboard import TeamLeaderboardResponse, LeaderboardConfigUpdateRequest
